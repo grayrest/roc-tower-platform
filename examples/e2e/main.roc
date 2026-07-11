@@ -77,10 +77,7 @@ root! : Request => Response
 root! = |_req| text(200, "root ok")
 
 user! : UserId => Response
-user! = |id_arg| {
-    id = match id_arg { UserId.UserId(value) => value }
-    text(200, "user ${id}")
-}
+user! = |UserId(id)| text(200, "user ${id}")
 
 echo! : Request => Response
 echo! = |req| {
@@ -138,11 +135,11 @@ text = |status, message| {
 }
 
 helper_greet! : Req.JsonBody({ name : Str }) => Response
-helper_greet! = |body_arg| Res.json(200, { message: "hello, ${body_arg.value().name}" })
+helper_greet! = |Req.JsonBody.JsonBody(body)| Res.json(200, { message: "hello, ${body.name}" })
 
 helper_form! : Req.FormBody => Response
-helper_form! = |form_arg| {
-    rendered = form_arg.value().map(|field| "${field.name}=${field.value}")
+helper_form! = |Req.FormBody.FormBody(fields)| {
+    rendered = fields.map(|field| "${field.name}=${field.value}")
     Res.text(200, Str.join_with(rendered, ";"))
 }
 
@@ -168,12 +165,13 @@ helper_header! = |headers_arg| {
     }
 }
 
+# Destructure the payload wrappers (UserId, Model); keep QueryParams as a
+# named arg so its .get() accessor stays available.
 helper_combo! : UserId, Req.QueryParams, Req.Model(Model) => Response
-helper_combo! = |id_arg, query_arg, model_arg| {
-    id = match id_arg { UserId.UserId(value) => value }
+helper_combo! = |UserId(id), query_arg, Req.Model.Model(model)| {
     q = match query_arg.get("q") {
         Ok(value) => value
         Err(_) => "none"
     }
-    Res.text(200, "id=${id};q=${q};prefix=${model_arg.value().prefix}")
+    Res.text(200, "id=${id};q=${q};prefix=${model.prefix}")
 }

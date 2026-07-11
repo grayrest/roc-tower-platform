@@ -38,13 +38,13 @@ init! = || {
 }
 
 home! : Req.Model(Model) => Response
-home! = |model_arg| Res.text(200, "${model_arg.value().greeting}, world!")
+home! = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
 
 ## Handler arguments are extracted from the request by type: a bad JSON body
 ## never reaches the handler — the extractor rejects it with a 400.
 greet! : Req.JsonBody({ name : Str }), Req.Model(Model) => Response
-greet! = |body_arg, model_arg| {
-    Res.json(200, { message: "${model_arg.value().greeting}, ${body_arg.value().name}" })
+greet! = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)| {
+    Res.json(200, { message: "${model.greeting}, ${body.name}" })
 }
 ```
 
@@ -114,11 +114,17 @@ The blessed handler style: declare typed arguments, and each argument type's
 { method: "GET", path: "/combo/{id}", handler: Box.box(Req.args3(combo!)) }
 
 combo! : UserId, Req.QueryParams, Req.Model(Model) => Response
-combo! = |id_arg, query_arg, model_arg| ...
+combo! = |UserId(id), query_arg, Req.Model.Model(model)| ...
 ```
 
 Arguments extract left to right; the first `Err` rejection is returned as the
 response and the handler never runs.
+
+Destructure the wrapper right in the parameter to bind its payload — no
+`.value()` needed. Imported (`Req.*`) wrappers use the full `Module.Type.Tag`
+form (`Req.Model.Model(model)`); app-local wrappers accept the bare tag
+(`UserId(id)`). Keep a wrapper as a plain argument (like `query_arg` above)
+when you want its `.get()` accessor instead of the raw payload.
 
 Platform extractors (all under `Req`):
 

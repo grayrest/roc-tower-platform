@@ -65,27 +65,27 @@ init! = || {
     Ok({ greeting: greeting, started_at_ms: Host.now_ms!() })
 }
 
+## Destructure the wrapper right in the parameter to bind the payload
+## directly — imported wrappers use the full Module.Type.Tag form.
 home! : Req.Model(Model) => Response
-home! = |model_arg| Res.text(200, "${model_arg.value().greeting}, world!")
+home! = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
 
+## App-local wrappers can use the bare tag.
 user! : UserId => Response
-user! = |id_arg| {
-    id = match id_arg { UserId.UserId(value) => value }
-    Res.text(200, "user ${id}")
-}
+user! = |UserId(id)| Res.text(200, "user ${id}")
 
 echo! : Req.Body => Response
-echo! = |body_arg| Res.bytes(200, "application/octet-stream", body_arg.value())
+echo! = |Req.Body.Body(bytes)| Res.bytes(200, "application/octet-stream", bytes)
 
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
 greet! : Req.JsonBody({ name : Str }), Req.Model(Model) => Response
-greet! = |body_arg, model_arg| {
-    Res.json(200, { message: "${model_arg.value().greeting}, ${body_arg.value().name}" })
+greet! = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)| {
+    Res.json(200, { message: "${model.greeting}, ${body.name}" })
 }
 
 uptime! : Req.Model(Model) => Response
-uptime! = |model_arg| {
-    Res.text(200, "uptime_ms=${(Host.now_ms!() - model_arg.value().started_at_ms).to_str()}")
+uptime! = |Req.Model.Model(model)| {
+    Res.text(200, "uptime_ms=${(Host.now_ms!() - model.started_at_ms).to_str()}")
 }
 
 random! : Request => Response
