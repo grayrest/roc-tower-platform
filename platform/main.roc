@@ -31,7 +31,7 @@ platform ""
             }),
         }
     }
-    exposes [Host]
+    exposes [Host, Res, Req]
     packages {}
     provides {
         "roc_app": app_for_host,
@@ -52,6 +52,8 @@ platform ""
     }
 
 import Host
+import Res
+import Req
 
 app_for_host = |{}| {
     program = main({})
