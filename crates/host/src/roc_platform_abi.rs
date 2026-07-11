@@ -811,7 +811,65 @@ impl<T: core::fmt::Debug, const ELEMENTS_REFCOUNTED: bool> core::fmt::Debug for 
     }
 }
 
+/// Element type for __AnonStruct_5c679ee432c3d89b
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct5c679ee432c3d89b {
+    pub handler: RocErasedCallable,
+    pub method: RocStr,
+    pub path: RocStr,
+}
+
+/// Element type for __AnonStruct_5c679ee432c3d89b
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct5c679ee432c3d89b {
+    pub handler: RocErasedCallable,
+    pub method: RocStr,
+    pub path: RocStr,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStruct5c679ee432c3d89b>() == 56, "AnonStruct5c679ee432c3d89b size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStruct5c679ee432c3d89b>() == 8, "AnonStruct5c679ee432c3d89b alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStruct5c679ee432c3d89b>() == 28, "AnonStruct5c679ee432c3d89b size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStruct5c679ee432c3d89b>() == 4, "AnonStruct5c679ee432c3d89b alignment mismatch");
+
+// Platform Type Aliases
+
+pub type RoutesForHost = AnonStruct5c679ee432c3d89b;
+
 // Generated Refcount Helpers
+
+impl AnonStruct5c679ee432c3d89b {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { decref_erased_callable(value.handler, roc_host); }
+        unsafe { value.method.decref(roc_host); }
+        unsafe { value.path.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { incref_erased_callable(value.handler, amount); }
+        unsafe { value.method.incref(amount); }
+        unsafe { value.path.incref(amount); }
+    }
+}
 
 
 // Runtime Symbols
@@ -961,7 +1019,7 @@ pub fn make_roc_host(env: *mut c_void) -> RocHost {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    /// Entrypoint: handle_for_host!
-    pub fn roc_handle(arg0: RocStr) -> RocStr;
+    /// Entrypoint: routes_for_host
+    pub fn roc_routes() -> RocList<AnonStruct5c679ee432c3d89b>;
 
 }

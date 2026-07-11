@@ -1,9 +1,10 @@
-//! Minimal HTTP server for spike 1: every request is handed to the Roc app's
-//! `handle!` entrypoint on the blocking pool; the returned string becomes the
-//! response body.
+//! Minimal HTTP server for spike 3: requests are matched against the Roc
+//! app's route table (exact path + method for now) and dispatched to the
+//! matching boxed handler on the blocking pool.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -14,11 +15,11 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
 use tokio::net::TcpListener;
 
-pub type RocHandler = fn(String) -> String;
+use crate::{call_handler, Route};
 
 const DEFAULT_PORT: u16 = 8000;
 
-pub fn run(handler: RocHandler) -> i32 {
+pub fn run(routes: Vec<Route>) -> i32 {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -33,10 +34,10 @@ pub fn run(handler: RocHandler) -> i32 {
             return 1;
         }
     };
-    runtime.block_on(serve(handler))
+    runtime.block_on(serve(Arc::new(routes)))
 }
 
-async fn serve(handler: RocHandler) -> i32 {
+async fn serve(routes: Arc<Vec<Route>>) -> i32 {
     let port = std::env::var("PORT")
         .ok()
         .and_then(|raw| raw.parse().ok())
@@ -49,7 +50,10 @@ async fn serve(handler: RocHandler) -> i32 {
             return 1;
         }
     };
-    tracing::info!("listening on http://{addr}");
+    tracing::info!(
+        "listening on http://{addr} with {} route(s)",
+        routes.len()
+    );
 
     loop {
         let (stream, _) = match listener.accept().await {
@@ -60,9 +64,11 @@ async fn serve(handler: RocHandler) -> i32 {
             }
         };
         let io = TokioIo::new(stream);
+        let routes = routes.clone();
         tokio::spawn(async move {
-            let service = service_fn(move |req: Request<Incoming>| async move {
-                Ok::<_, Infallible>(respond(handler, req).await)
+            let service = service_fn(move |req: Request<Incoming>| {
+                let routes = routes.clone();
+                async move { Ok::<_, Infallible>(respond(&routes, req).await) }
             });
             if let Err(err) = ConnBuilder::new(TokioExecutor::new())
                 .serve_connection(io, service)
@@ -74,9 +80,22 @@ async fn serve(handler: RocHandler) -> i32 {
     }
 }
 
-async fn respond(handler: RocHandler, req: Request<Incoming>) -> Response<Full<Bytes>> {
-    let path = req.uri().path().to_owned();
-    match tokio::task::spawn_blocking(move || handler(path)).await {
+async fn respond(routes: &[Route], req: Request<Incoming>) -> Response<Full<Bytes>> {
+    let method = req.method().as_str();
+    let path = req.uri().path();
+
+    let Some(route) = routes
+        .iter()
+        .find(|route| route.path == path && route.method == method)
+    else {
+        let mut response = Response::new(Full::new(Bytes::from_static(b"not found")));
+        *response.status_mut() = StatusCode::NOT_FOUND;
+        return response;
+    };
+
+    let handler = route.handler;
+    let request_text = path.to_owned();
+    match tokio::task::spawn_blocking(move || call_handler(handler, &request_text)).await {
         Ok(body) => Response::new(Full::new(Bytes::from(body))),
         Err(err) => {
             tracing::error!("handler task failed: {err}");

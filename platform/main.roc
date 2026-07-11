@@ -1,15 +1,15 @@
 platform ""
     requires {
-        handle! : Str => Str
+        routes : {} -> List({ method : Str, path : Str, handler : Box(Str -> Str) })
     }
     exposes []
     packages {}
-    provides { "roc_handle": handle_for_host! }
+    provides { "roc_routes": routes_for_host }
     targets: {
         inputs_dir: "targets/",
         arm64mac: { inputs: ["libhost.a", app] },
         x64mac: { inputs: ["libhost.a", app] },
     }
 
-handle_for_host! : Str => Str
-handle_for_host! = |req| handle!(req)
+routes_for_host : {} -> List({ method : Str, path : Str, handler : Box(Str -> Str) })
+routes_for_host = |{}| routes({})
