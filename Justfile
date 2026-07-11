@@ -12,17 +12,33 @@ target_dir := if os() + "/" + arch() == "macos/aarch64" { "arm64mac" } else if o
 default:
     @just --list
 
-# Regenerate the Rust glue bindings from the platform header. Glue is written
-# to a temp dir and copied into place only when the content actually changed,
-# so an unchanged platform doesn't bump the file's mtime and force cargo to
-# recompile the host crate. (`roc glue` always rewrites its output.)
+# Regenerate the Rust glue bindings — but only when an input actually changed.
+# The `roc glue` run takes ~60s, and its output is a pure function of three
+# things: the roc compiler, the glue spec (RustGlue.roc), and the platform
+# sources. We fingerprint those and skip the run entirely when unchanged, so
+# app-only iteration (`just run` after editing an example) pays nothing here.
+# On a regen, output is copied into place only when its content differs, so an
+# unchanged ABI doesn't bump the file mtime and force a cargo host rebuild.
+# Force a regen with: rm target/glue.fingerprint
 glue:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    abi="crates/host/src/roc_platform_abi.rs"
+    stamp="target/glue.fingerprint"
+    fingerprint=$( { stat -f '%m %z' "{{ roc }}" "{{ rust_glue }}"; cat platform/*.roc; } | shasum -a 256 | cut -d' ' -f1 )
+    if [[ -f "$abi" && -f "$stamp" && "$(cat "$stamp")" == "$fingerprint" ]]; then
+        echo "glue: up to date, skipping regen ($fingerprint)"
+        exit 0
+    fi
+    echo "glue: inputs changed, regenerating"
     mkdir -p target/glue-tmp
     "{{ roc }}" glue "{{ rust_glue }}" target/glue-tmp ./platform/main.roc
-    for f in target/glue-tmp/*; do \
-        dest="crates/host/src/$(basename "$f")"; \
-        cmp -s "$f" "$dest" 2>/dev/null || cp "$f" "$dest"; \
+    for f in target/glue-tmp/*; do
+        dest="crates/host/src/$(basename "$f")"
+        cmp -s "$f" "$dest" 2>/dev/null || cp "$f" "$dest"
     done
+    mkdir -p target
+    echo "$fingerprint" > "$stamp"
 
 # Build the host staticlib and install it as the platform's target input.
 host: glue
