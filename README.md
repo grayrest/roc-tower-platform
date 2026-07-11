@@ -14,6 +14,8 @@ source, and tracks its moving platform ABI via generated glue.
 app [Model, main] { pf: platform "../../platform/main.roc" }
 
 import pf.Host
+import pf.Res
+import pf.Req
 
 Model : { greeting : Str }
 
@@ -22,7 +24,7 @@ main = |{}| {
     init!: init!,
     routes: [
         { method: "GET", path: "/", handler: Box.box(home!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(user!) },
+        { method: "POST", path: "/greet", handler: Box.box(greet!) },
     ],
 }
 
@@ -36,9 +38,16 @@ init! = || {
 }
 
 home! : Request => Response
-home! = |req| {
-    model = Box.unbox(req.model)
-    text(200, "${model.greeting}, world!")
+home! = |req| Res.text(200, "${Box.unbox(req.model).greeting}, world!")
+
+greet! : Request => Response
+greet! = |req| {
+    parsed : Try({ name : Str }, _)
+    parsed = Req.json(req)
+    match parsed {
+        Ok(body) => Res.json(200, { message: "hello, ${body.name}" })
+        Err(_) => Res.text(400, "expected {\"name\":...}")
+    }
 }
 ```
 
@@ -98,6 +107,21 @@ Rust host (staticlib linked by `roc build`)
 SQL parameters and cells use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
 
+## Helpers (`pf.Res`, `pf.Req`)
+
+Optional sugar over the structural request/response records:
+
+- **Res**: `text`, `html`, `json` (builtin derive-style `Json.to_str` — works
+  on your own records), `bytes`, `no_content`, `redirect`, `with_header`, and
+  `from_try : Try(Response, Response) -> Response` for merging error paths.
+- **Req**: `param`, `header` (case-insensitive), `query_params` / `query`
+  (percent-decoded, `+` as space), `body_str`, `json` (typed `Json.parse` of
+  the body), `form` (urlencoded).
+
+Fallible `Req` helpers return `Try`; delegate to an inner
+`Request => Try(Response, Response)` function where `?` works, then merge with
+`Res.from_try`.
+
 ## Building
 
 Prerequisites:
@@ -118,6 +142,7 @@ installs it as the platform's target input, and links the app with
 ## Tests
 
 ```sh
+roc test platform/main.roc          # Res/Req helper expects
 cargo test -p tower-platform-host   # FFI round-trips under a counting allocator
 cargo test -p tower-platform-e2e    # real server over HTTP (needs ROC)
 ```

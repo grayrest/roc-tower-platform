@@ -1,6 +1,8 @@
 app [Model, main] { pf: platform "../../platform/main.roc" }
 
 import pf.Host
+import pf.Res
+import pf.Req
 
 Model : { greeting : Str, started_at_ms : U64 }
 
@@ -33,6 +35,7 @@ main = |{}| {
         { method: "GET", path: "/", handler: Box.box(home!) },
         { method: "GET", path: "/users/{id}", handler: Box.box(user!) },
         { method: "POST", path: "/echo", handler: Box.box(echo!) },
+        { method: "POST", path: "/greet", handler: Box.box(greet!) },
         { method: "GET", path: "/uptime", handler: Box.box(uptime!) },
         { method: "GET", path: "/random", handler: Box.box(random!) },
         { method: "GET", path: "/proxy", handler: Box.box(proxy!) },
@@ -53,36 +56,40 @@ init! = || {
 home! : Request => Response
 home! = |req| {
     model = Box.unbox(req.model)
-    text(200, "${model.greeting}, world!")
+    Res.text(200, "${model.greeting}, world!")
 }
 
 user! : Request => Response
 user! = |req| {
-    id = match req.params.first() {
-        Ok(param) => param.value
+    id = match Req.param(req, "id") {
+        Ok(value) => value
         Err(_) => "unknown"
     }
-    text(200, "user ${id}")
+    Res.text(200, "user ${id}")
 }
 
 echo! : Request => Response
-echo! = |req| {
-    status: 200,
-    headers: [{ name: "content-type", value: "application/octet-stream" }],
-    body: req.body,
+echo! = |req| Res.bytes(200, "application/octet-stream", req.body)
+
+## POST a JSON body like {"name":"Ada"} and get JSON back.
+greet! : Request => Response
+greet! = |req| {
+    parsed : Try({ name : Str }, _)
+    parsed = Req.json(req)
+    match parsed {
+        Ok(body) => Res.json(200, { message: "hello, ${body.name}" })
+        Err(_) => Res.text(400, "expected a JSON body like {\"name\":\"Ada\"}")
+    }
 }
 
 uptime! : Request => Response
 uptime! = |req| {
     model = Box.unbox(req.model)
-    text(200, "uptime_ms=${(Host.now_ms!() - model.started_at_ms).to_str()}")
+    Res.text(200, "uptime_ms=${(Host.now_ms!() - model.started_at_ms).to_str()}")
 }
 
 random! : Request => Response
-random! = |_req| {
-    bytes = Host.random_bytes!(8)
-    text(200, "random=${Str.inspect(bytes)}")
-}
+random! = |_req| Res.text(200, "random=${Str.inspect(Host.random_bytes!(8))}")
 
 proxy! : Request => Response
 proxy! = |_req| {
@@ -94,8 +101,8 @@ proxy! = |_req| {
         timeout_ms: 5000,
     })
     match result {
-        Ok(response) => text(200, "proxied: status=${response.status.to_str()} body=${Str.from_utf8_lossy(response.body)}")
-        Err(message) => text(502, "proxy failed: ${message}")
+        Ok(response) => Res.text(200, "proxied: status=${response.status.to_str()} body=${Str.from_utf8_lossy(response.body)}")
+        Err(message) => Res.text(502, "proxy failed: ${message}")
     }
 }
 
@@ -116,15 +123,8 @@ db! = |_req| {
                 }
                 Err(_) => "?"
             }
-            text(200, "visits=${count}")
+            Res.text(200, "visits=${count}")
         }
-        Err(message) => text(500, "db error: ${message}")
+        Err(message) => Res.text(500, "db error: ${message}")
     }
-}
-
-text : U16, Str -> Response
-text = |status, message| {
-    status: status,
-    headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-    body: Str.to_utf8(message),
 }
