@@ -1,32 +1,18 @@
-//! Minimal HTTP server for spike 3: requests are matched against the Roc
-//! app's route table (exact path + method for now) and dispatched to the
-//! matching boxed handler on the blocking pool.
+//! HTTP server: accept loop, per-connection service, graceful shutdown.
 
-use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
-use bytes::Bytes;
-use http_body_util::Full;
-use hyper::body::Incoming;
-use hyper::service::service_fn;
-use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
+use hyper_util::server::graceful::GracefulShutdown;
+use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 
-use crate::{call_handler, Route};
+use crate::middleware::AppService;
 
-const DEFAULT_PORT: u16 = 8000;
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-pub fn run(routes: Vec<Route>) -> i32 {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .init();
-
+pub fn run(service: AppService, port: u16, route_count: usize) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
         Ok(runtime) => runtime,
         Err(err) => {
@@ -34,15 +20,11 @@ pub fn run(routes: Vec<Route>) -> i32 {
             return 1;
         }
     };
-    runtime.block_on(serve(Arc::new(routes)))
+    runtime.block_on(serve(service, port, route_count))
 }
 
-async fn serve(routes: Arc<Vec<Route>>) -> i32 {
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|raw| raw.parse().ok())
-        .unwrap_or(DEFAULT_PORT);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+async fn serve(service: AppService, port: u16, route_count: usize) -> i32 {
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(err) => {
@@ -50,58 +32,46 @@ async fn serve(routes: Arc<Vec<Route>>) -> i32 {
             return 1;
         }
     };
-    tracing::info!(
-        "listening on http://{addr} with {} route(s)",
-        routes.len()
-    );
+    tracing::info!("listening on http://{addr} with {route_count} route(s)");
+
+    let graceful = GracefulShutdown::new();
+    let hyper_service = TowerToHyperService::new(service);
 
     loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(err) => {
-                tracing::warn!("accept error: {err}");
-                continue;
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (stream, _) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(err) => {
+                        tracing::warn!("accept error: {err}");
+                        continue;
+                    }
+                };
+                let io = TokioIo::new(stream);
+                let connection_service = hyper_service.clone();
+                let builder = ConnBuilder::new(TokioExecutor::new());
+                let connection = builder.serve_connection(io, connection_service).into_owned();
+                let watched = graceful.watch(connection);
+                tokio::spawn(async move {
+                    if let Err(err) = watched.await {
+                        tracing::debug!("connection error: {err}");
+                    }
+                });
             }
-        };
-        let io = TokioIo::new(stream);
-        let routes = routes.clone();
-        tokio::spawn(async move {
-            let service = service_fn(move |req: Request<Incoming>| {
-                let routes = routes.clone();
-                async move { Ok::<_, Infallible>(respond(&routes, req).await) }
-            });
-            if let Err(err) = ConnBuilder::new(TokioExecutor::new())
-                .serve_connection(io, service)
-                .await
-            {
-                tracing::debug!("connection error: {err}");
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutdown signal received, draining connections");
+                break;
             }
-        });
-    }
-}
-
-async fn respond(routes: &[Route], req: Request<Incoming>) -> Response<Full<Bytes>> {
-    let method = req.method().as_str();
-    let path = req.uri().path();
-
-    let Some(route) = routes
-        .iter()
-        .find(|route| route.path == path && route.method == method)
-    else {
-        let mut response = Response::new(Full::new(Bytes::from_static(b"not found")));
-        *response.status_mut() = StatusCode::NOT_FOUND;
-        return response;
-    };
-
-    let handler = route.handler;
-    let request_text = path.to_owned();
-    match tokio::task::spawn_blocking(move || call_handler(handler, &request_text)).await {
-        Ok(body) => Response::new(Full::new(Bytes::from(body))),
-        Err(err) => {
-            tracing::error!("handler task failed: {err}");
-            let mut response = Response::new(Full::new(Bytes::from_static(b"internal error")));
-            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            response
         }
     }
+
+    tokio::select! {
+        _ = graceful.shutdown() => {
+            tracing::info!("all connections drained");
+        }
+        _ = tokio::time::sleep(SHUTDOWN_GRACE) => {
+            tracing::warn!("shutdown grace period expired, closing remaining connections");
+        }
+    }
+    0
 }

@@ -811,6 +811,33 @@ impl<T: core::fmt::Debug, const ELEMENTS_REFCOUNTED: bool> core::fmt::Debug for 
     }
 }
 
+/// Element type for __AnonStruct_4dc83b5d9c0c77ea
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct4dc83b5d9c0c77ea {
+    pub routes: RocList<AnonStruct5c679ee432c3d89b>,
+    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>,
+}
+
+/// Element type for __AnonStruct_4dc83b5d9c0c77ea
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct4dc83b5d9c0c77ea {
+    pub routes: RocList<AnonStruct5c679ee432c3d89b>,
+    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStruct4dc83b5d9c0c77ea>() == 48, "AnonStruct4dc83b5d9c0c77ea size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStruct4dc83b5d9c0c77ea>() == 8, "AnonStruct4dc83b5d9c0c77ea alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStruct4dc83b5d9c0c77ea>() == 24, "AnonStruct4dc83b5d9c0c77ea size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStruct4dc83b5d9c0c77ea>() == 4, "AnonStruct4dc83b5d9c0c77ea alignment mismatch");
+
 /// Element type for __AnonStruct_5c679ee432c3d89b
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -840,11 +867,303 @@ const _: () = assert!(core::mem::size_of::<AnonStruct5c679ee432c3d89b>() == 28, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct5c679ee432c3d89b>() == 4, "AnonStruct5c679ee432c3d89b alignment mismatch");
 
+/// Element type for __AnonStruct_acc65a7d2aa0516b
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructAcc65a7d2aa0516b {
+    pub body: RocListWith<u8, false>,
+    pub headers: RocList<AnonStruct82a96c5d55d63488>,
+    pub method: RocStr,
+    pub params: RocList<AnonStruct82a96c5d55d63488>,
+    pub path: RocStr,
+    pub query: RocStr,
+}
+
+/// Element type for __AnonStruct_acc65a7d2aa0516b
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructAcc65a7d2aa0516b {
+    pub body: RocListWith<u8, false>,
+    pub headers: RocList<AnonStruct82a96c5d55d63488>,
+    pub method: RocStr,
+    pub params: RocList<AnonStruct82a96c5d55d63488>,
+    pub path: RocStr,
+    pub query: RocStr,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStructAcc65a7d2aa0516b>() == 144, "AnonStructAcc65a7d2aa0516b size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStructAcc65a7d2aa0516b>() == 8, "AnonStructAcc65a7d2aa0516b alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStructAcc65a7d2aa0516b>() == 72, "AnonStructAcc65a7d2aa0516b size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStructAcc65a7d2aa0516b>() == 4, "AnonStructAcc65a7d2aa0516b alignment mismatch");
+
+/// Element type for __AnonStruct_82a96c5d55d63488
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct82a96c5d55d63488 {
+    pub name: RocStr,
+    pub value: RocStr,
+}
+
+/// Element type for __AnonStruct_82a96c5d55d63488
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct82a96c5d55d63488 {
+    pub name: RocStr,
+    pub value: RocStr,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStruct82a96c5d55d63488>() == 48, "AnonStruct82a96c5d55d63488 size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStruct82a96c5d55d63488>() == 8, "AnonStruct82a96c5d55d63488 alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStruct82a96c5d55d63488>() == 24, "AnonStruct82a96c5d55d63488 size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStruct82a96c5d55d63488>() == 4, "AnonStruct82a96c5d55d63488 alignment mismatch");
+
+/// Element type for __AnonStruct_a14cd3b7d5755441
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructA14cd3b7d5755441 {
+    pub body: RocListWith<u8, false>,
+    pub headers: RocList<AnonStruct82a96c5d55d63488>,
+    pub status: u16,
+}
+
+/// Element type for __AnonStruct_a14cd3b7d5755441
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructA14cd3b7d5755441 {
+    pub body: RocListWith<u8, false>,
+    pub headers: RocList<AnonStruct82a96c5d55d63488>,
+    pub status: u16,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStructA14cd3b7d5755441>() == 56, "AnonStructA14cd3b7d5755441 size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStructA14cd3b7d5755441>() == 8, "AnonStructA14cd3b7d5755441 alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStructA14cd3b7d5755441>() == 28, "AnonStructA14cd3b7d5755441 size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStructA14cd3b7d5755441>() == 4, "AnonStructA14cd3b7d5755441 alignment mismatch");
+
+/// Element type for __AnonStruct_a965a4c67b4c5d53
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructA965a4c67b4c5d53 {
+    pub dir: RocStr,
+    pub url_prefix: RocStr,
+}
+
+/// Element type for __AnonStruct_a965a4c67b4c5d53
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructA965a4c67b4c5d53 {
+    pub dir: RocStr,
+    pub url_prefix: RocStr,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStructA965a4c67b4c5d53>() == 48, "AnonStructA965a4c67b4c5d53 size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStructA965a4c67b4c5d53>() == 8, "AnonStructA965a4c67b4c5d53 alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStructA965a4c67b4c5d53>() == 24, "AnonStructA965a4c67b4c5d53 size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStructA965a4c67b4c5d53>() == 4, "AnonStructA965a4c67b4c5d53 alignment mismatch");
+
+/// Tag discriminant for CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag {
+    Compression = 0,
+    ConcurrencyLimit = 1,
+    CorsAllowOrigins = 2,
+    CorsPermissive = 3,
+    MaxBodyBytes = 4,
+    Port = 5,
+    ServeFiles = 6,
+    TimeoutMs = 7,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayload {
+    pub compression: [u8; 0],
+    pub concurrency_limit: core::mem::ManuallyDrop<u64>,
+    pub cors_allow_origins: core::mem::ManuallyDrop<RocList<RocStr>>,
+    pub cors_permissive: [u8; 0],
+    pub max_body_bytes: core::mem::ManuallyDrop<u64>,
+    pub port: core::mem::ManuallyDrop<u16>,
+    pub serve_files: core::mem::ManuallyDrop<AnonStructA965a4c67b4c5d53>,
+    pub timeout_ms: core::mem::ManuallyDrop<u64>,
+}
+
+#[cfg(target_pointer_width = "32")]
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayloadAlignment;
+
+/// Tag union: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
+    pub _payload_alignment: [CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayloadAlignment; 0],
+    pub payload: [u8; 24],
+    pub tag: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag,
+}
+
+/// Tag union: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
+    pub payload: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayload,
+    pub tag: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag,
+}
+
+impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_concurrency_limit(&self) -> u64 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_concurrency_limit(&self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.concurrency_limit) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_cors_allow_origins(&self) -> RocList<RocStr> {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocList<RocStr>) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_cors_allow_origins(&self) -> RocList<RocStr> {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.cors_allow_origins) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_max_body_bytes(&self) -> u64 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_max_body_bytes(&self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.max_body_bytes) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_port(&self) -> u16 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const u16) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_port(&self) -> u16 {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.port) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_serve_files(&self) -> AnonStructA965a4c67b4c5d53 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructA965a4c67b4c5d53) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_serve_files(&self) -> AnonStructA965a4c67b4c5d53 {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.serve_files) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_timeout_ms(&self) -> u64 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_timeout_ms(&self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.timeout_ms) }
+    }
+
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 56, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 8, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs alignment mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::offset_of!(CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs, tag) == 48, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs tag offset mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 32, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 8, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::offset_of!(CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs, tag) == 24, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs tag offset mismatch");
+
 // Platform Type Aliases
 
-pub type RoutesForHost = AnonStruct5c679ee432c3d89b;
+pub type MainForHost = AnonStruct4dc83b5d9c0c77ea;
+pub type MainForHostRoutes = AnonStruct5c679ee432c3d89b;
+pub type MainForHostSettings = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs;
+pub type MainForHostSettingsPayload = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayload;
+pub type MainForHostSettingsTag = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag;
+pub type MainForHostSettingsServeFiles = AnonStructA965a4c67b4c5d53;
+pub type CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsServeFiles = AnonStructA965a4c67b4c5d53;
 
 // Generated Refcount Helpers
+
+impl AnonStruct4dc83b5d9c0c77ea {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        {
+            let list = value.routes;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+        {
+            let list = value.settings;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.routes.incref(amount); }
+        unsafe { value.settings.incref(amount); }
+    }
+}
 
 impl AnonStruct5c679ee432c3d89b {
     /// Recursively decrement Roc-owned fields.
@@ -868,6 +1187,195 @@ impl AnonStruct5c679ee432c3d89b {
         unsafe { incref_erased_callable(value.handler, amount); }
         unsafe { value.method.incref(amount); }
         unsafe { value.path.incref(amount); }
+    }
+}
+
+impl AnonStructAcc65a7d2aa0516b {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.body.decref(roc_host); }
+        {
+            let list = value.headers;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+        unsafe { value.method.decref(roc_host); }
+        {
+            let list = value.params;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+        unsafe { value.path.decref(roc_host); }
+        unsafe { value.query.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.body.incref(amount); }
+        unsafe { value.headers.incref(amount); }
+        unsafe { value.method.incref(amount); }
+        unsafe { value.params.incref(amount); }
+        unsafe { value.path.incref(amount); }
+        unsafe { value.query.incref(amount); }
+    }
+}
+
+impl AnonStruct82a96c5d55d63488 {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.name.decref(roc_host); }
+        unsafe { value.value.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.name.incref(amount); }
+        unsafe { value.value.incref(amount); }
+    }
+}
+
+impl AnonStructA14cd3b7d5755441 {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.body.decref(roc_host); }
+        {
+            let list = value.headers;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.body.incref(amount); }
+        unsafe { value.headers.incref(amount); }
+    }
+}
+
+impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
+    /// Recursively decrement Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted payload.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = roc_host;
+        match value.tag {
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Compression => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
+                let payload = value.payload_cors_allow_origins();
+                {
+                    let list = payload;
+                    if list.has_one_ref() {
+                        for item_ref in list.allocation_items() {
+                            let item = *item_ref;
+                                unsafe { item.decref(roc_host); }
+                        }
+                    }
+                    unsafe { list.decref(roc_host); }
+                }
+            },
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Port => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ServeFiles => {
+                let payload = value.payload_serve_files();
+                unsafe { payload.decref(roc_host); }
+            },
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
+        }
+    }
+
+    /// Increment Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = amount;
+        match value.tag {
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Compression => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
+                let payload = value.payload_cors_allow_origins();
+                unsafe { payload.incref(amount); }
+            },
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Port => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ServeFiles => {
+                let payload = value.payload_serve_files();
+                unsafe { payload.incref(amount); }
+            },
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
+        }
+    }
+}
+
+impl AnonStructA965a4c67b4c5d53 {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.dir.decref(roc_host); }
+        unsafe { value.url_prefix.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.dir.incref(amount); }
+        unsafe { value.url_prefix.incref(amount); }
     }
 }
 
@@ -1031,7 +1539,7 @@ pub fn make_roc_host(env: *mut c_void) -> RocHost {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    /// Entrypoint: routes_for_host
-    pub fn roc_routes() -> RocList<AnonStruct5c679ee432c3d89b>;
+    /// Entrypoint: main_for_host
+    pub fn roc_app() -> AnonStruct4dc83b5d9c0c77ea;
 
 }
