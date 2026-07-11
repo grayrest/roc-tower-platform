@@ -160,13 +160,15 @@ pub extern "C" fn roc_http_send(args: abi::HostHttpSendArgs) -> abi::HostHttpSen
     }
 }
 
+type HttpResponseParts = (u16, Vec<(String, String)>, Vec<u8>);
+
 fn send_request(
     method: String,
     url: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     timeout_ms: u64,
-) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+) -> Result<HttpResponseParts, String> {
     let method = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())
         .map_err(|_| format!("invalid HTTP method {method:?}"))?;
     let mut request = http_client().request(method, &url);

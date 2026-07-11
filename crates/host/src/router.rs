@@ -107,16 +107,16 @@ impl RouterInner {
         let method = req.method().clone();
         let path = req.uri().path().to_owned();
 
-        if let Some(router) = self.routers.get(&method) {
-            if let Ok(matched) = router.at(&path) {
-                let handler = *matched.value;
-                let params = matched
-                    .params
-                    .iter()
-                    .map(|(name, value)| (name.to_owned(), value.to_owned()))
-                    .collect();
-                return self.dispatch(handler, params, req).await;
-            }
+        if let Some(router) = self.routers.get(&method)
+            && let Ok(matched) = router.at(&path)
+        {
+            let handler = *matched.value;
+            let params = matched
+                .params
+                .iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+            return self.dispatch(handler, params, req).await;
         }
 
         // Path exists under another method -> 405 with Allow header.
@@ -140,10 +140,10 @@ impl RouterInner {
             return Ok(response);
         }
 
-        if let Some(mount) = &self.serve_files {
-            if let Some(rewritten) = mount.strip_prefix(&path) {
-                return self.serve_file(mount, rewritten, req).await;
-            }
+        if let Some(mount) = &self.serve_files
+            && let Some(rewritten) = mount.strip_prefix(&path)
+        {
+            return self.serve_file(mount, rewritten, req).await;
         }
 
         let mut response = Response::new(AppBody::full("not found"));

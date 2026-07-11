@@ -17,6 +17,24 @@ mod router;
 mod server;
 mod types;
 
+/// In test builds nothing links a Roc app, but code paths referencing the
+/// app entrypoints still need the symbols to exist.
+#[cfg(test)]
+mod test_stubs {
+    #[unsafe(no_mangle)]
+    pub extern "C" fn roc_app() -> crate::abi::AppForHost {
+        unreachable!("roc_app must not be called in unit tests")
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn roc_init() -> crate::abi::InitForHostResult {
+        unreachable!("roc_init must not be called in unit tests")
+    }
+}
+
+#[cfg(test)]
+mod ffi_tests;
+
 use core::ffi::c_void;
 use std::ptr;
 use std::sync::OnceLock;
@@ -56,14 +74,22 @@ pub extern "C" fn roc_realloc(
     abi::DefaultAllocators::roc_realloc(ptr::null_mut(), ptr_, new_length, alignment)
 }
 
+///
+/// # Safety
+/// Called by Roc code through the direct symbol ABI; `bytes` must point to
+/// `len` readable bytes for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_dbg(bytes: *const u8, len: usize) {
+pub unsafe extern "C" fn roc_dbg(bytes: *const u8, len: usize) {
     let message = unsafe { core::slice::from_raw_parts(bytes, len) };
     tracing::debug!(target: "roc", "{}", String::from_utf8_lossy(message));
 }
 
+///
+/// # Safety
+/// Called by Roc code through the direct symbol ABI; `bytes` must point to
+/// `len` readable bytes for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_expect_failed(bytes: *const u8, len: usize) {
+pub unsafe extern "C" fn roc_expect_failed(bytes: *const u8, len: usize) {
     let message = unsafe { core::slice::from_raw_parts(bytes, len) };
     tracing::error!(target: "roc", "expect failed: {}", String::from_utf8_lossy(message));
 }
@@ -72,8 +98,12 @@ pub extern "C" fn roc_expect_failed(bytes: *const u8, len: usize) {
 /// callable ABI gives the host no way to unwind out of a crashed interpreter
 /// call, so a supervisor (systemd, container runtime) must restart the server.
 /// Roc apps should return error responses instead of crashing.
+///
+/// # Safety
+/// Called by Roc code through the direct symbol ABI; `bytes` must point to
+/// `len` readable bytes for the duration of the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_crashed(bytes: *const u8, len: usize) {
+pub unsafe extern "C" fn roc_crashed(bytes: *const u8, len: usize) {
     let message = unsafe { core::slice::from_raw_parts(bytes, len) };
     tracing::error!(target: "roc", "crash: {}", String::from_utf8_lossy(message));
     eprintln!("[ROC CRASHED] {}", String::from_utf8_lossy(message));
@@ -81,9 +111,16 @@ pub extern "C" fn roc_crashed(bytes: *const u8, len: usize) {
 }
 
 /// Process entrypoint. The Roc-built executable links this static library and
-/// starts here.
+/// starts here. Compiled out of test builds, where the test harness owns `main`.
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
+    run_host()
+}
+
+/// Load the Roc app, initialize its Model, assemble the middleware stack, and
+/// serve until shutdown.
+pub fn run_host() -> i32 {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
