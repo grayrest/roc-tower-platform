@@ -22,6 +22,18 @@ Response : {
     body : List(U8),
 }
 
+## A custom extractor: any nominal type with a from_request method can be a
+## handler argument. Rejections (Err) are returned as the response.
+UserId := [UserId(Str)].{
+    from_request : Request -> Try(UserId, Response)
+    from_request = |req| {
+        match Req.param(req, "id") {
+            Ok(value) => Ok(UserId.UserId(value))
+            Err(_) => Err(Res.text(400, "missing id path parameter"))
+        }
+    }
+}
+
 main = |{}| {
     settings: [
         Port(8000),
@@ -32,11 +44,11 @@ main = |{}| {
     ],
     init!: init!,
     routes: [
-        { method: "GET", path: "/", handler: Box.box(home!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(user!) },
-        { method: "POST", path: "/echo", handler: Box.box(echo!) },
-        { method: "POST", path: "/greet", handler: Box.box(greet!) },
-        { method: "GET", path: "/uptime", handler: Box.box(uptime!) },
+        { method: "GET", path: "/", handler: Box.box(Req.args1(home!)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Req.args1(user!)) },
+        { method: "POST", path: "/echo", handler: Box.box(Req.args1(echo!)) },
+        { method: "POST", path: "/greet", handler: Box.box(Req.args2(greet!)) },
+        { method: "GET", path: "/uptime", handler: Box.box(Req.args1(uptime!)) },
         { method: "GET", path: "/random", handler: Box.box(random!) },
         { method: "GET", path: "/proxy", handler: Box.box(proxy!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
@@ -53,39 +65,27 @@ init! = || {
     Ok({ greeting: greeting, started_at_ms: Host.now_ms!() })
 }
 
-home! : Request => Response
-home! = |req| {
-    model = Box.unbox(req.model)
-    Res.text(200, "${model.greeting}, world!")
-}
+home! : Req.Model(Model) => Response
+home! = |model_arg| Res.text(200, "${model_arg.value().greeting}, world!")
 
-user! : Request => Response
-user! = |req| {
-    id = match Req.param(req, "id") {
-        Ok(value) => value
-        Err(_) => "unknown"
-    }
+user! : UserId => Response
+user! = |id_arg| {
+    id = match id_arg { UserId.UserId(value) => value }
     Res.text(200, "user ${id}")
 }
 
-echo! : Request => Response
-echo! = |req| Res.bytes(200, "application/octet-stream", req.body)
+echo! : Req.Body => Response
+echo! = |body_arg| Res.bytes(200, "application/octet-stream", body_arg.value())
 
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
-greet! : Request => Response
-greet! = |req| {
-    parsed : Try({ name : Str }, _)
-    parsed = Req.json(req)
-    match parsed {
-        Ok(body) => Res.json(200, { message: "hello, ${body.name}" })
-        Err(_) => Res.text(400, "expected a JSON body like {\"name\":\"Ada\"}")
-    }
+greet! : Req.JsonBody({ name : Str }), Req.Model(Model) => Response
+greet! = |body_arg, model_arg| {
+    Res.json(200, { message: "${model_arg.value().greeting}, ${body_arg.value().name}" })
 }
 
-uptime! : Request => Response
-uptime! = |req| {
-    model = Box.unbox(req.model)
-    Res.text(200, "uptime_ms=${(Host.now_ms!() - model.started_at_ms).to_str()}")
+uptime! : Req.Model(Model) => Response
+uptime! = |model_arg| {
+    Res.text(200, "uptime_ms=${(Host.now_ms!() - model_arg.value().started_at_ms).to_str()}")
 }
 
 random! : Request => Response

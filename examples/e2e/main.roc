@@ -23,6 +23,17 @@ Response : {
     body : List(U8),
 }
 
+## App-defined extractor: pulls the {id} path parameter.
+UserId := [UserId(Str)].{
+    from_request : Request -> Try(UserId, Response)
+    from_request = |req| {
+        match Req.param(req, "id") {
+            Ok(value) => Ok(UserId.UserId(value))
+            Err(_) => Err(Res.text(400, "missing id path parameter"))
+        }
+    }
+}
+
 main = |{}| {
     settings: [
         Compression,
@@ -34,17 +45,18 @@ main = |{}| {
     init!: init!,
     routes: [
         { method: "GET", path: "/", handler: Box.box(root!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(user!) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Req.args1(user!)) },
         { method: "POST", path: "/echo", handler: Box.box(echo!) },
         { method: "GET", path: "/big", handler: Box.box(big!) },
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(helper_greet!) },
-        { method: "POST", path: "/helper/form", handler: Box.box(helper_form!) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Req.args1(helper_greet!)) },
+        { method: "POST", path: "/helper/form", handler: Box.box(Req.args1(helper_form!)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
-        { method: "GET", path: "/helper/header", handler: Box.box(helper_header!) },
+        { method: "GET", path: "/helper/header", handler: Box.box(Req.args1(helper_header!)) },
+        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Req.args3(helper_combo!)) },
     ],
 }
 
@@ -64,12 +76,9 @@ init! = || {
 root! : Request => Response
 root! = |_req| text(200, "root ok")
 
-user! : Request => Response
-user! = |req| {
-    id = match req.params.first() {
-        Ok(param) => param.value
-        Err(_) => "unknown"
-    }
+user! : UserId => Response
+user! = |id_arg| {
+    id = match id_arg { UserId.UserId(value) => value }
     text(200, "user ${id}")
 }
 
@@ -128,25 +137,13 @@ text = |status, message| {
     body: Str.to_utf8(message),
 }
 
-helper_greet! : Request => Response
-helper_greet! = |req| {
-    parsed : Try({ name : Str }, _)
-    parsed = Req.json(req)
-    match parsed {
-        Ok(body) => Res.json(200, { message: "hello, ${body.name}" })
-        Err(_) => Res.text(400, "bad json")
-    }
-}
+helper_greet! : Req.JsonBody({ name : Str }) => Response
+helper_greet! = |body_arg| Res.json(200, { message: "hello, ${body_arg.value().name}" })
 
-helper_form! : Request => Response
-helper_form! = |req| {
-    match Req.form(req) {
-        Ok(fields) => {
-            rendered = fields.map(|field| "${field.name}=${field.value}")
-            Res.text(200, Str.join_with(rendered, ";"))
-        }
-        Err(_) => Res.text(400, "bad form")
-    }
+helper_form! : Req.FormBody => Response
+helper_form! = |form_arg| {
+    rendered = form_arg.value().map(|field| "${field.name}=${field.value}")
+    Res.text(200, Str.join_with(rendered, ";"))
 }
 
 helper_q! : Request => Response
@@ -163,10 +160,20 @@ helper_q_impl! = |req| {
 helper_redirect! : Request => Response
 helper_redirect! = |_req| Res.redirect(302, "/")
 
-helper_header! : Request => Response
-helper_header! = |req| {
-    match Req.header(req, "x-custom") {
+helper_header! : Req.Headers => Response
+helper_header! = |headers_arg| {
+    match headers_arg.get("x-custom") {
         Ok(value) => Res.text(200, "x-custom=${value}")
         Err(_) => Res.text(400, "missing header")
     }
+}
+
+helper_combo! : UserId, Req.QueryParams, Req.Model(Model) => Response
+helper_combo! = |id_arg, query_arg, model_arg| {
+    id = match id_arg { UserId.UserId(value) => value }
+    q = match query_arg.get("q") {
+        Ok(value) => value
+        Err(_) => "none"
+    }
+    Res.text(200, "id=${id};q=${q};prefix=${model_arg.value().prefix}")
 }

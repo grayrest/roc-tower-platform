@@ -350,6 +350,36 @@ async fn helper_redirect_sets_location() {
 }
 
 #[tokio::test]
+async fn args3_extracts_path_query_and_model() {
+    let base = base_url();
+    let body = client()
+        .get(format!("{base}/helper/combo/7?q=zed"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "id=7;q=zed;prefix=from-env");
+}
+
+#[tokio::test]
+async fn extractor_rejection_returns_400_with_platform_message() {
+    let base = base_url();
+    let response = client()
+        .post(format!("{base}/helper/greet"))
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+    assert_eq!(
+        response.text().await.unwrap(),
+        "request body is not valid JSON for the expected shape"
+    );
+}
+
+#[tokio::test]
 async fn helper_header_lookup_is_case_insensitive() {
     let base = base_url();
     let body = client()

@@ -23,8 +23,8 @@ main = |{}| {
     settings: [Port(8000), Compression, CorsPermissive],
     init!: init!,
     routes: [
-        { method: "GET", path: "/", handler: Box.box(home!) },
-        { method: "POST", path: "/greet", handler: Box.box(greet!) },
+        { method: "GET", path: "/", handler: Box.box(Req.args1(home!)) },
+        { method: "POST", path: "/greet", handler: Box.box(Req.args2(greet!)) },
     ],
 }
 
@@ -37,17 +37,14 @@ init! = || {
     Ok({ greeting: greeting })
 }
 
-home! : Request => Response
-home! = |req| Res.text(200, "${Box.unbox(req.model).greeting}, world!")
+home! : Req.Model(Model) => Response
+home! = |model_arg| Res.text(200, "${model_arg.value().greeting}, world!")
 
-greet! : Request => Response
-greet! = |req| {
-    parsed : Try({ name : Str }, _)
-    parsed = Req.json(req)
-    match parsed {
-        Ok(body) => Res.json(200, { message: "hello, ${body.name}" })
-        Err(_) => Res.text(400, "expected {\"name\":...}")
-    }
+## Handler arguments are extracted from the request by type: a bad JSON body
+## never reaches the handler — the extractor rejects it with a 400.
+greet! : Req.JsonBody({ name : Str }), Req.Model(Model) => Response
+greet! = |body_arg, model_arg| {
+    Res.json(200, { message: "${model_arg.value().greeting}, ${body_arg.value().name}" })
 }
 ```
 
@@ -107,9 +104,62 @@ Rust host (staticlib linked by `roc build`)
 SQL parameters and cells use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
 
+## Handlers and extractors (`Req.argsN`)
+
+The blessed handler style: declare typed arguments, and each argument type's
+`from_request` method pulls it out of the request. Wrap the handler with
+`Req.args1` … `Req.args5` (matching its arity) in the route list:
+
+```roc
+{ method: "GET", path: "/combo/{id}", handler: Box.box(Req.args3(combo!)) }
+
+combo! : UserId, Req.QueryParams, Req.Model(Model) => Response
+combo! = |id_arg, query_arg, model_arg| ...
+```
+
+Arguments extract left to right; the first `Err` rejection is returned as the
+response and the handler never runs.
+
+Platform extractors (all under `Req`):
+
+| Type | Extracts | Rejects |
+| --- | --- | --- |
+| `Req.Body` | raw body bytes | never |
+| `Req.BodyStr` | body as UTF-8 text | 400 on invalid UTF-8 |
+| `Req.JsonBody(a)` | body decoded as JSON into `a` | 400 on bad JSON |
+| `Req.FormBody` | urlencoded form pairs | 400 on invalid UTF-8 |
+| `Req.QueryParams` | decoded query pairs | never |
+| `Req.Headers` | request headers | never |
+| `Req.Model(m)` | the shared app model, unboxed | never |
+
+Each wraps its payload: `.value()` returns it, and `Req.FormBody`,
+`Req.QueryParams`, and `Req.Headers` also have `.get(name)` (headers
+case-insensitive).
+
+Custom extractors are nominal types with a `from_request` method — this is
+how path parameters get names:
+
+```roc
+UserId := [UserId(Str)].{
+    from_request : Request -> Try(UserId, Response)
+    from_request = |req| {
+        match Req.param(req, "id") {
+            Ok(value) => Ok(UserId.UserId(value))
+            Err(_) => Err(Res.text(400, "missing id path parameter"))
+        }
+    }
+}
+```
+
+Raw handlers (`Request => Response`, no wrapper) remain fully supported —
+see `random!`, `proxy!`, and `db!` in the hello example.
+
+Note: multi-argument handler *types* are written `(a, b => resp)` — the arrow
+inside the parens. `(a, b) => resp` is a function taking one tuple.
+
 ## Helpers (`pf.Res`, `pf.Req`)
 
-Optional sugar over the structural request/response records:
+Sugar over the structural request/response records:
 
 - **Res**: `text`, `html`, `json` (builtin derive-style `Json.to_str` — works
   on your own records), `bytes`, `no_content`, `redirect`, `with_header`, and
@@ -118,9 +168,9 @@ Optional sugar over the structural request/response records:
   (percent-decoded, `+` as space), `body_str`, `json` (typed `Json.parse` of
   the body), `form` (urlencoded).
 
-Fallible `Req` helpers return `Try`; delegate to an inner
-`Request => Try(Response, Response)` function where `?` works, then merge with
-`Res.from_try`.
+Fallible `Req` helpers return `Try`; inside a raw handler, delegate to an
+inner `Request => Try(Response, Response)` function where `?` works, then
+merge with `Res.from_try`.
 
 ## Building
 
