@@ -886,6 +886,18 @@ unsafe extern "C" {
     pub fn roc_crashed(bytes: *const u8, len: usize);
 }
 
+// Hosted Symbols
+//
+// The platform host must export these symbols with the exact direct C ABI signatures.
+// Refcounted arguments are owned by the hosted function.
+
+#[allow(improper_ctypes)]
+unsafe extern "C" {
+    /// Hosted symbol for Host.now_ms!
+    /// Roc signature: {} => U64
+    pub fn roc_now_ms() -> u64;
+
+}
 
 /// Default memory management functions for Roc platform helpers.
 ///

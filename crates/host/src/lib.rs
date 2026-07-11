@@ -136,6 +136,19 @@ pub fn call_handler(handler: RocHandler, request: &str) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Hosted functions (effects available to Roc code).
+// ---------------------------------------------------------------------------
+
+/// Hosted symbol for `Host.now_ms!` — milliseconds since the Unix epoch.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Process entrypoint. The Roc-built executable links this static library and
 /// starts here.
 #[unsafe(no_mangle)]
