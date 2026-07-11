@@ -1,1 +1,3 @@
 /target
+/platform/targets/*/libhost.a
+/main
