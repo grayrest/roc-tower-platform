@@ -1,6 +1,8 @@
 app [Model, main] { pf: platform "../../platform/main.roc" }
 
 import pf.Host
+import pf.Res
+import pf.Req
 
 # E2E test fixture app. No Port setting so the PORT env var controls binding.
 Model : { prefix : Str, db_path : Str }
@@ -38,6 +40,11 @@ main = |{}| {
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(helper_greet!) },
+        { method: "POST", path: "/helper/form", handler: Box.box(helper_form!) },
+        { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
+        { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
+        { method: "GET", path: "/helper/header", handler: Box.box(helper_header!) },
     ],
 }
 
@@ -119,4 +126,47 @@ text = |status, message| {
     status: status,
     headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
     body: Str.to_utf8(message),
+}
+
+helper_greet! : Request => Response
+helper_greet! = |req| {
+    parsed : Try({ name : Str }, _)
+    parsed = Req.json(req)
+    match parsed {
+        Ok(body) => Res.json(200, { message: "hello, ${body.name}" })
+        Err(_) => Res.text(400, "bad json")
+    }
+}
+
+helper_form! : Request => Response
+helper_form! = |req| {
+    match Req.form(req) {
+        Ok(fields) => {
+            rendered = fields.map(|field| "${field.name}=${field.value}")
+            Res.text(200, Str.join_with(rendered, ";"))
+        }
+        Err(_) => Res.text(400, "bad form")
+    }
+}
+
+helper_q! : Request => Response
+helper_q! = |req| Res.from_try(helper_q_impl!(req))
+
+helper_q_impl! : Request => Try(Response, Response)
+helper_q_impl! = |req| {
+    match Req.query(req, "name") {
+        Ok(name) => Ok(Res.text(200, "q=${name}"))
+        Err(_) => Err(Res.text(400, "missing name"))
+    }
+}
+
+helper_redirect! : Request => Response
+helper_redirect! = |_req| Res.redirect(302, "/")
+
+helper_header! : Request => Response
+helper_header! = |req| {
+    match Req.header(req, "x-custom") {
+        Ok(value) => Res.text(200, "x-custom=${value}")
+        Err(_) => Res.text(400, "missing header")
+    }
 }

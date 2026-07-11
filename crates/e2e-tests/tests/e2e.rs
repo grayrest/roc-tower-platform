@@ -273,6 +273,97 @@ async fn sqlite_effect_persists_across_requests() {
 }
 
 #[tokio::test]
+async fn helper_json_round_trip_and_400() {
+    let base = base_url();
+    let ok = client()
+        .post(format!("{base}/helper/greet"))
+        .body(r#"{"name":"E2E"}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+    assert_eq!(ok.headers()["content-type"], "application/json");
+    assert_eq!(
+        ok.text().await.unwrap(),
+        r#"{"message":"hello, E2E"}"#
+    );
+
+    let bad = client()
+        .post(format!("{base}/helper/greet"))
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+}
+
+#[tokio::test]
+async fn helper_form_post_percent_decodes() {
+    let base = base_url();
+    let body = client()
+        .post(format!("{base}/helper/form"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body("a=1&b=x+y&c=%2F")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "a=1;b=x y;c=/");
+}
+
+#[tokio::test]
+async fn helper_query_bridges_missing_to_400_via_from_try() {
+    let base = base_url();
+    let ok = client()
+        .get(format!("{base}/helper/q?name=zed"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.text().await.unwrap(), "q=zed");
+
+    let missing = client()
+        .get(format!("{base}/helper/q"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 400);
+}
+
+#[tokio::test]
+async fn helper_redirect_sets_location() {
+    let base = base_url();
+    let no_follow = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap();
+    let response = no_follow
+        .get(format!("{base}/helper/redirect"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 302);
+    assert_eq!(response.headers()["location"], "/");
+}
+
+#[tokio::test]
+async fn helper_header_lookup_is_case_insensitive() {
+    let base = base_url();
+    let body = client()
+        .get(format!("{base}/helper/header"))
+        .header("X-CUSTOM", "abc")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(body, "x-custom=abc");
+}
+
+#[tokio::test]
 async fn concurrent_requests_get_correct_isolated_responses() {
     let base = base_url();
     let client = client();
