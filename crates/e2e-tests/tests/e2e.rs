@@ -1,7 +1,8 @@
 //! End-to-end tests: build the fixture Roc app, run the real server binary,
 //! and drive it over HTTP.
 //!
-//! Requires the `roc` binary (env `ROC`, default `~/Repositories/roc/zig-out/bin/roc`).
+//! Requires `just` and the `roc` binary (env `ROC`, default
+//! `~/Repositories/roc/zig-out/bin/roc`).
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -50,16 +51,16 @@ fn server() -> &'static Mutex<Server> {
     SERVER.get_or_init(|| {
         let root = workspace_root();
 
-        let build = Command::new("bash")
-            .arg("scripts/build-example.sh")
+        let build = Command::new("just")
+            .arg("build")
             .arg("examples/e2e/main.roc")
             .env("ROC", roc_binary())
             .current_dir(&root)
             .output()
-            .expect("failed to run build script");
+            .expect("failed to run `just build` (is just installed?)");
         assert!(
             build.status.success(),
-            "build script failed:\n{}\n{}",
+            "`just build` failed:\n{}\n{}",
             String::from_utf8_lossy(&build.stdout),
             String::from_utf8_lossy(&build.stderr),
         );

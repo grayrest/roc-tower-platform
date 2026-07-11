@@ -127,24 +127,30 @@ Fallible `Req` helpers return `Try`; delegate to an inner
 Prerequisites:
 
 - Rust (stable) with cargo
+- [just](https://github.com/casey/just) (`brew install just`)
 - A `roc` binary built from the compiler's `main` branch
   (`zig build roc` with Zig 0.16 in a roc-lang/roc checkout)
 
 ```sh
-ROC=~/Repositories/roc/zig-out/bin/roc ./scripts/build-example.sh examples/hello/main.roc
-./main
+just build              # examples/hello/main.roc by default
+./main                  # or: just run
+
+just build examples/e2e/main.roc
+ROC=/path/to/roc just build   # non-default roc checkout
 ```
 
-The script regenerates the Rust glue (`roc glue`), builds the host staticlib,
-installs it as the platform's target input, and links the app with
-`roc build`.
+`just build` regenerates the Rust glue (`roc glue`), builds the host
+staticlib, installs it as the platform's target input, and links the app with
+`roc build`. Run `just` alone to list all recipes.
 
 ## Tests
 
 ```sh
-roc test platform/main.roc          # Res/Req helper expects
-cargo test -p tower-platform-host   # FFI round-trips under a counting allocator
-cargo test -p tower-platform-e2e    # real server over HTTP (needs ROC)
+just test-roc    # Res/Req helper expects (roc test)
+just test-host   # FFI round-trips under a counting allocator
+just test-e2e    # real server over HTTP
+just test        # all of the above
+just check       # fmt + clippy + all tests
 ```
 
 ## Known limitations
