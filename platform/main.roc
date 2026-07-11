@@ -1,6 +1,6 @@
 platform ""
     requires {
-        main : {} -> {
+        [Model : model] for main : {} -> {
             settings : List([
                 Port(U16),
                 TimeoutMs(U64),
@@ -11,6 +11,7 @@ platform ""
                 ConcurrencyLimit(U64),
                 ServeFiles({ url_prefix : Str, dir : Str }),
             ]),
+            init! : () => Try(model, Str),
             routes : List({
                 method : Str,
                 path : Str,
@@ -21,6 +22,7 @@ platform ""
                     query : Str,
                     headers : List({ name : Str, value : Str }),
                     body : List(U8),
+                    model : Box(model),
                 } => {
                     status : U16,
                     headers : List({ name : Str, value : Str }),
@@ -31,9 +33,17 @@ platform ""
     }
     exposes [Host]
     packages {}
-    provides { "roc_app": main_for_host }
+    provides {
+        "roc_app": app_for_host,
+        "roc_init": init_for_host!,
+    }
     hosted {
+        "roc_log": Host.log!,
+        "roc_env_var": Host.env_var!,
         "roc_now_ms": Host.now_ms!,
+        "roc_random_bytes": Host.random_bytes!,
+        "roc_http_send": Host.http_send!,
+        "roc_sqlite_exec": Host.sqlite_exec!,
     }
     targets: {
         inputs_dir: "targets/",
@@ -43,4 +53,16 @@ platform ""
 
 import Host
 
-main_for_host = |{}| main({})
+app_for_host = |{}| {
+    program = main({})
+    { settings: program.settings, routes: program.routes }
+}
+
+init_for_host! : () => Try(Box(Model), Str)
+init_for_host! = || {
+    program = main({})
+    match (program.init!)() {
+        Ok(model) => Ok(Box.box(model))
+        Err(message) => Err(message)
+    }
+}

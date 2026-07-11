@@ -16,7 +16,7 @@ use tower_http::services::ServeDir;
 
 use crate::body::{AppBody, BoxError};
 use crate::config::{LoadedApp, ServeFilesConfig};
-use crate::roc_call::{call_handler, RequestParts, RocHandler};
+use crate::roc_call::{call_handler, RequestParts, RocHandler, RocModel};
 
 pub struct RocRouter {
     inner: Arc<RouterInner>,
@@ -32,6 +32,7 @@ impl Clone for RocRouter {
 
 struct RouterInner {
     routers: HashMap<Method, matchit::Router<RocHandler>>,
+    model: RocModel,
     max_body_bytes: usize,
     serve_files: Option<ServeFilesMount>,
 }
@@ -42,7 +43,7 @@ struct ServeFilesMount {
 }
 
 impl RocRouter {
-    pub fn new(app: &LoadedApp) -> Result<Self, String> {
+    pub fn new(app: &LoadedApp, model: RocModel) -> Result<Self, String> {
         let mut routers: HashMap<Method, matchit::Router<RocHandler>> = HashMap::new();
         for route in &app.routes {
             routers
@@ -57,6 +58,7 @@ impl RocRouter {
         Ok(Self {
             inner: Arc::new(RouterInner {
                 routers,
+                model,
                 max_body_bytes: app.config.max_body_bytes,
                 serve_files,
             }),
@@ -186,8 +188,10 @@ impl RouterInner {
             body: collected,
         };
 
+        let model = self.model;
         let roc_response =
-            tokio::task::spawn_blocking(move || call_handler(handler, request_parts)).await?;
+            tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts))
+                .await?;
 
         let status = StatusCode::from_u16(roc_response.status).unwrap_or_else(|_| {
             tracing::error!("Roc handler returned invalid status {}", roc_response.status);

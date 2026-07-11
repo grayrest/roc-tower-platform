@@ -10,6 +10,7 @@ mod abi;
 
 mod body;
 mod config;
+mod effects;
 mod middleware;
 mod roc_call;
 mod router;
@@ -79,19 +80,6 @@ pub extern "C" fn roc_crashed(bytes: *const u8, len: usize) {
     std::process::exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Hosted functions (effects available to Roc code).
-// ---------------------------------------------------------------------------
-
-/// Hosted symbol for `Host.now_ms!` — milliseconds since the Unix epoch.
-#[unsafe(no_mangle)]
-pub extern "C" fn roc_now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Process entrypoint. The Roc-built executable links this static library and
 /// starts here.
 #[unsafe(no_mangle)]
@@ -103,6 +91,17 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         )
         .init();
 
+    // The runtime exists before any Roc code runs so that effects (outbound
+    // HTTP) work from init! as well as from handlers.
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to start tokio runtime: {err}");
+            return 1;
+        }
+    };
+    effects::set_runtime(runtime.handle().clone());
+
     let app = match config::load_app() {
         Ok(app) => app,
         Err(err) => {
@@ -111,7 +110,15 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         }
     };
 
-    let router = match router::RocRouter::new(&app) {
+    let model = match roc_call::init_model() {
+        Ok(model) => model,
+        Err(message) => {
+            eprintln!("init! failed: {message}");
+            return 1;
+        }
+    };
+
+    let router = match router::RocRouter::new(&app, model) {
         Ok(router) => router,
         Err(err) => {
             eprintln!("invalid route table: {err}");
@@ -127,5 +134,5 @@ pub extern "C" fn main(_argc: i32, _argv: *const *const u8) -> i32 {
         }
     };
 
-    server::run(service, app.config.port, app.routes.len())
+    server::run(runtime, service, app.config.port, app.routes.len())
 }

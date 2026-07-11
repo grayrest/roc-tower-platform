@@ -12,14 +12,12 @@ use crate::middleware::AppService;
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
-pub fn run(service: AppService, port: u16, route_count: usize) -> i32 {
-    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("failed to start tokio runtime: {err}");
-            return 1;
-        }
-    };
+pub fn run(
+    runtime: tokio::runtime::Runtime,
+    service: AppService,
+    port: u16,
+    route_count: usize,
+) -> i32 {
     runtime.block_on(serve(service, port, route_count))
 }
 

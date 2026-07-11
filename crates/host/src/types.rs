@@ -2,12 +2,14 @@
 //!
 //! The generated struct names are content-hashed, so they change whenever the
 //! platform signature changes. Keep every reference to a hashed name in this
-//! one file.
+//! one file. The generated file's compile-time size/alignment assertions catch
+//! any drift.
 
 use crate::abi;
 
-pub type RocRequest = abi::AnonStructAcc65a7d2aa0516b;
+pub type RocRequest = abi::AnonStructD4ee28fdb1207b43;
 pub type RocResponse = abi::AnonStructA14cd3b7d5755441;
 pub type RocKeyValue = abi::AnonStruct82a96c5d55d63488;
-pub type RocSetting = abi::MainForHostSettings;
-pub type RocSettingTag = abi::MainForHostSettingsTag;
+pub type RocSetting = abi::AppForHostSettings;
+pub type RocSettingTag = abi::AppForHostSettingsTag;
+pub type RocSqliteResultOk = abi::AnonStructF35fa2e5790aa7e2;

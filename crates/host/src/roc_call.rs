@@ -15,6 +15,14 @@ pub struct RocHandler(pub(crate) abi::RocErasedCallable);
 unsafe impl Send for RocHandler {}
 unsafe impl Sync for RocHandler {}
 
+/// The app's Model, produced once by `roc_init`. Held for the process
+/// lifetime; each handler call transfers one retained reference in.
+#[derive(Clone, Copy)]
+pub struct RocModel(pub(crate) abi::RocBox);
+
+unsafe impl Send for RocModel {}
+unsafe impl Sync for RocModel {}
+
 pub struct RequestParts {
     pub method: String,
     pub path: String,
@@ -30,12 +38,12 @@ pub struct ResponseParts {
     pub body: Vec<u8>,
 }
 
-fn roc_str(text: &str) -> abi::RocStr {
+pub(crate) fn roc_str(text: &str) -> abi::RocStr {
     abi::RocStr::from_slice(text.as_bytes(), roc_host())
 }
 
 /// Build a Roc `List({ name : Str, value : Str })` from host pairs.
-fn roc_kv_list(pairs: &[(String, String)]) -> abi::RocList<RocKeyValue> {
+pub(crate) fn roc_kv_list(pairs: &[(String, String)]) -> abi::RocList<RocKeyValue> {
     let host = roc_host();
     unsafe {
         let list = abi::RocList::<RocKeyValue>::allocate(pairs.len(), host);
@@ -49,22 +57,39 @@ fn roc_kv_list(pairs: &[(String, String)]) -> abi::RocList<RocKeyValue> {
     }
 }
 
+/// Call `roc_init` once at startup and unwrap the app's Model.
+pub fn init_model() -> Result<RocModel, String> {
+    let result = unsafe { abi::roc_init() };
+    match result.tag {
+        abi::InitForHostResultTag::Ok => Ok(RocModel(result.payload_ok())),
+        abi::InitForHostResultTag::Err => {
+            let message = result.payload_err();
+            let text = String::from_utf8_lossy(message.as_slice()).into_owned();
+            unsafe { message.decref(roc_host()) };
+            Err(text)
+        }
+    }
+}
+
 /// Invoke a boxed Roc handler.
 ///
-/// Ownership: the args buffer's `RocRequest` is consumed by the callee; the
-/// returned `RocResponse` is owned by us and released after copying out.
-pub fn call_handler(handler: RocHandler, parts: RequestParts) -> ResponseParts {
+/// Ownership: the args buffer (request record carrying one retained Model
+/// reference) is consumed by the callee; the returned `RocResponse` is owned
+/// by us and released after copying out.
+pub fn call_handler(handler: RocHandler, model: RocModel, parts: RequestParts) -> ResponseParts {
     #[repr(C)]
     struct Args {
         arg0: RocRequest,
     }
 
     let host = roc_host();
+    unsafe { abi::incref_box(model.0, 1) };
     let args = Args {
         arg0: RocRequest {
             body: unsafe { abi::RocListWith::<u8, false>::from_slice(&parts.body, host) },
             headers: roc_kv_list(&parts.headers),
             method: roc_str(&parts.method),
+            model: model.0,
             params: roc_kv_list(&parts.params),
             path: roc_str(&parts.path),
             query: roc_str(&parts.query),
