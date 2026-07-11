@@ -12,9 +12,17 @@ target_dir := if os() + "/" + arch() == "macos/aarch64" { "arm64mac" } else if o
 default:
     @just --list
 
-# Regenerate the Rust glue bindings from the platform header.
+# Regenerate the Rust glue bindings from the platform header. Glue is written
+# to a temp dir and copied into place only when the content actually changed,
+# so an unchanged platform doesn't bump the file's mtime and force cargo to
+# recompile the host crate. (`roc glue` always rewrites its output.)
 glue:
-    "{{ roc }}" glue "{{ rust_glue }}" crates/host/src ./platform/main.roc
+    mkdir -p target/glue-tmp
+    "{{ roc }}" glue "{{ rust_glue }}" target/glue-tmp ./platform/main.roc
+    for f in target/glue-tmp/*; do \
+        dest="crates/host/src/$(basename "$f")"; \
+        cmp -s "$f" "$dest" 2>/dev/null || cp "$f" "$dest"; \
+    done
 
 # Build the host staticlib and install it as the platform's target input.
 host: glue
