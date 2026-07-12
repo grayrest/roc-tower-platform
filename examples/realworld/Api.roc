@@ -3,48 +3,64 @@ import pf.Res
 ## RealWorld API conventions: the `{"errors":{"body":[...]}}` error shape,
 ## ISO-8601 timestamps, and slug generation. Pure helpers only.
 Api := [].{
-    ## A RealWorld-shaped error response: `{"errors":{"body":["message"]}}`.
-    ## Unannotated (like `Req.reject`) so the empty effects list unifies with
-    ## the app's effectful Response; the status is pinned to U16 explicitly
-    ## because top-level values can't carry method-constrained numerals.
-    error = |status, message| {
+    ## A field-keyed RealWorld error response: `{"errors":{"<field>":["<message>"]}}`
+    ## (the shape the official Hurl conformance suite asserts on, e.g.
+    ## `errors.username[0] == "can't be blank"`). The key is dynamic, so the
+    ## body is interpolated rather than encoder-derived; field/message are
+    ## app constants, never user input. Unannotated (like `Req.reject`) so
+    ## the empty effects list unifies with the app's effectful Response; the
+    ## status is pinned to U16 explicitly because top-level values can't
+    ## carry method-constrained numerals.
+    field_error = |status, field, message| {
         code : U16
         code = status
-        text : Str
-        text = message
         {
             status: code,
             headers: [{ name: "content-type", value: "application/json" }],
-            body: Json.to_str({ errors: { body: [text] } }).to_utf8(),
+            body: "{\"errors\":{\"${field}\":[\"${message}\"]}}".to_utf8(),
             effects: [],
         }
     }
 
-    ## The same error shape as an effect-free Reply — what a `Must` effect's
-    ## err_handler returns (`Res.Reply` has no effects field).
-    reply = |status, message| {
+    ## The same field-keyed shape as an effect-free Reply — what a `Must`
+    ## effect's err_handler returns (`Res.Reply` has no effects field).
+    reply = |status, field, message| {
         code : U16
         code = status
-        text : Str
-        text = message
         {
             status: code,
             headers: [{ name: "content-type", value: "application/json" }],
-            body: Json.to_str({ errors: { body: [text] } }).to_utf8(),
+            body: "{\"errors\":{\"${field}\":[\"${message}\"]}}".to_utf8(),
         }
     }
 
-    ## 422 Unprocessable Entity — validation failures.
-    unprocessable = |message| Api.error(422, message)
+    ## Generic 4xx/5xx keyed under "body" (malformed payloads, db errors).
+    error = |status, message| Api.field_error(status, "body", message)
 
-    ## 401 Unauthorized — missing or invalid token.
-    unauthorized = || Api.error(401, "unauthorized")
+    ## 422 for a blank required field: `errors.<field> = ["can't be blank"]`.
+    blank = |field| Api.field_error(422, field, "can't be blank")
 
-    ## 403 Forbidden — authenticated, but not allowed (not the author).
-    forbidden = || Api.error(403, "forbidden")
+    ## Validate a required field is non-blank (whitespace counts as blank).
+    nonblank = |field, value| {
+        if value.trim().is_empty() {
+            Err(Api.blank(field))
+        } else {
+            Ok(value)
+        }
+    }
 
-    ## 404 Not Found.
-    not_found = |what| Api.error(404, "${what} not found")
+    ## 401 Unauthorized — no/invalid token: `errors.token = ["is missing"]`.
+    unauthorized = || Api.field_error(401, "token", "is missing")
+
+    ## 401 for wrong login: `errors.credentials = ["invalid"]`, deliberately
+    ## not saying which of email/password was wrong.
+    invalid_credentials = || Api.field_error(401, "credentials", "invalid")
+
+    ## 403 Forbidden — authenticated but not the owner of `what`.
+    forbidden = |what| Api.field_error(403, what, "forbidden")
+
+    ## 404 Not Found: `errors.<what> = ["not found"]`.
+    not_found = |what| Api.field_error(404, what, "not found")
 
     ## Milliseconds since the Unix epoch as `YYYY-MM-DDTHH:MM:SS.mmmZ`.
     ## Civil-from-days per Howard Hinnant's algorithm; valid for all
@@ -138,11 +154,25 @@ expect Api.slugify("Hello --- World!!", 3) == "hello-world-3"
 ## slugify of an all-punctuation title falls back to article-{id}
 expect Api.slugify("!!!", 9) == "article-9"
 
-## the error helper produces the RealWorld errors.body shape
+## field_error produces the field-keyed RealWorld error shape
 expect {
-    response = Api.unprocessable("email has already been taken")
-    response.status == 422 and Str.from_utf8_lossy(response.body) == "{\"errors\":{\"body\":[\"email has already been taken\"]}}"
+    response = Api.field_error(409, "email", "has already been taken")
+    response.status == 409 and Str.from_utf8_lossy(response.body) == "{\"errors\":{\"email\":[\"has already been taken\"]}}"
 }
 
-## not_found names the missing resource
-expect Api.not_found("article").status == 404
+## nonblank rejects whitespace-only values with the can't-be-blank shape
+expect {
+    match Api.nonblank("username", "  ") {
+        Ok(_) => False
+        Err(response) => response.status == 422 and Str.from_utf8_lossy(response.body) == "{\"errors\":{\"username\":[\"can't be blank\"]}}"
+    }
+}
+
+## nonblank passes real values through
+expect Api.nonblank("username", "jake") == Ok("jake")
+
+## not_found keys the error under the missing resource
+expect {
+    response = Api.not_found("article")
+    response.status == 404 and Str.from_utf8_lossy(response.body) == "{\"errors\":{\"article\":[\"not found\"]}}"
+}

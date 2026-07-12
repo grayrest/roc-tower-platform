@@ -4,9 +4,10 @@
 ## field typed `NullableStr` comes out of `Res.json` / `Json.to_str` as
 ## `"bio":null` or `"bio":"text"`.
 ##
-## Output-only: there is no matching `parser_for`, so don't use it in
-## `Req.json_body` shapes — decode optional INPUT fields as
-## `Try(Str, [Missing])` instead (absent fields parse to `Err(Missing)`).
+## Decoding works too: a `NullableStr` field accepts JSON `null` or a
+## string, and `Try(NullableStr, [Missing])` distinguishes all THREE input
+## states of a nullable PATCH field — absent (`Err(Missing)`), explicit
+## null (`Ok(Null)`), and a value (`Ok(Val(s))`).
 NullableStr := [Null, Val(Str)].{
     ## The `Json.to_str` hook: `Null` encodes as JSON `null`, `Val(s)` as a
     ## JSON string. Derived record/list encoders pick this up for any field
@@ -14,6 +15,16 @@ NullableStr := [Null, Val(Str)].{
     encoder_for = |encoding| |nullable, state| match nullable {
         Null => Json.encode_null(encoding, state)
         Val(inner) => Json.encode_str(encoding, inner, state)
+    }
+
+    ## The `Json.parse` hook: JSON `null` decodes to `Null`, a string to
+    ## `Val`; anything else is that value's parse error.
+    parser_for = |encoding| |state| match Json.parse_null(encoding, state) {
+        Ok(rest) => Ok({ value: NullableStr.Null, rest: rest })
+        Err(_) => match Json.parse_str(encoding, state) {
+            Ok({ value, rest }) => Ok({ value: NullableStr.Val(value), rest: rest })
+            Err(problem) => Err(problem)
+        }
     }
 
     ## Collapse a Try whose Err means "absent" — a nullable SQL cell, a
@@ -57,3 +68,26 @@ expect NullableStr.with_default(NullableStr.Val("a"), "d") == "a"
 
 ## with_default falls back for Null
 expect NullableStr.with_default(NullableStr.Null, "d") == "d"
+
+## explicit JSON null decodes to Null
+expect {
+    parsed : Try({ bio : NullableStr }, Json.ParseErr)
+    parsed = Json.parse("{\"bio\":null}")
+    parsed == Ok({ bio: NullableStr.Null })
+}
+
+## a JSON string decodes to Val
+expect {
+    parsed : Try({ bio : NullableStr }, Json.ParseErr)
+    parsed = Json.parse("{\"bio\":\"hi\"}")
+    parsed == Ok({ bio: NullableStr.Val("hi") })
+}
+
+## tri-state PATCH decode: absent field is Err(Missing), explicit null is Ok(Null)
+expect {
+    absent : Try({ bio : Try(NullableStr, [Missing]) }, Json.ParseErr)
+    absent = Json.parse("{}")
+    explicit : Try({ bio : Try(NullableStr, [Missing]) }, Json.ParseErr)
+    explicit = Json.parse("{\"bio\":null}")
+    absent == Ok({ bio: Err(Missing) }) and explicit == Ok({ bio: Ok(NullableStr.Null) })
+}

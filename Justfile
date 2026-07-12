@@ -64,27 +64,27 @@ check-examples: glue
         "{{ roc }}" check "examples/$ex/main.roc"
     done
 
-# RealWorld conformance: the official Conduit Postman collection via newman.
-# Needs node (npx) and network for the first collection download. NOT part of
-# `just check` — run manually when touching examples/realworld.
+# RealWorld conformance: the official Hurl suite (the spec repo's source of
+# truth; the old Postman collection is retired). Needs `hurl` (brew install
+# hurl) and network for the first spec download. NOT part of `just check` —
+# run manually when touching examples/realworld.
 realworld-conformance: (build "examples/realworld/main.roc")
     #!/usr/bin/env bash
     set -euo pipefail
-    collection="target/conduit-postman-collection.json"
-    if [[ ! -f "$collection" ]]; then
-        curl -fsSL -o "$collection" \
-            "https://raw.githubusercontent.com/gothinkster/realworld/main/api/Conduit.postman_collection.json"
+    spec_dir="target/realworld-spec"
+    if [[ ! -d "$spec_dir/hurl" ]]; then
+        mkdir -p "$spec_dir"
+        curl -fsSL "https://github.com/realworld-apps/realworld/archive/refs/heads/main.tar.gz" \
+            | tar xz --strip-components=3 -C "$spec_dir" "realworld-main/specs/api"
     fi
     rm -f /tmp/tower-platform-realworld.db*
     PORT=8199 ./main & server=$!
     trap 'kill $server 2>/dev/null || true' EXIT
     for _ in $(seq 50); do nc -z 127.0.0.1 8199 2>/dev/null && break; sleep 0.1; done
-    stamp=$(date +%s)
-    npx --yes newman run "$collection" \
-        --global-var "APIURL=http://127.0.0.1:8199/api" \
-        --global-var "USERNAME=user$stamp" \
-        --global-var "EMAIL=user$stamp@example.com" \
-        --global-var "PASSWORD=password$stamp"
+    hurl --test --jobs 1 \
+        --variable "host=http://127.0.0.1:8199" \
+        --variable "uid=$(date +%s)$$" \
+        "$spec_dir"/hurl/*.hurl
 
 # Roc-side helper expects (platform Res/Req modules).
 test-roc:

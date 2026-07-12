@@ -35,21 +35,32 @@ Articles := [].{
     create_input! = |req| {
         author = Auth.current_user!(req)?
         body : { article : { title : Str, description : Str, body : Str, tagList : Try(List(Str), [Missing]) } }
-        body = Req.json_body(req) ? |_| Api.unprocessable("invalid article body")
+        body = Req.json_body(req) ? |_| Api.error(422, "invalid article body")
+        title = Api.nonblank("title", body.article.title)?
+        description = Api.nonblank("description", body.article.description)?
+        text = Api.nonblank("body", body.article.body)?
         id = Req.reserved_id!(req)?
         now = Req.now!(req)?
-        Ok({ author: author, article: body.article, id: id, now: now })
+        Ok({
+            author: author,
+            title: title,
+            description: description,
+            text: text,
+            tagList: body.article.tagList,
+            id: id,
+            now: now,
+        })
     }
 
     ## PURE handler: INSERT the article and its tags in ONE transaction
     ## (any failure rolls the whole group back), answer the article as the
     ## author sees it.
     create = |input| {
-        tags = match input.article.tagList {
+        tags = match input.tagList {
             Ok(list) => list
             Err(Missing) => []
         }
-        slug = Api.slugify(input.article.title, input.id)
+        slug = Api.slugify(input.title, input.id)
         stamp = Api.iso8601(input.now)
         base = Res.fx(DbWrite({
             db: Db.db_path,
@@ -57,9 +68,9 @@ Articles := [].{
             params: [
                 Integer(input.id),
                 Text(slug),
-                Text(input.article.title),
-                Text(input.article.description),
-                Text(input.article.body),
+                Text(input.title),
+                Text(input.description),
+                Text(input.text),
                 Integer(input.author.id),
                 Text(stamp),
                 Text(stamp),
@@ -72,12 +83,12 @@ Articles := [].{
                 params: [Integer(input.id), Text(tag)],
             }))
         })
-        with_tags.json(200, {
+        with_tags.json(201, {
             article: {
                 slug: slug,
-                title: input.article.title,
-                description: input.article.description,
-                body: input.article.body,
+                title: input.title,
+                description: input.description,
+                body: input.text,
                 tagList: tags,
                 createdAt: stamp,
                 updatedAt: stamp,
@@ -111,7 +122,7 @@ Articles := [].{
         if loaded.author_id == user.id {
             Ok({ user: user, id: loaded.id, article: loaded.article })
         } else {
-            Err(Api.forbidden())
+            Err(Api.forbidden("article"))
         }
     }
 
@@ -119,8 +130,27 @@ Articles := [].{
     ## request instant.
     update_input! = |req| {
         owned = Articles.owned_article!(req)?
-        body : { article : { title : Try(Str, [Missing]), description : Try(Str, [Missing]), body : Try(Str, [Missing]) } }
-        body = Req.json_body(req) ? |_| Api.unprocessable("invalid article body")
+        body : {
+            article : {
+                title : Try(Str, [Missing]),
+                description : Try(Str, [Missing]),
+                body : Try(Str, [Missing]),
+                tagList : Try(List(Str), [Missing]),
+            },
+        }
+        body = Req.json_body(req) ? |_| Api.error(422, "invalid article body")
+        _ = match body.article.title {
+            Ok(value) => Api.nonblank("title", value)?
+            Err(Missing) => ""
+        }
+        _ = match body.article.description {
+            Ok(value) => Api.nonblank("description", value)?
+            Err(Missing) => ""
+        }
+        _ = match body.article.body {
+            Ok(value) => Api.nonblank("body", value)?
+            Err(Missing) => ""
+        }
         now = Req.now!(req)?
         Ok({ owned: owned, changes: body.article, now: now })
     }
@@ -144,14 +174,38 @@ Articles := [].{
             Err(Missing) => existing.slug
         }
         stamp = Api.iso8601(input.now)
-        Res.fx(DbWrite({
-                db: Db.db_path,
-                sql: "UPDATE articles SET slug = ?, title = ?, description = ?, body = ?, updated_at = ? WHERE id = ?",
-                params: [Text(slug), Text(title), Text(description), Text(body), Text(stamp), Integer(input.owned.id)],
-            }))
-            .json(200, {
-                article: { ..existing, slug: slug, title: title, description: description, body: body, updatedAt: stamp },
-            })
+        base = Res.fx(DbWrite({
+            db: Db.db_path,
+            sql: "UPDATE articles SET slug = ?, title = ?, description = ?, body = ?, updated_at = ? WHERE id = ?",
+            params: [Text(slug), Text(title), Text(description), Text(body), Text(stamp), Integer(input.owned.id)],
+        }))
+        # A present tagList REPLACES the tags (an empty list clears them);
+        # absent leaves them untouched. All in the same transaction as the
+        # row update. (Pinned: the handler's input record is otherwise open.)
+        new_tags : Try(List(Str), [Missing])
+        new_tags = input.changes.tagList
+        with_tags = match new_tags {
+            Err(Missing) => base
+            Ok(tags) => tags.fold(
+                base.fx(DbWrite({
+                    db: Db.db_path,
+                    sql: "DELETE FROM article_tags WHERE article_id = ?",
+                    params: [Integer(input.owned.id)],
+                })),
+                |fx, tag| fx.fx(DbWrite({
+                    db: Db.db_path,
+                    sql: "INSERT OR IGNORE INTO article_tags (article_id, tag) VALUES (?, ?)",
+                    params: [Integer(input.owned.id), Text(tag)],
+                })),
+            )
+        }
+        tag_list = match new_tags {
+            Err(Missing) => existing.tagList
+            Ok(tags) => tags
+        }
+        with_tags.json(200, {
+            article: { ..existing, slug: slug, title: title, description: description, body: body, updatedAt: stamp, tagList: tag_list },
+        })
     }
 
     ## PURE handler: delete the article and its dependents in ONE
@@ -161,7 +215,7 @@ Articles := [].{
             .fx(DbWrite({ db: Db.db_path, sql: "DELETE FROM favorites WHERE article_id = ?", params: [Integer(input.id)] }))
             .fx(DbWrite({ db: Db.db_path, sql: "DELETE FROM article_tags WHERE article_id = ?", params: [Integer(input.id)] }))
             .fx(DbWrite({ db: Db.db_path, sql: "DELETE FROM articles WHERE id = ?", params: [Integer(input.id)] }))
-            .json(200, {})
+            .no_content()
     }
 
     ## Pagination bounds shared by list and feed: limit 1..100 (default
@@ -206,9 +260,13 @@ Articles := [].{
         Db.feed_articles!(Box.unbox(req.model).db, user.id, bounds.limit, bounds.offset)
     }
 
-    ## PURE handler: a page of articles — already JSON-shaped by the
-    ## coeffect (`{ articles, articlesCount }`).
-    page = |result| Res.json(200, result)
+    ## PURE handler: a page of articles. The spec requires list items to
+    ## OMIT the article body, so full rows shrink to summaries here.
+    page : { articles : List(Db.Article), articlesCount : I64 } -> Res.Response
+    page = |result| Res.json(200, {
+        articles: result.articles.map(|article| Db.to_summary(article)),
+        articlesCount: result.articlesCount,
+    })
 
     ## Coeffect: an authenticated viewer plus the article to (un)favorite.
     favorite_input! = |req| {

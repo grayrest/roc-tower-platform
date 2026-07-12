@@ -150,7 +150,7 @@ async fn realworld_full_journey() {
         r#"{"user":{"username":"jake","email":"jake@x.com","password":"dragons4ever"}}"#,
     )
     .await;
-    assert_eq!(status, 200, "register: {body}");
+    assert_eq!(status, 201, "register: {body}");
     assert_eq!(body["user"]["username"], "jake");
     assert!(body["user"]["bio"].is_null(), "bio must be JSON null: {body}");
     assert!(body["user"]["image"].is_null());
@@ -162,21 +162,22 @@ async fn realworld_full_journey() {
         &client,
         format!("{base}/users"),
         None,
-        r#"{"user":{"username":"jake","email":"second@x.com","password":"pw"}}"#,
+        r#"{"user":{"username":"jake","email":"second@x.com","password":"password2"}}"#,
     )
     .await;
-    assert_eq!(status, 422, "duplicate register: {body}");
-    assert!(body["errors"]["body"][0].as_str().unwrap().contains("taken"));
+    assert_eq!(status, 409, "duplicate register: {body}");
+    assert_eq!(body["errors"]["username"][0], "has already been taken");
 
     // --- login with wrong password: 422, no user leak ---
-    let (status, _) = post(
+    let (status, body) = post(
         &client,
         format!("{base}/users/login"),
         None,
         r#"{"user":{"email":"jake@x.com","password":"wrong"}}"#,
     )
     .await;
-    assert_eq!(status, 422);
+    assert_eq!(status, 401, "wrong password: {body}");
+    assert_eq!(body["errors"]["credentials"][0], "invalid");
 
     // --- login: fresh token, stored by the login effect ---
     let (status, body) = post(
@@ -221,7 +222,7 @@ async fn realworld_full_journey() {
         r#"{"article":{"title":"How to Train Your Dragon","description":"Ever wonder how?","body":"Very carefully.","tagList":["dragons","training"]}}"#,
     )
     .await;
-    assert_eq!(status, 200, "create article: {body}");
+    assert_eq!(status, 201, "create article: {body}");
     let slug = body["article"]["slug"].as_str().expect("slug").to_owned();
     assert!(slug.starts_with("how-to-train-your-dragon-"), "slug: {slug}");
     assert_eq!(body["article"]["favorited"], false, "must be JSON false: {body}");
@@ -248,7 +249,7 @@ async fn realworld_full_journey() {
         r#"{"user":{"username":"anne","email":"anne@x.com","password":"annespw1"}}"#,
     )
     .await;
-    assert_eq!(status, 200, "register anne: {body}");
+    assert_eq!(status, 201, "register anne: {body}");
     let anne_token = body["user"]["token"].as_str().expect("token").to_owned();
 
     let follow = client
@@ -273,6 +274,10 @@ async fn realworld_full_journey() {
     let (status, body) = get(&client, format!("{base}/articles/feed?limit=5"), Some(&anne_token)).await;
     assert_eq!(status, 200, "feed: {body}");
     assert_eq!(body["articlesCount"], 1);
+    assert!(
+        body["articles"][0].get("body").is_none(),
+        "list items must omit the article body: {body}"
+    );
     assert_eq!(body["articles"][0]["author"]["username"], "jake");
     assert_eq!(body["articles"][0]["author"]["following"], true);
 
@@ -369,7 +374,7 @@ async fn realworld_full_journey() {
         r#"{"comment":{"body":"His name is Toothless."}}"#,
     )
     .await;
-    assert_eq!(status, 200, "add comment: {body}");
+    assert_eq!(status, 201, "add comment: {body}");
     let comment_id = body["comment"]["id"].as_i64().expect("comment id");
     assert_eq!(body["comment"]["author"]["username"], "anne");
 
@@ -393,7 +398,7 @@ async fn realworld_full_journey() {
         .send()
         .await
         .unwrap();
-    assert_eq!(del.status(), 200);
+    assert_eq!(del.status(), 204);
     let (_, body) = get(&client, format!("{base}/articles/{new_slug}/comments"), None).await;
     assert_eq!(body["comments"].as_array().unwrap().len(), 0);
 
@@ -420,7 +425,7 @@ async fn realworld_full_journey() {
         .send()
         .await
         .unwrap();
-    assert_eq!(del.status(), 200);
+    assert_eq!(del.status(), 204);
     let (status, _) = get(&client, format!("{base}/articles/{new_slug}"), None).await;
     assert_eq!(status, 404);
     let (_, body) = get(&client, format!("{base}/tags"), None).await;

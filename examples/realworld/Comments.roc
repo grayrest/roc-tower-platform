@@ -21,10 +21,11 @@ Comments := [].{
         slug = Req.get_param(req, "slug") ? |_| Api.error(400, "missing slug")
         loaded = Db.load_article!(Box.unbox(req.model).db, author.id, slug)?
         body : { comment : { body : Str } }
-        body = Req.json_body(req) ? |_| Api.unprocessable("invalid comment body")
+        body = Req.json_body(req) ? |_| Api.error(422, "invalid comment body")
+        text = Api.nonblank("body", body.comment.body)?
         id = Req.reserved_id!(req)?
         now = Req.now!(req)?
-        Ok({ author: author, article_id: loaded.id, text: body.comment.body, id: id, now: now })
+        Ok({ author: author, article_id: loaded.id, text: text, id: id, now: now })
     }
 
     ## PURE handler: INSERT the comment, answer the comment object as its
@@ -43,7 +44,7 @@ Comments := [].{
                     Text(stamp),
                 ],
             }))
-            .json(200, {
+            .json(201, {
                 comment: {
                     id: input.id,
                     createdAt: stamp,
@@ -81,7 +82,7 @@ Comments := [].{
         if comment.author_id == user.id {
             Ok(comment.id)
         } else {
-            Err(Api.forbidden())
+            Err(Api.forbidden("comment"))
         }
     }
 
@@ -89,6 +90,6 @@ Comments := [].{
     delete : I64 -> Res.Response
     delete = |comment_id| {
         Res.fx(DbWrite({ db: Db.db_path, sql: "DELETE FROM comments WHERE id = ?", params: [Integer(comment_id)] }))
-            .json(200, {})
+            .no_content()
     }
 }

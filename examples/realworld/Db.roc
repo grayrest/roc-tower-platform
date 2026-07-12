@@ -35,6 +35,34 @@ Db := [].{
     ## RealWorld comment object, JSON-shaped.
     Comment : { id : I64, createdAt : Str, updatedAt : Str, body : Str, author : Db.Profile }
 
+    ## An article as list/feed endpoints show it — the spec REQUIRES `body`
+    ## to be absent from multi-article responses.
+    Summary : {
+        slug : Str,
+        title : Str,
+        description : Str,
+        tagList : List(Str),
+        createdAt : Str,
+        updatedAt : Str,
+        favorited : JsonBool,
+        favoritesCount : I64,
+        author : Db.Profile,
+    }
+
+    ## Drop the body for a list response.
+    to_summary : Db.Article -> Db.Summary
+    to_summary = |article| {
+        slug: article.slug,
+        title: article.title,
+        description: article.description,
+        tagList: article.tagList,
+        createdAt: article.createdAt,
+        updatedAt: article.updatedAt,
+        favorited: article.favorited,
+        favoritesCount: article.favoritesCount,
+        author: article.author,
+    }
+
     ## A NullableStr as a SQL parameter (Val -> TEXT, Null -> NULL).
     to_sql : NullableStr -> Host.SqlValue
     to_sql = |nullable| match nullable {
