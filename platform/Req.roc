@@ -124,6 +124,18 @@ Req := [].{
         Ok(value)
     }
 
+    ## Coeffect factory: the named query parameter, or `default` when absent.
+    ## Never rejects — the shape of optional filters (`?limit=20`).
+    query_or = |name, default| |req| match Req.get_query(req, name) {
+        Ok(value) => Ok(value)
+        Err(_) => Ok(default)
+    }
+
+    ## The request's timestamp in milliseconds since the Unix epoch, memoized
+    ## per request — every slot and composed coeffect within one request sees
+    ## the SAME instant (re-frame's canonical coeffect). Never rejects.
+    now! = |req| Ok(Cofx.get!(req.ctx, "coeffect.now_ms", |{}| Host.now_ms!()))
+
     ## A freshly reserved, non-idempotent id — the canonical memoized
     ## coeffect. Bumps a per-name counter in a DB sequence table
     ## (`UPDATE ... RETURNING`) via `Host.sqlite_exec!`, creating the table on
@@ -367,6 +379,18 @@ expect {
 expect {
     resolver = Req.header("X-Custom")
     resolver({ headers: [{ name: "x-custom", value: "abc" }] }) == Ok("abc")
+}
+
+## query_or resolves a present query parameter
+expect {
+    resolver = Req.query_or("limit", "20")
+    resolver({ query: "limit=5" }) == Ok("5")
+}
+
+## query_or falls back to the default when the parameter is absent
+expect {
+    resolver = Req.query_or("limit", "20")
+    resolver({ query: "offset=3" }) == Ok("20")
 }
 
 # NOTE: do NOT expect-test a composition like `Cofx.map(Req.param("id"), …)`

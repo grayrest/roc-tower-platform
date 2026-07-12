@@ -44,7 +44,8 @@
 ## pure resolvers yields a pure (expect-testable) resolver; effectful
 ## resolvers (named with `!`) yield effectful ones. Shapes:
 ##
-##     map      : (req => Try(a, resp)), (a -> b) -> (req => Try(b, resp))
+##     map        : (req => Try(a, resp)), (a -> b) -> (req => Try(b, resp))
+##     map_reject : (req => Try(a, resp)), (resp -> resp2) -> (req => Try(a, resp2))
 ##     resolve  : (req => Try(a, resp)), (a => Try(b, resp)) -> (req => Try(b, resp))
 ##     and_then : (req => Try(a, resp)), (a, req => Try(b, resp)) -> (req => Try(b, resp))
 ##     map2     : (req => Try(a, resp)), (req => Try(b, resp)), (a, b -> c) -> (req => Try(c, resp))
@@ -75,6 +76,14 @@ Cofx := [].{
     map = |resolver!, transform| |req| match resolver!(req) {
         Ok(value) => Ok(transform(value))
         Err(rejection) => Err(rejection)
+    }
+
+    ## Transform the REJECTION response, leaving resolved values untouched —
+    ## rebrand a built-in rejection (e.g. `Req.json_body`'s 400 text) into the
+    ## app's error shape without re-implementing the resolver.
+    map_reject = |resolver!, transform| |req| match resolver!(req) {
+        Ok(value) => Ok(value)
+        Err(rejection) => Err(transform(rejection))
     }
 
     ## Chain a dependent step on the resolved value alone. Use `and_then`
@@ -195,6 +204,18 @@ expect {
 expect {
     resolver = Cofx.map(|_req| Err("nope"), |n| n + 1.U64)
     resolver({}) == Err("nope")
+}
+
+## map_reject leaves resolved values untouched
+expect {
+    resolver = Cofx.map_reject(|req| Ok(req.n), |message| "wrapped: ${message}")
+    resolver({ n: 42 }) == Ok(42.U64)
+}
+
+## map_reject transforms the rejection
+expect {
+    resolver = Cofx.map_reject(|_req| Err("nope"), |message| "wrapped: ${message}")
+    resolver({}) == Err("wrapped: nope")
 }
 
 expect {

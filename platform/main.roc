@@ -66,7 +66,7 @@ platform ""
             }),
         }
     }
-    exposes [Host, Res, Req, Effect, Cofx]
+    exposes [Host, Res, Req, Effect, Cofx, Sql, NullableStr]
     packages {}
     provides {
         "roc_app": app_for_host,
@@ -100,6 +100,8 @@ import Res
 import Req
 import Effect
 import Cofx
+import Sql
+import NullableStr
 
 app_for_host = |{}| {
     program = main({})
