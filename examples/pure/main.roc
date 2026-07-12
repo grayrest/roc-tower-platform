@@ -35,15 +35,18 @@ db_path = "/tmp/tower-platform-pure-e2e.db"
 # already resolve without it).
 SqlValue : Host.SqlValue
 
-## An app-defined READ coeffect, built as a PIPELINE: a record-builder block
-## gathers the `{id}` path param and the db path (the `Req.model` resolver
-## unboxes the model; `->Resolver.map` projects the field), then the
-## arrow-call operator (`x->f(y)` is `f(x, y)`) chains into the dependent DB
-## load — no raw `req` access anywhere. A read miss rejects with 404, so the
-## pure handler only ever sees a present user.
-fetched_user! : Request => Try({ id : I64, name : Str }, Response)
-fetched_user! = {
-        id: Req.param_named("id"),
+## An app-defined coeffect FACTORY, parameterized by which path param names
+## the user id — `user_from!("id")` — and built as a PIPELINE: a
+## record-builder block gathers the path param and the db path (the
+## `Req.model` resolver unboxes the model; `->Resolver.map` projects the
+## field), then the arrow-call operator (`x->f(y)` is `f(x, y)`) chains into
+## the dependent DB load — no raw `req` access anywhere. A read miss rejects
+## with 404, so the pure handler only ever sees a present user. The factory
+## itself is pure (it only BUILDS the resolver); the `!` documents that what
+## it returns does effectful reads.
+user_from! : Str -> (Request => Try({ id : I64, name : Str }, Response))
+user_from! = |param_name| {
+        id: Req.param_named(param_name),
         db: Req.model->Resolver.map(|model| model.db),
     }.Resolver
     ->Resolver.and_then(|{id, db}, _req| {
@@ -56,7 +59,7 @@ fetched_user! = {
         }
     })
 
-## Pure row decode for `fetched_user!`.
+## Pure row decode for `user_from!`.
 read_user_row : { columns : List(Str), rows : List(List(SqlValue)) } -> Try({ id : I64, name : Str }, [NotFound])
 read_user_row = |result| {
     match result.rows.first() {
@@ -94,7 +97,7 @@ main = |{}| {
         # with a UniqueViolation -> 409 err_handler and an Opt(Log).
         { method: "POST", path: "/users", handler: Box.box(Ctx.with2(Req.reserved_id!, Req.json_body, create_user)) },
         # GET /users/{id}: the pipelined read coeffect loads the row (404 miss).
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(fetched_user!, get_user)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(user_from!("id"), get_user)) },
         # Record-builder coeffect: two reserved_id! slots combined into one
         # NAMED block (desugars through Resolver.map2) — and they still share
         # ONE reservation, because the memo runs underneath.
@@ -139,7 +142,7 @@ create_user = |id, body| {
         .json(201, { id: id, name: name })
 }
 
-## PURE handler: the `fetched_user!` coeffect already loaded (or 404'd) the row.
+## PURE handler: the `user_from!("id")` coeffect already loaded (or 404'd) the row.
 get_user : { id : I64, name : Str } -> Response
 get_user = |user| Res.json(200, user)
 
