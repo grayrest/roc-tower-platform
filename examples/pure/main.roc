@@ -29,6 +29,10 @@ Response : Res.Response
 db_path : Str
 db_path = "/tmp/tower-platform-pure-e2e.db"
 
+# Local alias so annotations can drop the `Host.` prefix (bare tags below
+# already resolve without it).
+SqlValue : Host.SqlValue
+
 ## An app-defined READ coeffect: load the user named by the {id} path param.
 ## Its `inject!` runs before the handler; a miss rejects with 404 so the pure
 ## handler only ever sees a present user.
@@ -39,7 +43,7 @@ FetchedUser := [FetchedUser({ id : I64, name : Str })].{
             Ok(value) => value
             Err(_) => ""
         }
-        match Host.sqlite_exec!({ db: db, sql: "SELECT id, name FROM users WHERE id = CAST(? AS INTEGER)", params: [Host.SqlValue.Text(id_str)] }) {
+        match Host.sqlite_exec!({ db: db, sql: "SELECT id, name FROM users WHERE id = CAST(? AS INTEGER)", params: [Text(id_str)] }) {
             Ok(result) => match FetchedUser.read_row(result) {
                 Ok(user) => Ok(FetchedUser.FetchedUser(user))
                 Err(_) => Err(Res.text(404, "user ${id_str} not found"))
@@ -48,20 +52,20 @@ FetchedUser := [FetchedUser({ id : I64, name : Str })].{
         }
     }
 
-    read_row : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try({ id : I64, name : Str }, [NotFound])
+    read_row : { columns : List(Str), rows : List(List(SqlValue)) } -> Try({ id : I64, name : Str }, [NotFound])
     read_row = |result| {
         match result.rows.first() {
             Ok(row) => {
                 id = match row.get(0) {
                     Ok(cell) => match cell {
-                        Host.SqlValue.Integer(n) => n
+                        Integer(n) => n
                         _ => -1
                     }
                     Err(_) => -1
                 }
                 name = match row.get(1) {
                     Ok(cell) => match cell {
-                        Host.SqlValue.Text(s) => s
+                        Text(s) => s
                         _ => ""
                     }
                     Err(_) => ""
@@ -110,7 +114,7 @@ json_header = { name: "content-type", value: "application/json" }
 ## and returns its 409 instead — and the transaction rolls back, so no row
 ## with that id survives.
 create_user : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response
-create_user = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)| {
+create_user = |ReservedId(id), JsonBody(body)| {
     name = body.name
     on_error = |err| match err {
         UniqueViolation(_) => {
@@ -125,7 +129,7 @@ create_user = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)| {
         }
     }
     Res.fx_err(
-            DbWrite({ db: db_path, sql: "INSERT INTO users (id, name) VALUES (?, ?)", params: [Host.SqlValue.Integer(id), Host.SqlValue.Text(name)] }),
+            DbWrite({ db: db_path, sql: "INSERT INTO users (id, name) VALUES (?, ?)", params: [Integer(id), Text(name)] }),
             on_error,
         )
         .opt(Log("created user ${id.to_str()} (${name})"))
@@ -134,7 +138,7 @@ create_user = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)| {
 
 ## PURE handler: the FetchedUser coeffect already loaded (or 404'd) the row.
 get_user : FetchedUser -> Response
-get_user = |FetchedUser.FetchedUser(user)| Res.json(200, { id: user.id, name: user.name })
+get_user = |FetchedUser(user)| Res.json(200, user)
 
 ## PURE handler proving single-reservation: both ReservedId slots resolve to
 ## the SAME memoized id (a == b), consuming exactly one counter increment.

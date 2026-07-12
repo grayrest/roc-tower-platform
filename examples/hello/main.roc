@@ -75,17 +75,18 @@ init! = || {
 
 # --- Pure handlers (`->`: the compiler forbids any I/O in these bodies) ------
 
-home : Req.Model(Model) -> Response
-home = |Model(model)| Res.text(200, "${model.greeting}, world!")
+home : Req.Model -> Response
+home = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
 
+## Showing how to use the local coeffect
 user : UserId -> Response
 user = |UserId(id)| Res.text(200, "user ${id}")
 
-echo : Req.Body -> Response
-echo = |Body(bytes)| Res.bytes(200, "application/octet-stream", bytes)
+## Type Annotation is optional if the tag is qualified
+echo = |Req.Body.Body(bytes)| Res.bytes(200, "application/octet-stream", bytes)
 
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
-greet : Req.JsonBody({ name : Str }), Req.Model(Model) -> Response
+greet : Req.JsonBody({ name : Str }), Req.Model -> Response
 greet = |JsonBody(body), Model(model)|
     Res.json(200, { message: "${model.greeting}, ${body.name}" })
 
@@ -93,11 +94,10 @@ greet = |JsonBody(body), Model(model)|
 ## that the host runs (transactionally) after the handler returns. The Res.fx
 ## builder chains effects and folds them into the terminal response. No Host.*!
 ## call appears in the body — it wouldn't compile.
-visit = || {
+visit = ||
     Res.fx(DbWrite({ db: db_path, sql: "INSERT INTO visits (at_ms) VALUES (0)", params: [] }))
-        .opt(Log("recorded a visit"))
-        .text(201, "visit recorded")
-}
+       .opt(Log("recorded a visit"))
+       .text(201, "visit recorded")
 
 # --- Escape hatch: raw effectful handlers -----------------------------------
 
