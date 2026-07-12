@@ -8,8 +8,31 @@
 use crate::abi;
 
 pub type RocRequest = abi::AnonStructAbbb89a8d6948757;
-pub type RocResponse = abi::AnonStructA14cd3b7d5755441;
+/// Handler return record: `{ status, headers, body, effects }` (4-field, the
+/// Phase 3 effectful response). Changed from the old 3-field response hash.
+pub type RocResponse = abi::AnonStructC56ced036812b588;
 pub type RocKeyValue = abi::AnonStruct82a96c5d55d63488;
 pub type RocSetting = abi::AppForHostSettings;
 pub type RocSettingTag = abi::AppForHostSettingsTag;
 pub type RocSqliteResultOk = abi::AnonStructF35fa2e5790aa7e2;
+
+/// `Host.http_send!` Ok payload: `{ status, headers, body }` (no effects).
+/// Content-hashes to the same struct as an `err_handler`'s `Reply`, but the
+/// two are kept as distinct aliases so each use site reads clearly.
+pub type RocHttpOk = abi::HostHttpSendOk;
+
+/// The `Must`/`Opt` discriminant of a handler's `effects` list element.
+pub type RocEffectTag = abi::MustOrOptTag;
+/// The write-effect tag discriminant: `DbWrite | HttpSend | Log`.
+pub type RocEffectActionTag = abi::DbWriteOrHttpSendOrLogTag;
+pub type RocDbWrite = abi::AnonStruct156b5cf265b1adab;
+pub type RocHttpSend = abi::AnonStruct305711d6494b9bb2;
+
+/// The classified error passed to a `Must` effect's boxed `err_handler`.
+pub type RocEffectErr = abi::BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation;
+pub type RocEffectErrTag = abi::BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag;
+pub type RocEffectErrPayload =
+    abi::BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationPayload;
+/// The `err_handler`'s return record: `{ status, headers, body }` — the same
+/// content-hashed shape as `HostHttpSendOk`.
+pub type RocReply = abi::AnonStructA14cd3b7d5755441;

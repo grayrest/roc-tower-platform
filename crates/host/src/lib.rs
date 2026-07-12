@@ -10,6 +10,7 @@ mod abi;
 
 mod body;
 mod config;
+mod effect;
 mod effects;
 mod middleware;
 mod roc_call;

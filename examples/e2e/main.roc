@@ -18,11 +18,7 @@ Request : {
     model : Box(Model),
 }
 
-Response : {
-    status : U16,
-    headers : List({ name : Str, value : Str }),
-    body : List(U8),
-}
+Response : Res.Response
 
 ## App-defined extractor: pulls the {id} path parameter.
 UserId := [UserId(Str)].{
@@ -58,6 +54,12 @@ main = |{}| {
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
         { method: "GET", path: "/helper/header", handler: Box.box(Req.args1(helper_header!)) },
         { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Req.args3(helper_combo!)) },
+        # Phase 3: host-executed effects.
+        { method: "GET", path: "/effects/insert/{tag}", handler: Box.box(effects_insert!) },
+        { method: "GET", path: "/effects/rollback", handler: Box.box(effects_rollback!) },
+        { method: "GET", path: "/effects/rollback-check", handler: Box.box(effects_rollback_check!) },
+        { method: "GET", path: "/effects/opt", handler: Box.box(effects_opt!) },
+        { method: "GET", path: "/effects/opt-check", handler: Box.box(effects_opt_check!) },
     ],
 }
 
@@ -85,6 +87,7 @@ echo! = |req| {
     status: 200,
     headers: [{ name: "content-type", value: "application/octet-stream" }],
     body: req.body,
+    effects: [],
 }
 
 big! : Request => Response
@@ -133,6 +136,7 @@ text = |status, message| {
     status: status,
     headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
     body: Str.to_utf8(message),
+    effects: [],
 }
 
 helper_greet! : Req.JsonBody({ name : Str }) => Response
@@ -175,4 +179,134 @@ helper_combo! = |UserId(id), query_arg, Req.Model.Model(model)| {
         Err(_) => "none"
     }
     Res.text(200, "id=${id};q=${q};prefix=${model.prefix}")
+}
+
+# --- Phase 3 effect fixtures ---
+#
+# These handlers return a Must/Opt effect list the host executes AFTER the
+# handler. DDL runs inline via Host.sqlite_exec! (autocommit, before the
+# effect transaction); the actual write is the returned Must(DbWrite).
+
+## Must(DbWrite) into a UNIQUE column. First insert of a tag succeeds and the
+## handler's own 200 comes back; a duplicate fails the effect, so the host
+## invokes the boxed err_handler and returns its 409 instead.
+effects_insert! : Request => Response
+effects_insert! = |req| {
+    model = Box.unbox(req.model)
+    db_path = model.db_path
+    tag = match Req.param(req, "tag") {
+        Ok(value) => value
+        Err(_) => "x"
+    }
+    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", params: [] })
+    {
+        status: 200,
+        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+        body: "inserted ${tag}".to_utf8(),
+        effects: [
+            Res.must(
+                DbWrite({ db: db_path, sql: "INSERT INTO effect_users (email) VALUES (?)", params: [Host.SqlValue.Text(tag)] }),
+                |err| match err {
+                    UniqueViolation(_) => {
+                        status: 409,
+                        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+                        body: "duplicate ${tag}".to_utf8(),
+                    }
+                    _ => {
+                        status: 500,
+                        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+                        body: "insert failed".to_utf8(),
+                    }
+                },
+            ),
+        ],
+    }
+}
+
+## Two ordered Must(DbWrite): the first inserts a fresh row, the second
+## collides on UNIQUE. The whole transaction must roll back, so the fresh row
+## is absent afterwards, and the second effect's err_handler returns 409.
+effects_rollback! : Request => Response
+effects_rollback! = |req| {
+    model = Box.unbox(req.model)
+    db_path = model.db_path
+    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", params: [] })
+    _ = Host.sqlite_exec!({ db: db_path, sql: "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", params: [] })
+    _ = Host.sqlite_exec!({ db: db_path, sql: "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", params: [] })
+    on_dup = |err| match err {
+        UniqueViolation(_) => {
+            status: 409,
+            headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+            body: "rolled back".to_utf8(),
+        }
+        _ => {
+            status: 500,
+            headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+            body: "unexpected".to_utf8(),
+        }
+    }
+    {
+        status: 200,
+        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+        body: "should never be seen".to_utf8(),
+        effects: [
+            Res.must(DbWrite({ db: db_path, sql: "INSERT INTO effect_rollback (val) VALUES ('rollback_fresh')", params: [] }), on_dup),
+            Res.must(DbWrite({ db: db_path, sql: "INSERT INTO effect_rollback (val) VALUES ('rollback_dup')", params: [] }), on_dup),
+        ],
+    }
+}
+
+## Reports whether the rolled-back 'rollback_fresh' row is present.
+effects_rollback_check! : Request => Response
+effects_rollback_check! = |req| {
+    model = Box.unbox(req.model)
+    db_path = model.db_path
+    match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) FROM effect_rollback WHERE val = 'rollback_fresh'", params: [] }) {
+        Ok(result) => text(200, "fresh_rows=${count_of(result)}")
+        Err(message) => text(500, "db error: ${message}")
+    }
+}
+
+## Opt(Log) plus an observable Opt(DbWrite): both fire, neither changes the
+## 200 status the handler returned.
+effects_opt! : Request => Response
+effects_opt! = |req| {
+    model = Box.unbox(req.model)
+    db_path = model.db_path
+    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", params: [] })
+    {
+        status: 200,
+        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+        body: "opt ok".to_utf8(),
+        effects: [
+            Res.opt(Log("optional log fired")),
+            Res.opt(DbWrite({ db: db_path, sql: "INSERT INTO effect_opt DEFAULT VALUES", params: [] })),
+        ],
+    }
+}
+
+## Reports how many rows the Opt(DbWrite) inserted.
+effects_opt_check! : Request => Response
+effects_opt_check! = |req| {
+    model = Box.unbox(req.model)
+    db_path = model.db_path
+    match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) FROM effect_opt", params: [] }) {
+        Ok(result) => text(200, "opt_rows=${count_of(result)}")
+        Err(message) => text(500, "db error: ${message}")
+    }
+}
+
+## Read an integer COUNT(*) out of a single-cell result.
+count_of : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Str
+count_of = |result| {
+    match result.rows.first() {
+        Ok(row) => match row.first() {
+            Ok(cell) => match cell {
+                Host.SqlValue.Integer(n) => n.to_str()
+                _ => "?"
+            }
+            Err(_) => "?"
+        }
+        Err(_) => "?"
+    }
 }

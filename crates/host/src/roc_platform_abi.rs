@@ -1053,6 +1053,37 @@ const _: () = assert!(core::mem::size_of::<AnonStruct6b43cf3aa793b1a0>() == 88, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct6b43cf3aa793b1a0>() == 8, "AnonStruct6b43cf3aa793b1a0 alignment mismatch");
 
+/// Element type for __AnonStruct_c56ced036812b588
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructC56ced036812b588 {
+    pub body: RocListWith<u8, false>,
+    pub effects: RocList<MustOrOpt>,
+    pub headers: RocList<AnonStruct82a96c5d55d63488>,
+    pub status: u16,
+}
+
+/// Element type for __AnonStruct_c56ced036812b588
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructC56ced036812b588 {
+    pub body: RocListWith<u8, false>,
+    pub effects: RocList<MustOrOpt>,
+    pub headers: RocList<AnonStruct82a96c5d55d63488>,
+    pub status: u16,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStructC56ced036812b588>() == 80, "AnonStructC56ced036812b588 size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStructC56ced036812b588>() == 8, "AnonStructC56ced036812b588 alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStructC56ced036812b588>() == 40, "AnonStructC56ced036812b588 size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStructC56ced036812b588>() == 4, "AnonStructC56ced036812b588 alignment mismatch");
+
 /// Element type for __AnonStruct_a965a4c67b4c5d53
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -1591,6 +1622,296 @@ const _: () = assert!(core::mem::size_of::<TryType47>() == 16, "TryType47 size m
 const _: () = assert!(core::mem::align_of::<TryType47>() == 4, "TryType47 alignment mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(TryType47, tag) == 12, "TryType47 tag offset mismatch");
+
+/// Payload struct for Must variant.
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MustOrOptMustPayload {
+    pub _0: DbWriteOrHttpSendOrLog,
+    pub _1: RocErasedCallable,
+}
+
+/// Payload struct for Must variant.
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MustOrOptMustPayload {
+    pub _0: DbWriteOrHttpSendOrLog,
+    pub _1: RocErasedCallable,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<MustOrOptMustPayload>() == 120, "MustOrOptMustPayload size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<MustOrOptMustPayload>() == 8, "MustOrOptMustPayload alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<MustOrOptMustPayload>() == 72, "MustOrOptMustPayload size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<MustOrOptMustPayload>() == 8, "MustOrOptMustPayload alignment mismatch");
+
+/// Tag discriminant for MustOrOpt.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MustOrOptTag {
+    Must = 0,
+    Opt = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union MustOrOptPayload {
+    pub must: core::mem::ManuallyDrop<MustOrOptMustPayload>,
+    pub opt: core::mem::ManuallyDrop<DbWriteOrHttpSendOrLog>,
+}
+
+#[cfg(target_pointer_width = "32")]
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+pub struct MustOrOptPayloadAlignment;
+
+/// Tag union: MustOrOpt
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MustOrOpt {
+    pub _payload_alignment: [MustOrOptPayloadAlignment; 0],
+    pub payload: [u8; 72],
+    pub tag: MustOrOptTag,
+}
+
+/// Tag union: MustOrOpt
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MustOrOpt {
+    pub payload: MustOrOptPayload,
+    pub tag: MustOrOptTag,
+}
+
+impl MustOrOpt {
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_must(&self) -> MustOrOptMustPayload {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const MustOrOptMustPayload) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_must(&self) -> MustOrOptMustPayload {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.must) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_opt(&self) -> DbWriteOrHttpSendOrLog {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const DbWriteOrHttpSendOrLog) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_opt(&self) -> DbWriteOrHttpSendOrLog {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.opt) }
+    }
+
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<MustOrOpt>() == 128, "MustOrOpt size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<MustOrOpt>() == 8, "MustOrOpt alignment mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::offset_of!(MustOrOpt, tag) == 120, "MustOrOpt tag offset mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<MustOrOpt>() == 80, "MustOrOpt size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<MustOrOpt>() == 8, "MustOrOpt alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::offset_of!(MustOrOpt, tag) == 72, "MustOrOpt tag offset mismatch");
+
+/// Tag discriminant for DbWriteOrHttpSendOrLog.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbWriteOrHttpSendOrLogTag {
+    DbWrite = 0,
+    HttpSend = 1,
+    Log = 2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union DbWriteOrHttpSendOrLogPayload {
+    pub db_write: core::mem::ManuallyDrop<AnonStruct156b5cf265b1adab>,
+    pub http_send: core::mem::ManuallyDrop<AnonStruct305711d6494b9bb2>,
+    pub log: core::mem::ManuallyDrop<RocStr>,
+}
+
+#[cfg(target_pointer_width = "32")]
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+pub struct DbWriteOrHttpSendOrLogPayloadAlignment;
+
+/// Tag union: DbWriteOrHttpSendOrLog
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DbWriteOrHttpSendOrLog {
+    pub _payload_alignment: [DbWriteOrHttpSendOrLogPayloadAlignment; 0],
+    pub payload: [u8; 56],
+    pub tag: DbWriteOrHttpSendOrLogTag,
+}
+
+/// Tag union: DbWriteOrHttpSendOrLog
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DbWriteOrHttpSendOrLog {
+    pub payload: DbWriteOrHttpSendOrLogPayload,
+    pub tag: DbWriteOrHttpSendOrLogTag,
+}
+
+impl DbWriteOrHttpSendOrLog {
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_db_write(&self) -> AnonStruct156b5cf265b1adab {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStruct156b5cf265b1adab) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_db_write(&self) -> AnonStruct156b5cf265b1adab {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.db_write) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_http_send(&self) -> AnonStruct305711d6494b9bb2 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStruct305711d6494b9bb2) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_http_send(&self) -> AnonStruct305711d6494b9bb2 {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.http_send) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_log(&self) -> RocStr {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_log(&self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.log) }
+    }
+
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<DbWriteOrHttpSendOrLog>() == 112, "DbWriteOrHttpSendOrLog size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<DbWriteOrHttpSendOrLog>() == 8, "DbWriteOrHttpSendOrLog alignment mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::offset_of!(DbWriteOrHttpSendOrLog, tag) == 104, "DbWriteOrHttpSendOrLog tag offset mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<DbWriteOrHttpSendOrLog>() == 64, "DbWriteOrHttpSendOrLog size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<DbWriteOrHttpSendOrLog>() == 8, "DbWriteOrHttpSendOrLog alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::offset_of!(DbWriteOrHttpSendOrLog, tag) == 56, "DbWriteOrHttpSendOrLog tag offset mismatch");
+
+/// Tag discriminant for BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag {
+    Busy = 0,
+    ForeignKeyViolation = 1,
+    HttpFailed = 2,
+    Other = 3,
+    UniqueViolation = 4,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationPayload {
+    pub busy: [u8; 0],
+    pub foreign_key_violation: core::mem::ManuallyDrop<RocStr>,
+    pub http_failed: core::mem::ManuallyDrop<RocStr>,
+    pub other: core::mem::ManuallyDrop<RocStr>,
+    pub unique_violation: core::mem::ManuallyDrop<RocStr>,
+}
+
+#[cfg(target_pointer_width = "32")]
+#[repr(align(4))]
+#[derive(Clone, Copy)]
+pub struct BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationPayloadAlignment;
+
+/// Tag union: BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
+    pub _payload_alignment: [BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationPayloadAlignment; 0],
+    pub payload: [u8; 12],
+    pub tag: BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag,
+}
+
+/// Tag union: BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
+    pub payload: BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationPayload,
+    pub tag: BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag,
+}
+
+impl BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_foreign_key_violation(&self) -> RocStr {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_foreign_key_violation(&self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.foreign_key_violation) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_http_failed(&self) -> RocStr {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_http_failed(&self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.http_failed) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_other(&self) -> RocStr {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_other(&self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.other) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_unique_violation(&self) -> RocStr {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_unique_violation(&self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.unique_violation) }
+    }
+
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation>() == 32, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation>() == 8, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation alignment mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::offset_of!(BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation, tag) == 24, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation tag offset mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation>() == 16, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation>() == 4, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::offset_of!(BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation, tag) == 12, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation tag offset mismatch");
 
 /// Tag discriminant for CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs.
 #[repr(u8)]
@@ -2459,6 +2780,200 @@ impl AnonStruct6b43cf3aa793b1a0 {
         unsafe { value.params.incref(amount); }
         unsafe { value.path.incref(amount); }
         unsafe { value.query.incref(amount); }
+    }
+}
+
+impl AnonStructC56ced036812b588 {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.body.decref(roc_host); }
+        {
+            let list = value.effects;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+        {
+            let list = value.headers;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.body.incref(amount); }
+        unsafe { value.effects.incref(amount); }
+        unsafe { value.headers.incref(amount); }
+    }
+}
+
+impl MustOrOpt {
+    /// Recursively decrement Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted payload.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = roc_host;
+        match value.tag {
+            MustOrOptTag::Must => {
+                let payload = value.payload_must();
+                unsafe { payload._0.decref(roc_host); }
+                unsafe { decref_erased_callable(payload._1, roc_host); }
+            },
+            MustOrOptTag::Opt => {
+                let payload = value.payload_opt();
+                unsafe { payload.decref(roc_host); }
+            },
+        }
+    }
+
+    /// Increment Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = amount;
+        match value.tag {
+            MustOrOptTag::Must => {
+                let payload = value.payload_must();
+                unsafe { payload._0.incref(amount); }
+                unsafe { incref_erased_callable(payload._1, amount); }
+            },
+            MustOrOptTag::Opt => {
+                let payload = value.payload_opt();
+                unsafe { payload.incref(amount); }
+            },
+        }
+    }
+}
+
+impl DbWriteOrHttpSendOrLog {
+    /// Recursively decrement Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted payload.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = roc_host;
+        match value.tag {
+            DbWriteOrHttpSendOrLogTag::DbWrite => {
+                let payload = value.payload_db_write();
+                unsafe { payload.decref(roc_host); }
+            },
+            DbWriteOrHttpSendOrLogTag::HttpSend => {
+                let payload = value.payload_http_send();
+                unsafe { payload.decref(roc_host); }
+            },
+            DbWriteOrHttpSendOrLogTag::Log => {
+                let payload = value.payload_log();
+                unsafe { payload.decref(roc_host); }
+            },
+        }
+    }
+
+    /// Increment Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = amount;
+        match value.tag {
+            DbWriteOrHttpSendOrLogTag::DbWrite => {
+                let payload = value.payload_db_write();
+                unsafe { payload.incref(amount); }
+            },
+            DbWriteOrHttpSendOrLogTag::HttpSend => {
+                let payload = value.payload_http_send();
+                unsafe { payload.incref(amount); }
+            },
+            DbWriteOrHttpSendOrLogTag::Log => {
+                let payload = value.payload_log();
+                unsafe { payload.incref(amount); }
+            },
+        }
+    }
+}
+
+impl BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
+    /// Recursively decrement Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted payload.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = roc_host;
+        match value.tag {
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Busy => {},
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation => {
+                let payload = value.payload_foreign_key_violation();
+                unsafe { payload.decref(roc_host); }
+            },
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed => {
+                let payload = value.payload_http_failed();
+                unsafe { payload.decref(roc_host); }
+            },
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other => {
+                let payload = value.payload_other();
+                unsafe { payload.decref(roc_host); }
+            },
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation => {
+                let payload = value.payload_unique_violation();
+                unsafe { payload.decref(roc_host); }
+            },
+        }
+    }
+
+    /// Increment Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = amount;
+        match value.tag {
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Busy => {},
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation => {
+                let payload = value.payload_foreign_key_violation();
+                unsafe { payload.incref(amount); }
+            },
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed => {
+                let payload = value.payload_http_failed();
+                unsafe { payload.incref(amount); }
+            },
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other => {
+                let payload = value.payload_other();
+                unsafe { payload.incref(amount); }
+            },
+            BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation => {
+                let payload = value.payload_unique_violation();
+                unsafe { payload.incref(amount); }
+            },
+        }
     }
 }
 

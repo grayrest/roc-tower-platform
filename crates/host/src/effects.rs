@@ -7,13 +7,15 @@
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+use r2d2_sqlite::SqliteConnectionManager;
 
 use crate::abi;
 use crate::roc_call::{roc_kv_list, roc_str};
 use crate::roc_host;
-use crate::types::RocSqliteResultOk;
+use crate::types::{RocHttpOk, RocSqliteResultOk};
 
 /// Handle to the server's tokio runtime, used to drive async effects
 /// (outbound HTTP) from the blocking threads Roc handlers run on.
@@ -51,11 +53,21 @@ unsafe fn decref_list_with<T: Copy>(list: abi::RocList<T>, drop_item: impl Fn(T)
     unsafe { list.decref(roc_host()) };
 }
 
-type SharedConnection = Arc<Mutex<rusqlite::Connection>>;
+/// Per-file connection pool (spike I3: "pool-for-everything"). Autocommit
+/// coeffect reads (`roc_sqlite_exec`) and the effect executor's
+/// `BEGIN IMMEDIATE` write transactions both check out from the same pool, so
+/// the process runs a single DB topology with explicit pragmas instead of the
+/// old shared-`Mutex<Connection>` cache (which corrupted concurrent
+/// transactions).
+type SqlitePool = r2d2::Pool<SqliteConnectionManager>;
+pub(crate) type PooledSqlite = r2d2::PooledConnection<SqliteConnectionManager>;
 
-fn sqlite_connections() -> &'static Mutex<HashMap<String, SharedConnection>> {
-    static CONNECTIONS: OnceLock<Mutex<HashMap<String, SharedConnection>>> = OnceLock::new();
-    CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+const SQLITE_POOL_MAX: u32 = 16;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn sqlite_pools() -> &'static Mutex<HashMap<String, SqlitePool>> {
+    static POOLS: OnceLock<Mutex<HashMap<String, SqlitePool>>> = OnceLock::new();
+    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +155,7 @@ pub extern "C" fn roc_http_send(args: abi::HostHttpSendArgs) -> abi::HostHttpSen
         Ok((status, response_headers, response_body)) => abi::HostHttpSendResult {
             tag: abi::HostHttpSendResultTag::Ok,
             payload: abi::HostHttpSendResultPayload {
-                ok: ManuallyDrop::new(crate::types::RocResponse {
+                ok: ManuallyDrop::new(RocHttpOk {
                     body: unsafe {
                         abi::RocListWith::<u8, false>::from_slice(&response_body, host)
                     },
@@ -163,7 +175,7 @@ pub extern "C" fn roc_http_send(args: abi::HostHttpSendArgs) -> abi::HostHttpSen
 
 type HttpResponseParts = (u16, Vec<(String, String)>, Vec<u8>);
 
-fn send_request(
+pub(crate) fn send_request(
     method: String,
     url: String,
     headers: Vec<(String, String)>,
@@ -247,7 +259,7 @@ pub extern "C" fn roc_sqlite_exec(args: abi::HostSqliteExecArgs) -> abi::HostSql
     }
 }
 
-fn sql_param_to_rusqlite(value: &abi::HostSqlValue) -> rusqlite::types::Value {
+pub(crate) fn sql_param_to_rusqlite(value: &abi::HostSqlValue) -> rusqlite::types::Value {
     use rusqlite::types::Value;
     match value.tag {
         abi::HostSqlValueTag::Null => Value::Null,
@@ -260,18 +272,37 @@ fn sql_param_to_rusqlite(value: &abi::HostSqlValue) -> rusqlite::types::Value {
     }
 }
 
-fn open_connection(db: &str) -> Result<SharedConnection, String> {
-    let mut connections = sqlite_connections()
+/// Get (or lazily build) the connection pool for `db`. Every connection is
+/// initialised with `busy_timeout=5s`, WAL journalling, and
+/// `synchronous=NORMAL` (spike I3's explicit-pragma topology).
+pub(crate) fn sqlite_pool(db: &str) -> Result<SqlitePool, String> {
+    let mut pools = sqlite_pools()
         .lock()
-        .map_err(|_| "sqlite connection cache poisoned".to_string())?;
-    if let Some(connection) = connections.get(db) {
-        return Ok(connection.clone());
+        .map_err(|_| "sqlite pool registry poisoned".to_string())?;
+    if let Some(pool) = pools.get(db) {
+        return Ok(pool.clone());
     }
-    let connection = rusqlite::Connection::open(db)
+    let manager = SqliteConnectionManager::file(db).with_init(|connection| {
+        connection.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+        connection.pragma_update(None, "journal_mode", "WAL")?;
+        connection.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(())
+    });
+    let pool = r2d2::Pool::builder()
+        .max_size(SQLITE_POOL_MAX)
+        .build(manager)
         .map_err(|err| format!("cannot open database {db:?}: {err}"))?;
-    let shared = Arc::new(Mutex::new(connection));
-    connections.insert(db.to_owned(), shared.clone());
-    Ok(shared)
+    pools.insert(db.to_owned(), pool.clone());
+    Ok(pool)
+}
+
+/// Check out one pooled connection for `db`. The caller returns it to the pool
+/// by dropping it. Coeffect reads check out per statement (autocommit); the
+/// effect executor checks out once for a `BEGIN IMMEDIATE` transaction.
+pub(crate) fn checkout_sqlite(db: &str) -> Result<PooledSqlite, String> {
+    sqlite_pool(db)?
+        .get()
+        .map_err(|err| format!("sqlite checkout for {db:?}: {err}"))
 }
 
 fn execute_statement(
@@ -279,10 +310,7 @@ fn execute_statement(
     sql: &str,
     params: Vec<rusqlite::types::Value>,
 ) -> Result<(Vec<String>, Vec<Vec<SqlCell>>), String> {
-    let shared = open_connection(db)?;
-    let connection = shared
-        .lock()
-        .map_err(|_| "sqlite connection poisoned".to_string())?;
+    let connection = checkout_sqlite(db)?;
     let mut statement = connection.prepare(sql).map_err(|err| err.to_string())?;
     let column_count = statement.column_count();
 

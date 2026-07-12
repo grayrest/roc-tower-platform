@@ -1,7 +1,53 @@
 ## Response construction helpers.
 Res := [].{
-    ## The platform's response record.
-    Response : { status : U16, headers : List({ name : Str, value : Str }), body : List(U8) }
+    ## A SQLite value for effect-carried DbWrite statement parameters. Mirrors
+    ## `Host.SqlValue` structurally so the effects list matches the platform's
+    ## FFI response type without importing a nominal alias across the boundary.
+    ## The closed set of host-executed write effects, matching `Effect.Tag`. The
+    ## effects list crosses the FFI as an inline-structural union (see main.roc
+    ## `requires`), so it is written structurally here too — a nominal
+    ## `List(Effect)` would not unify with that inline type.
+    Tag : [
+        DbWrite({ db : Str, sql : Str, params : List(Host.SqlValue) }),
+        HttpSend({
+            method : Str,
+            url : Str,
+            headers : List({ name : Str, value : Str }),
+            body : List(U8),
+            timeout_ms : U64,
+        }),
+        Log(Str),
+    ]
+
+    ## The classified failure the host hands a `Must` effect's boxed
+    ## `err_handler`. Matches `Effect.Err`.
+    Err : [
+        UniqueViolation(Str),
+        ForeignKeyViolation(Str),
+        Busy,
+        HttpFailed(Str),
+        Other(Str),
+    ]
+
+    ## The effect-free response an `err_handler` returns.
+    Reply : { status : U16, headers : List({ name : Str, value : Str }), body : List(U8) }
+
+    ## A host-executed effect. `Must` carries a boxed `err_handler` the host
+    ## invokes (with a classified `Err`) if the effect fails; `Opt` is
+    ## fire-and-forget. Written structurally to unify with the FFI response.
+    Effect : [
+        Must(Res.Tag, Box(Res.Err -> Res.Reply)),
+        Opt(Res.Tag),
+    ]
+
+    ## The platform's effectful response record: an HTTP response plus the list
+    ## of effects the host runs after the handler returns.
+    Response : {
+        status : U16,
+        headers : List({ name : Str, value : Str }),
+        body : List(U8),
+        effects : List(Res.Effect),
+    }
 
     ## A plain-text response.
     text : U16, Str -> Res.Response
@@ -9,6 +55,7 @@ Res := [].{
         status: status,
         headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
         body: message.to_utf8(),
+        effects: [],
     }
 
     ## An HTML response.
@@ -17,6 +64,7 @@ Res := [].{
         status: status,
         headers: [{ name: "content-type", value: "text/html; charset=utf-8" }],
         body: message.to_utf8(),
+        effects: [],
     }
 
     ## A JSON response; the value is encoded with the builtin Json module.
@@ -24,6 +72,7 @@ Res := [].{
         status: status,
         headers: [{ name: "content-type", value: "application/json" }],
         body: Json.to_str(value).to_utf8(),
+        effects: [],
     }
 
     ## A response with an explicit content type and raw body bytes.
@@ -32,11 +81,12 @@ Res := [].{
         status: status,
         headers: [{ name: "content-type", value: content_type }],
         body: body,
+        effects: [],
     }
 
     ## An empty 204 No Content response.
     no_content : () -> Res.Response
-    no_content = || { status: 204, headers: [], body: [] }
+    no_content = || { status: 204, headers: [], body: [], effects: [] }
 
     ## A redirect (use 301, 302, 303, 307, or 308).
     redirect : U16, Str -> Res.Response
@@ -44,6 +94,7 @@ Res := [].{
         status: status,
         headers: [{ name: "location", value: location }],
         body: [],
+        effects: [],
     }
 
     ## Add a header to an existing response.
@@ -52,7 +103,26 @@ Res := [].{
         status: response.status,
         headers: response.headers.append({ name: name, value: value }),
         body: response.body,
+        effects: response.effects,
     }
+
+    ## Attach a host-executed effect to an existing response.
+    with_effect : Res.Response, Res.Effect -> Res.Response
+    with_effect = |response, effect| {
+        status: response.status,
+        headers: response.headers,
+        body: response.body,
+        effects: response.effects.append(effect),
+    }
+
+    ## Build a critical effect. The `err_handler` is boxed here because an
+    ## unboxed lambda glues to an uninvocable pointer host-side.
+    must : Res.Tag, (Res.Err -> Res.Reply) -> Res.Effect
+    must = |tag, err_handler| Must(tag, Box.box(err_handler))
+
+    ## Build a fire-and-forget effect.
+    opt : Res.Tag -> Res.Effect
+    opt = |tag| Opt(tag)
 
     ## Collapse a Try whose both sides are responses. Lets handlers delegate
     ## to an inner `Request => Try(Response, Response)` function where `?`
@@ -65,6 +135,8 @@ Res := [].{
         Err(response) => response
     }
 }
+
+import Host
 
 expect {
     response = Res.text(200, "hi")

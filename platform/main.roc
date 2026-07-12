@@ -28,6 +28,40 @@ platform ""
                     status : U16,
                     headers : List({ name : Str, value : Str }),
                     body : List(U8),
+                    effects : List([
+                        Must([
+                            DbWrite({ db : Str, sql : Str, params : List(Host.SqlValue) }),
+                            HttpSend({
+                                method : Str,
+                                url : Str,
+                                headers : List({ name : Str, value : Str }),
+                                body : List(U8),
+                                timeout_ms : U64,
+                            }),
+                            Log(Str),
+                        ], Box([
+                            UniqueViolation(Str),
+                            ForeignKeyViolation(Str),
+                            Busy,
+                            HttpFailed(Str),
+                            Other(Str),
+                        ] -> {
+                            status : U16,
+                            headers : List({ name : Str, value : Str }),
+                            body : List(U8),
+                        })),
+                        Opt([
+                            DbWrite({ db : Str, sql : Str, params : List(Host.SqlValue) }),
+                            HttpSend({
+                                method : Str,
+                                url : Str,
+                                headers : List({ name : Str, value : Str }),
+                                body : List(U8),
+                                timeout_ms : U64,
+                            }),
+                            Log(Str),
+                        ]),
+                    ]),
                 }),
             }),
         }

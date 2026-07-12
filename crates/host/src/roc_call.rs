@@ -42,6 +42,19 @@ pub(crate) fn roc_str(text: &str) -> abi::RocStr {
     abi::RocStr::from_slice(text.as_bytes(), roc_host())
 }
 
+/// Copy a Roc `List({ name : Str, value : Str })` into owned host pairs.
+pub(crate) fn copy_headers(headers: &[RocKeyValue]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|kv| {
+            (
+                String::from_utf8_lossy(kv.name.as_slice()).into_owned(),
+                String::from_utf8_lossy(kv.value.as_slice()).into_owned(),
+            )
+        })
+        .collect()
+}
+
 /// Build a Roc `List({ name : Str, value : Str })` from host pairs.
 pub(crate) fn roc_kv_list(pairs: &[(String, String)]) -> abi::RocList<RocKeyValue> {
     let host = roc_host();
@@ -120,21 +133,22 @@ pub fn call_handler(
             capture,
         );
         let response = ret.assume_init();
-        let out = ResponseParts {
+        let handler_response = ResponseParts {
             status: response.status,
-            headers: response
-                .headers
-                .as_slice()
-                .iter()
-                .map(|kv| {
-                    (
-                        String::from_utf8_lossy(kv.name.as_slice()).into_owned(),
-                        String::from_utf8_lossy(kv.value.as_slice()).into_owned(),
-                    )
-                })
-                .collect(),
+            headers: copy_headers(response.headers.as_slice()),
             body: response.body.as_slice().to_vec(),
         };
+
+        // Host executes the effects the handler returned (Arch B), inside this
+        // spawn_blocking thread (S2): DB `Must` writes run first in one
+        // `BEGIN IMMEDIATE` transaction, external `Must` writes after commit,
+        // `Opt` effects last. A failing `Must` replaces the response with its
+        // boxed err_handler's reply. An empty effects list is a no-op, so the
+        // escape-hatch (`effects: []`) path behaves exactly as before.
+        let out = crate::effect::run_effects(&response, handler_response);
+
+        // One recursive decref frees the whole response, including each effect's
+        // tag payload and boxed err_handler (erased callable).
         response.decref(host);
         out
     }

@@ -19,11 +19,7 @@ Request : {
     model : Box(Model),
 }
 
-Response : {
-    status : U16,
-    headers : List({ name : Str, value : Str }),
-    body : List(U8),
-}
+Response : Res.Response
 
 main = |{}| {
     settings: [],

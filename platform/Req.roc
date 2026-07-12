@@ -274,11 +274,14 @@ Req := [].{
     }
 
     ## Internal: a plain-text rejection response for extractor failures.
-    reject : U16, Str -> { status : U16, headers : List({ name : Str, value : Str }), body : List(U8) }
+    ## Left unannotated: naming the 4-field effectful Response type would need
+    ## to reference a sibling platform module, which annotations can't do. The
+    ## empty `effects: []` unifies with whatever the app's Response pins.
     reject = |status, message| {
         status: status,
         headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
         body: Str.to_utf8(message),
+        effects: [],
     }
 
     ## Internal: parse "a=1&b=two%20words" into decoded pairs.

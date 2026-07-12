@@ -415,3 +415,78 @@ async fn concurrent_requests_get_correct_isolated_responses() {
     });
     futures::future::join_all(requests).await;
 }
+
+// --- Phase 3: host-executed effects ---
+
+#[tokio::test]
+async fn must_dbwrite_unique_first_succeeds_then_duplicate_conflicts() {
+    let base = base_url();
+    let client = client();
+
+    // First insert of a tag: the handler's own 200 comes back.
+    let first = client
+        .get(format!("{base}/effects/insert/alice@example.com"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 200);
+    assert_eq!(first.text().await.unwrap(), "inserted alice@example.com");
+
+    // Duplicate: the Must(DbWrite) hits the UNIQUE constraint, so the host
+    // classifies UniqueViolation and returns the boxed err_handler's 409.
+    let dup = client
+        .get(format!("{base}/effects/insert/alice@example.com"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dup.status(), 409);
+    assert_eq!(dup.text().await.unwrap(), "duplicate alice@example.com");
+}
+
+#[tokio::test]
+async fn must_transaction_rolls_back_when_second_write_fails() {
+    let base = base_url();
+    let client = client();
+
+    // Two ordered Must(DbWrite): the first inserts 'rollback_fresh', the
+    // second collides on UNIQUE. The whole BEGIN IMMEDIATE transaction rolls
+    // back, and the second effect's err_handler returns 409.
+    let response = client
+        .get(format!("{base}/effects/rollback"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    assert_eq!(response.text().await.unwrap(), "rolled back");
+
+    // The first write must be absent — the transaction rolled it back.
+    let check = client
+        .get(format!("{base}/effects/rollback-check"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(check.status(), 200);
+    assert_eq!(check.text().await.unwrap(), "fresh_rows=0");
+}
+
+#[tokio::test]
+async fn opt_effects_fire_without_affecting_status() {
+    let base = base_url();
+    let client = client();
+
+    // Opt(Log) + Opt(DbWrite): both fire, neither changes the handler's 200.
+    let response = client.get(format!("{base}/effects/opt")).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.text().await.unwrap(), "opt ok");
+
+    // The Opt(DbWrite) actually ran: at least one row is present.
+    let check = client
+        .get(format!("{base}/effects/opt-check"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(check.status(), 200);
+    let body = check.text().await.unwrap();
+    let count: u64 = body.strip_prefix("opt_rows=").unwrap().parse().unwrap();
+    assert!(count >= 1, "Opt(DbWrite) did not run: {body}");
+}

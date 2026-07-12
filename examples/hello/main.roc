@@ -17,11 +17,7 @@ Request : {
     model : Box(Model),
 }
 
-Response : {
-    status : U16,
-    headers : List({ name : Str, value : Str }),
-    body : List(U8),
-}
+Response : Res.Response
 
 ## A custom extractor: any nominal type with a from_request method can be a
 ## handler argument. Rejections (Err) are returned as the response.
