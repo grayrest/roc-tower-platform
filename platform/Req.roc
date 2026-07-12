@@ -64,77 +64,77 @@ Req := [].{
 
     ## --- Coeffects -----------------------------------------------------------
     ##
-    ## A coeffect is a `Resolver` value bound to a pure handler's positional
-    ## arguments by `Ctx.withN`:
+    ## A coeffect is a PLAIN FUNCTION — `req => Try(a, Response)` — bound to a
+    ## pure handler's positional arguments by `Ctx.withN`:
     ##
     ##     { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) }
     ##     greet : { name : Str }, Model -> Response
     ##
     ## The handler receives the RAW resolved value — nothing to destructure.
     ## Parameterized coeffects are factories returning resolvers
-    ## (`Req.param_named("id")`); app-defined coeffects wrap a function with
-    ## `Resolver.from`, chain with `.map` / `.and_then`, and combine with the
-    ## record builder (`{ a: ra, b: rb }.Resolver`). The built-ins below are
-    ## pure projections of the request, resolved per-slot without memoization;
-    ## `reserved_id` is non-idempotent, so it memoizes through `Ctx.get!` and
-    ## several slots in one request share ONE reservation.
+    ## (`Req.param_named("id")`); app-defined coeffects are more functions of
+    ## the same shape, pipelined with the arrow-call operator through the
+    ## `Resolver` combinators (`->Resolver.and_then(…)->Resolver.map(…)`) or
+    ## combined with the record builder (`{ a: ra, b: rb }.Resolver`). The
+    ## built-ins below are pure projections of the request, resolved per-slot
+    ## without memoization; `reserved_id!` is non-idempotent, so it memoizes
+    ## through `Ctx.get!` and several slots in one request share ONE
+    ## reservation. Pure resolvers are unmarked; effectful ones carry the
+    ## compiler-enforced `!`.
 
     ## The raw request body bytes. Never rejects.
-    body = Resolver.from(|req| Ok(req.body))
+    body = |req| Ok(req.body)
 
     ## The request body as UTF-8 text. Rejects with 400 on invalid UTF-8.
-    text_body = Resolver.from(|req| match Req.body_str(req) {
+    text_body = |req| match Req.body_str(req) {
         Ok(text) => Ok(text)
         Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
-    })
+    }
 
-    ## Coeffect factory: the request body decoded as JSON into the handler
-    ## argument's type. Rejects with 400 when the body is not valid JSON for
-    ## that shape. A factory (`Req.json_body()`) rather than a constant — its
-    ## result type is parameterized by the handler's, and a polymorphic
-    ## constant would trip the compiler's value restriction.
-    json_body = || Resolver.from(|req| match Req.json(req) {
+    ## The request body decoded as JSON into the handler argument's type.
+    ## Rejects with 400 when the body is not valid JSON for that shape.
+    json_body = |req| match Req.json(req) {
         Ok(decoded) => Ok(decoded)
         Err(_) => Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
-    })
+    }
 
     ## The request body parsed as application/x-www-form-urlencoded pairs.
     ## Rejects with 400 on invalid UTF-8.
-    form_body = Resolver.from(|req| match Req.form(req) {
+    form_body = |req| match Req.form(req) {
         Ok(fields) => Ok(fields)
         Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
-    })
+    }
 
     ## All query parameters, percent-decoded. Never rejects.
-    query_pairs = Resolver.from(|req| Ok(Req.query_params(req)))
+    query_pairs = |req| Ok(Req.query_params(req))
 
     ## All request headers. Never rejects.
-    headers = Resolver.from(|req| Ok(req.headers))
+    headers = |req| Ok(req.headers)
 
     ## The app's shared model, unboxed. Never rejects.
-    model = Resolver.from(|req| Ok(Box.unbox(req.model)))
+    model = |req| Ok(Box.unbox(req.model))
 
     ## Coeffect factory: the named path parameter. Rejects with 400 on a miss.
     ##
     ##     Ctx.with1(Req.param_named("id"), show_user)
-    param_named = |name| Resolver.from(|req| match Req.param(req, name) {
+    param_named = |name| |req| match Req.param(req, name) {
         Ok(value) => Ok(value)
         Err(_) => Err(Req.reject(400, "missing path parameter ${name}"))
-    })
+    }
 
     ## Coeffect factory: the named query parameter (first occurrence wins).
     ## Rejects with 400 on a miss.
-    query_named = |name| Resolver.from(|req| match Req.query(req, name) {
+    query_named = |name| |req| match Req.query(req, name) {
         Ok(value) => Ok(value)
         Err(_) => Err(Req.reject(400, "missing query parameter ${name}"))
-    })
+    }
 
     ## Coeffect factory: the named request header (case-insensitive). Rejects
     ## with 400 on a miss.
-    header_named = |name| Resolver.from(|req| match Req.header(req, name) {
+    header_named = |name| |req| match Req.header(req, name) {
         Ok(value) => Ok(value)
         Err(_) => Err(Req.reject(400, "missing header ${name}"))
-    })
+    }
 
     ## A freshly reserved, non-idempotent id — the canonical memoized
     ## coeffect. Bumps a per-name counter in a DB sequence table
@@ -143,7 +143,7 @@ Req := [].{
     ## in one request share ONE reservation. The counter lives in the app's
     ## database, read from the model's `db : Str` field (any app using this
     ## coeffect must expose one).
-    reserved_id = Resolver.from(|req| Ctx.get!(req.ctx, "coeffect.reserved_id", |{}| Req.reserve_fresh_id!(req)))
+    reserved_id! = |req| Ctx.get!(req.ctx, "coeffect.reserved_id", |{}| Req.reserve_fresh_id!(req))
 
     ## Internal: one un-memoized reservation (the `reserved_id` cache miss).
     reserve_fresh_id! = |req| {
@@ -286,7 +286,6 @@ Req := [].{
 
 import Host
 import Ctx
-import Resolver
 
 expect Req.param({ params: [{ name: "id", value: "42" }] }, "id") == Ok("42")
 
@@ -330,9 +329,66 @@ expect {
     decoded == Ok({ id: 7 })
 }
 
-# NOTE: the coeffect resolvers above are not expect-testable — a `Resolver`
-# wraps a `req => Try(a, resp)` payload, so running one counts as effectful
-# and `expect` rejects it (even when the wrapped function is pure). Their
-# parsing logic IS unit-tested through the pure helpers above
-# (param/header/query/body_str/json/form); resolution, rejection statuses,
-# and `reserved_id`'s run-once memoization are covered by the e2e suite.
+# --- coeffect resolvers ---
+#
+# The built-ins are pure projections, so they are directly testable here.
+# `reserved_id!` memoizes through the effectful `Ctx.get!` (which `expect`
+# rejects); its run-once semantics are covered end to end by the e2e suite.
+
+expect Req.body({ body: [104, 105] }) == Ok([104, 105])
+
+expect Req.text_body({ body: [104, 105] }) == Ok("hi")
+
+expect Req.text_body({ body: [255, 254] }) == Err(Req.reject(400, "request body is not valid UTF-8"))
+
+expect {
+    decoded : Try({ id : U64 }, _)
+    decoded = Req.json_body({ body: "{\"id\":7}".to_utf8() })
+    decoded == Ok({ id: 7 })
+}
+
+expect {
+    decoded : Try({ id : U64 }, _)
+    decoded = Req.json_body({ body: "nope".to_utf8() })
+    decoded == Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
+}
+
+expect Req.form_body({ body: "a=1&b=x+y".to_utf8() }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "x y" }])
+
+expect Req.query_pairs({ query: "a=1&b=two%20words" }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "two words" }])
+
+expect Req.headers({ headers: [{ name: "X-Custom", value: "abc" }] }) == Ok([{ name: "X-Custom", value: "abc" }])
+
+expect Req.model({ model: Box.box({ greeting: "hey" }) }) == Ok({ greeting: "hey" })
+
+# --- coeffect factories (parameterization = partial application) ---
+
+expect {
+    resolver = Req.param_named("id")
+    resolver({ params: [{ name: "id", value: "42" }] }) == Ok("42")
+}
+
+expect {
+    resolver = Req.param_named("id")
+    match resolver({ params: [] }) {
+        Ok(_) => False
+        Err(response) => response.status == 400
+    }
+}
+
+expect {
+    resolver = Req.query_named("q")
+    resolver({ query: "q=zed" }) == Ok("zed")
+}
+
+expect {
+    resolver = Req.header_named("X-Custom")
+    resolver({ headers: [{ name: "x-custom", value: "abc" }] }) == Ok("abc")
+}
+
+# NOTE: do NOT expect-test a composition like `Resolver.map(Req.param_named("id"), …)`
+# here. Applying a sibling module's combinator to this module's factory inside
+# an expect freezes the factory's request row to the expect's (closed) record,
+# which then fails to unify with the full request record in downstream apps
+# (compiler quirk, observed 2026-07-12). Composition over a factory is covered
+# by the pure example's `fetched_user!` pipeline through the e2e gate.

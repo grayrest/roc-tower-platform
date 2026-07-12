@@ -1,24 +1,24 @@
-## Binds coeffect `Resolver` values to a PURE handler's positional arguments,
-## plus the per-request memo primitive backing non-idempotent resolvers.
+## Binds coeffect resolvers to a PURE handler's positional arguments, plus the
+## per-request memo primitive backing non-idempotent resolvers.
 ##
-## `Ctx.with1` … `Ctx.with5` run each resolver left to right (this is where
-## reads happen — parse a param, load a row, reserve an id); the first `Err`
-## becomes the response and the handler never runs, otherwise the handler is
-## called with the RAW resolved values. The wrapper is effectful (`=>`); the
-## handler is pure (`->`) and may only CONSTRUCT effects — the host runs the
-## returned effect list.
+## A coeffect is a PLAIN FUNCTION: `resolver : req => Try(a, resp)`. `Ctx.with1`
+## … `Ctx.with5` run each resolver left to right (this is where reads happen —
+## parse a param, load a row, reserve an id); the first `Err` becomes the
+## response and the handler never runs, otherwise the handler is called with
+## the RAW resolved values. The wrapper is effectful (`=>`); the handler is
+## pure (`->`) and may only CONSTRUCT effects — the host runs the returned
+## effect list.
 ##
-## Composition lives on `Resolver` (pipeline style): `.map`, `.and_then`, and
-## the record-builder `{ a: ra, b: rb }.Resolver` for combining independent
-## resolvers into one named block — often the nicer alternative to the
-## higher-arity `withN`:
+## Composition lives in `Resolver` (pipeline style via the arrow-call operator,
+## plus the record builder for combining independent resolvers into one named
+## block — often the nicer alternative to the higher-arity `withN`):
 ##
 ##     { method: "POST", path: "/users",
-##       handler: Box.box(Ctx.with1({ id: Req.reserved_id, body: Req.json_body }.Resolver, create_user)) }
+##       handler: Box.box(Ctx.with1({ id: Req.reserved_id!, body: Req.json_body }.Resolver, create_user)) }
 ##     create_user : { id : I64, body : { name : Str } } -> Response
 ##
 ## Memoization is OPT-IN, for resolvers that must run at most once per request
-## (non-idempotent reads like `Req.reserved_id`) or that several resolvers
+## (non-idempotent reads like `Req.reserved_id!`) or that several resolvers
 ## share (a session both `current_user` and `csrf_check` need): route the work
 ## through `Ctx.get!` with a key that INCLUDES every parameter the resolver
 ## was built with (`"user:${id}"`), so differently-parameterized instances
@@ -53,33 +53,33 @@ Ctx := [].{
     ## Bind one resolver to a 1-argument PURE handler. The resolver runs first;
     ## an Err rejection is returned as the response, otherwise the handler
     ## receives the raw resolved value.
-    with1 : Resolver(req, a, resp), (a -> resp) -> (req => resp)
-    with1 = |resolver_a, handler|
-        |req| match resolver_a.run!(req) {
+    with1 : (req => Try(a, resp)), (a -> resp) -> (req => resp)
+    with1 = |resolve_a!, handler|
+        |req| match resolve_a!(req) {
             Ok(a) => handler(a)
             Err(rejection) => rejection
         }
 
     ## Bind two resolvers to a 2-argument PURE handler (see with1). Resolvers
     ## run left to right; the first rejection wins.
-    with2 : Resolver(req, a, resp), Resolver(req, b, resp), (a, b -> resp) -> (req => resp)
-    with2 = |resolver_a, resolver_b, handler|
-        |req| match resolver_a.run!(req) {
+    with2 : (req => Try(a, resp)), (req => Try(b, resp)), (a, b -> resp) -> (req => resp)
+    with2 = |resolve_a!, resolve_b!, handler|
+        |req| match resolve_a!(req) {
             Err(rejection) => rejection
-            Ok(a) => match resolver_b.run!(req) {
+            Ok(a) => match resolve_b!(req) {
                 Err(rejection) => rejection
                 Ok(b) => handler(a, b)
             }
         }
 
     ## Bind three resolvers to a 3-argument PURE handler (see with1).
-    with3 : Resolver(req, a, resp), Resolver(req, b, resp), Resolver(req, c, resp), (a, b, c -> resp) -> (req => resp)
-    with3 = |resolver_a, resolver_b, resolver_c, handler|
-        |req| match resolver_a.run!(req) {
+    with3 : (req => Try(a, resp)), (req => Try(b, resp)), (req => Try(c, resp)), (a, b, c -> resp) -> (req => resp)
+    with3 = |resolve_a!, resolve_b!, resolve_c!, handler|
+        |req| match resolve_a!(req) {
             Err(rejection) => rejection
-            Ok(a) => match resolver_b.run!(req) {
+            Ok(a) => match resolve_b!(req) {
                 Err(rejection) => rejection
-                Ok(b) => match resolver_c.run!(req) {
+                Ok(b) => match resolve_c!(req) {
                     Err(rejection) => rejection
                     Ok(c) => handler(a, b, c)
                 }
@@ -87,15 +87,15 @@ Ctx := [].{
         }
 
     ## Bind four resolvers to a 4-argument PURE handler (see with1).
-    with4 : Resolver(req, a, resp), Resolver(req, b, resp), Resolver(req, c, resp), Resolver(req, d, resp), (a, b, c, d -> resp) -> (req => resp)
-    with4 = |resolver_a, resolver_b, resolver_c, resolver_d, handler|
-        |req| match resolver_a.run!(req) {
+    with4 : (req => Try(a, resp)), (req => Try(b, resp)), (req => Try(c, resp)), (req => Try(d, resp)), (a, b, c, d -> resp) -> (req => resp)
+    with4 = |resolve_a!, resolve_b!, resolve_c!, resolve_d!, handler|
+        |req| match resolve_a!(req) {
             Err(rejection) => rejection
-            Ok(a) => match resolver_b.run!(req) {
+            Ok(a) => match resolve_b!(req) {
                 Err(rejection) => rejection
-                Ok(b) => match resolver_c.run!(req) {
+                Ok(b) => match resolve_c!(req) {
                     Err(rejection) => rejection
-                    Ok(c) => match resolver_d.run!(req) {
+                    Ok(c) => match resolve_d!(req) {
                         Err(rejection) => rejection
                         Ok(d) => handler(a, b, c, d)
                     }
@@ -105,17 +105,17 @@ Ctx := [].{
 
     ## Bind five resolvers to a 5-argument PURE handler (see with1). Consider
     ## the record-builder form (`with1` + `{ ... }.Resolver`) at this arity.
-    with5 : Resolver(req, a, resp), Resolver(req, b, resp), Resolver(req, c, resp), Resolver(req, d, resp), Resolver(req, e, resp), (a, b, c, d, e -> resp) -> (req => resp)
-    with5 = |resolver_a, resolver_b, resolver_c, resolver_d, resolver_e, handler|
-        |req| match resolver_a.run!(req) {
+    with5 : (req => Try(a, resp)), (req => Try(b, resp)), (req => Try(c, resp)), (req => Try(d, resp)), (req => Try(e, resp)), (a, b, c, d, e -> resp) -> (req => resp)
+    with5 = |resolve_a!, resolve_b!, resolve_c!, resolve_d!, resolve_e!, handler|
+        |req| match resolve_a!(req) {
             Err(rejection) => rejection
-            Ok(a) => match resolver_b.run!(req) {
+            Ok(a) => match resolve_b!(req) {
                 Err(rejection) => rejection
-                Ok(b) => match resolver_c.run!(req) {
+                Ok(b) => match resolve_c!(req) {
                     Err(rejection) => rejection
-                    Ok(c) => match resolver_d.run!(req) {
+                    Ok(c) => match resolve_d!(req) {
                         Err(rejection) => rejection
-                        Ok(d) => match resolver_e.run!(req) {
+                        Ok(d) => match resolve_e!(req) {
                             Err(rejection) => rejection
                             Ok(e) => handler(a, b, c, d, e)
                         }
@@ -126,4 +126,3 @@ Ctx := [].{
 }
 
 import Host
-import Resolver

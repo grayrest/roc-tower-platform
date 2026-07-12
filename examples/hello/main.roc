@@ -41,7 +41,7 @@ main = |{}| {
         { method: "GET", path: "/", handler: Box.box(Ctx.with1(Req.model, home)) },
         { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(Req.param_named("id"), user)) },
         { method: "POST", path: "/echo", handler: Box.box(Ctx.with1(Req.body, echo)) },
-        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body(), Req.model, greet)) },
+        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) },
         { method: "GET", path: "/visit", handler: Box.box(Ctx.with0(visit)) },
         # Escape hatch: raw effectful `Request => Response` handlers, for logic
         # that interleaves I/O with response-building. Still supported; not the

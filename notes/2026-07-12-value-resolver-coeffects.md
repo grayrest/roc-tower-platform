@@ -125,3 +125,32 @@ definitions, cannot carry unresolved constraints):
 2. An unpinned numeral DEFAULTS silently: `reject`'s `400`/`500` became
    `status: Dec` inside wrapped values, breaking unification with the app's
    `U16` response — fixed by pinning `code : U16` inside `reject`.
+
+## Follow-up 2 (same day): `->` arrow calls make the wrapper unnecessary
+
+The user spotted that the compiler kept a UFCS-style **arrow-call operator**:
+`x->f(y)` canonicalizes to `f(x, y)` (receiver becomes the FIRST argument;
+`Can.zig`'s `arrow_call`, fully implemented — unlike the removed `|>`). It
+works on plain functions, chains, and needs no nominal receiver — which
+falsifies the premise of the nominal `Resolver` ("chaining needs a nominal").
+
+Reverted to **bare-function resolvers** with `->` pipelines:
+
+    fetched_user! = Req.param_named("id")
+        ->Resolver.and_then(|id, req| load_row!(id, req))
+
+`Resolver` survives as a PHANTOM nominal (`Resolver := [].{ map, and_then,
+map2 }`): its members are ordinary combinators over bare functions, and its
+name gives the record builder its `map2` lookup — `{ a: ra, b: rb }.Resolver`
+combines bare resolvers into a bare resolver of a named record; nothing is
+ever wrapped. Runtime-verified (spike + pure e2e with memo dedup).
+
+This undoes every cost of the nominal iteration: resolver expects are back
+(56 total), `!` purity markers are back (`reserved_id!`), `json_body` is a
+plain value again (bare function definitions generalize; only top-level
+non-function VALUES hit the value restriction), and `from`/`run!` are gone.
+The `code : U16` pin in `reject` is kept as cheap defense.
+
+Residual quirk: APP-local factories share weak type vars across uses within
+the app — an expect applying one to a toy record conflicts with route uses at
+the full request type. Platform-module factory expects are unaffected.
