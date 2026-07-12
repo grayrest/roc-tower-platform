@@ -38,7 +38,7 @@ main = |{}| {
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(Ctx.with1(Req.json_body, helper_greet)) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Ctx.with1(Req.json_body(), helper_greet)) },
         { method: "POST", path: "/helper/form", handler: Box.box(Ctx.with1(Req.form_body, helper_form)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },

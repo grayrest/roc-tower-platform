@@ -66,7 +66,7 @@ platform ""
             }),
         }
     }
-    exposes [Host, Res, Req, Effect, Ctx]
+    exposes [Host, Res, Req, Effect, Ctx, Resolver]
     packages {}
     provides {
         "roc_app": app_for_host,
@@ -98,6 +98,7 @@ import Res
 import Req
 import Effect
 import Ctx
+import Resolver
 
 app_for_host = |{}| {
     program = main({})

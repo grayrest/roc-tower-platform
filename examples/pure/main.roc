@@ -4,6 +4,7 @@ import pf.Host
 import pf.Res
 import pf.Req
 import pf.Ctx
+import pf.Resolver
 
 # Reference PURE app: coeffects in, a pure handler that returns a Response
 # carrying host-run effects. No handler calls Host.*! directly — reads are
@@ -34,24 +35,25 @@ db_path = "/tmp/tower-platform-pure-e2e.db"
 # already resolve without it).
 SqlValue : Host.SqlValue
 
-## An app-defined READ coeffect, built by COMPOSITION: the platform's
-## parameterized `{id}` factory chains into a DB load with `Ctx.and_then`.
-## A read miss rejects with 404, so the pure handler only ever sees a present
-## user. Effectful resolvers carry the `!`; parameterization is ordinary
-## partial application.
-fetched_user! : Request => Try({ id : I64, name : Str }, Response)
-fetched_user! = Ctx.and_then(Req.param_named("id"), |id_str, req| {
-    db = Box.unbox(req.model).db
-    match Host.sqlite_exec!({ db: db, sql: "SELECT id, name FROM users WHERE id = CAST(? AS INTEGER)", params: [Text(id_str)] }) {
-        Ok(result) => match read_user_row(result) {
-            Ok(user) => Ok(user)
-            Err(_) => Err(Res.text(404, "user ${id_str} not found"))
+## An app-defined READ coeffect, built as a PIPELINE: the platform's
+## parameterized `{id}` factory chains into a DB load with `.and_then`. A
+## read miss rejects with 404, so the pure handler only ever sees a present
+## user. Parameterization is ordinary partial application; each pipeline
+## step is just a function.
+fetched_user : Resolver(Request, { id : I64, name : Str }, Response)
+fetched_user = Req.param_named("id")
+    .and_then(|id, req| {
+        db = Box.unbox(req.model).db
+        match Host.sqlite_exec!({ db: db, sql: "SELECT id, name FROM users WHERE id = CAST(? AS INTEGER)", params: [Text(id)] }) {
+            Ok(result) => match read_user_row(result) {
+                Ok(user) => Ok(user)
+                Err(_) => Err(Res.text(404, "user ${id} not found"))
+            }
+            Err(message) => Err(Res.text(500, "db error: ${message}"))
         }
-        Err(message) => Err(Res.text(500, "db error: ${message}"))
-    }
-})
+    })
 
-## Pure row decode for `fetched_user!`.
+## Pure row decode for `fetched_user`.
 read_user_row : { columns : List(Str), rows : List(List(SqlValue)) } -> Try({ id : I64, name : Str }, [NotFound])
 read_user_row = |result| {
     match result.rows.first() {
@@ -87,11 +89,13 @@ main = |{}| {
         # POST /users: reserve an id (non-idempotent, memoized coeffect) +
         # decode the JSON body, then a pure handler returns a Must(DbWrite)
         # with a UniqueViolation -> 409 err_handler and an Opt(Log).
-        { method: "POST", path: "/users", handler: Box.box(Ctx.with2(Req.reserved_id!, Req.json_body, create_user)) },
-        # GET /users/{id}: the composed read coeffect loads the row (404 miss).
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(fetched_user!, get_user)) },
-        # Two reserved_id slots in one request share ONE reservation (memoized).
-        { method: "GET", path: "/reserve-twice", handler: Box.box(Ctx.with2(Req.reserved_id!, Req.reserved_id!, reserve_twice)) },
+        { method: "POST", path: "/users", handler: Box.box(Ctx.with2(Req.reserved_id, Req.json_body(), create_user)) },
+        # GET /users/{id}: the pipelined read coeffect loads the row (404 miss).
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(fetched_user, get_user)) },
+        # Record-builder coeffect: two reserved_id slots combined into one
+        # NAMED block (desugars through Resolver.map2) — and they still share
+        # ONE reservation, because the memo runs underneath.
+        { method: "GET", path: "/reserve-twice", handler: Box.box(Ctx.with1({ a: Req.reserved_id, b: Req.reserved_id }.Resolver, reserve_twice)) },
     ],
 }
 
@@ -132,11 +136,12 @@ create_user = |id, body| {
         .json(201, { id: id, name: name })
 }
 
-## PURE handler: the `fetched_user!` coeffect already loaded (or 404'd) the row.
+## PURE handler: the `fetched_user` coeffect already loaded (or 404'd) the row.
 get_user : { id : I64, name : Str } -> Response
 get_user = |user| Res.json(200, user)
 
-## PURE handler proving single-reservation: both reserved_id slots resolve to
-## the SAME memoized id (a == b), consuming exactly one counter increment.
-reserve_twice : I64, I64 -> Response
-reserve_twice = |a, b| Res.text(200, "a=${a.to_str()};b=${b.to_str()}")
+## PURE handler proving single-reservation through the record builder: both
+## fields resolve to the SAME memoized id (a == b), consuming exactly one
+## counter increment.
+reserve_twice : { a : I64, b : I64 } -> Response
+reserve_twice = |ids| Res.text(200, "a=${ids.a.to_str()};b=${ids.b.to_str()}")

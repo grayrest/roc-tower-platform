@@ -30,7 +30,7 @@ main = |{}| {
     routes: [
         # Ctx.withN binds coeffect resolvers to the pure handler's arguments.
         { method: "GET", path: "/", handler: Box.box(Ctx.with1(Req.model, home)) },
-        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) },
+        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body(), Req.model, greet)) },
     ],
 }
 
@@ -119,7 +119,7 @@ The sanctioned handler style. A handler is a **pure** function (`->`) over raw
 values: **coeffects** deliver its inputs before it runs, and the `Response` it
 returns may carry **effects** the host runs after.
 
-**Coeffects (in).** A coeffect is a resolver **value** — any function
+**Coeffects (in).** A coeffect is a `Resolver` **value** wrapping a function
 `req => Try(a, Response)`. `Ctx.with1` … `Ctx.with5` bind resolvers to the
 handler's positional arguments: each runs left to right (this is where reads
 happen — parse a param, load a row, reserve an id), the first `Err` becomes
@@ -134,39 +134,53 @@ combo : Str, List({ name : Str, value : Str }), Model -> Response
 combo = |id, query_pairs, model| ...
 ```
 
-Because a resolver is an ordinary function value, the reuse story is just
-functions:
+The reuse story is functions plus a **pipelined** composition surface:
 
 - **Parameterize** by partial application — `Req.param_named("id")`,
-  `paginated(50)`, `require_role("admin")` are functions *returning* resolvers.
-- **Compose** with `Ctx.map` (transform a resolved value) and `Ctx.and_then`
-  (a resolver whose work depends on another resolver's output).
+  `paginated(50)`, `require_role("admin")` are functions *returning*
+  resolvers.
+- **Chain** with `.map` (transform a resolved value) and `.and_then` (a
+  dependent step that gets the value *and* the request).
+- **Combine** independent resolvers into one *named* block with the record
+  builder, which desugars through `Resolver.map2` (two or more fields,
+  resolved left to right, first rejection wins):
+
+  ```roc
+  { method: "GET", path: "/reserve-twice",
+    handler: Box.box(Ctx.with1({ a: Req.reserved_id, b: Req.reserved_id }.Resolver, reserve_twice)) }
+
+  reserve_twice : { a : I64, b : I64 } -> Response
+  ```
 - **Reuse** across routes by naming the value.
 
 | Resolver | Resolves to | Rejects |
 | --- | --- | --- |
 | `Req.body` / `Req.text_body` | raw bytes / UTF-8 body | 400 on bad UTF-8 |
-| `Req.json_body` | body decoded into the argument's type | 400 on bad JSON |
+| `Req.json_body()` | body decoded into the argument's type | 400 on bad JSON |
 | `Req.form_body` | urlencoded pairs | 400 on bad UTF-8 |
 | `Req.query_pairs` / `Req.headers` | all query / header pairs | — |
 | `Req.param_named(n)` / `Req.query_named(n)` / `Req.header_named(n)` | the named path param / query param / header | 400 on a miss |
 | `Req.model` | the shared app model | — |
-| `Req.reserved_id!` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
+| `Req.reserved_id` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
 
-An app-defined coeffect is just another resolver value; a dependent read
-chains with `Ctx.and_then` (from `examples/pure` — the `{id}` param resolves,
-then the row it names loads, with a 404 on a miss):
+(`json_body` is a factory call — its result type is chosen by the handler's
+argument type, which a polymorphic constant can't express.)
+
+An app-defined coeffect wraps a function with `Resolver.from` or chains from
+an existing one (from `examples/pure` — the `{id}` param resolves, then the
+row it names loads, with a 404 on a miss):
 
 ```roc
-fetched_user! : Request => Try({ id : I64, name : Str }, Response)
-fetched_user! = Ctx.and_then(Req.param_named("id"), |id, req| load_user!(id, req))
+fetched_user : Resolver(Request, { id : I64, name : Str }, Response)
+fetched_user = Req.param_named("id")
+    .and_then(|id, req| load_user!(id, req))
 ```
 
-Pure resolvers are unmarked; effectful ones carry the `!`. **Memoization is
-opt-in:** a non-idempotent resolver (or one several resolvers share) routes
-its work through `Ctx.get!(req.ctx, key, miss!)` with a key that includes its
-parameters, making it run at most once per request — two slots requesting
-`Req.reserved_id!` share ONE reservation. Pure projections skip it.
+**Memoization is opt-in:** a non-idempotent resolver (or one several
+resolvers share) routes its work through `Ctx.get!(req.ctx, key, miss!)` with
+a key that includes its parameters, making it run at most once per request —
+the two `Req.reserved_id` fields above share ONE reservation. Pure
+projections skip it.
 
 **Effects (out).** A pure handler can't call `Host.*!`; instead it builds a chain
 of effects with `Res.fx` / `Res.fx_err` (critical) or `Res.fx_opt`

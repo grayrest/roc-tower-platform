@@ -1,7 +1,8 @@
 # Design log: coeffects as values (resolver functions), replacing type dispatch
 
 **Date:** 2026-07-12
-**Status:** implemented (same day)
+**Status:** implemented (same day); superseded same day by the nominal
+`Resolver` pipeline — see the follow-up section at the bottom.
 **Supersedes:** the coeffect *binding mechanism* of
 [2026-07-11-coeffect-effect-handlers-design-log.md](2026-07-11-coeffect-effect-handlers-design-log.md).
 Everything else from that design — pure `->` handlers, reads-before /
@@ -86,3 +87,41 @@ the host memo registry, `Res.fx*`, and the effect executor are untouched.
 4. **Effectful values need `!` names** even when defined by application
    (`fetched_user! = Ctx.and_then(…)`), and a top-level resolver defined by
    applying a combinator compiles fine.
+
+## Follow-up (same day): nominal `Resolver` for a pipelined surface
+
+Bare-function resolvers compose only by nesting (`Ctx.and_then(Ctx.map(…)`)
+— and the Zig compiler dropped `|>` (`OpPizza` canonicalizes to "unsupported
+operator"), while its replacement, method chaining, dispatches only on
+NOMINAL receivers. Since real apps will lean hard on multi-step coeffects,
+we accepted the wrapper: `platform/Resolver.roc` defines
+
+    Resolver(req, a, resp) := [Resolver(req => Try(a, resp))].{
+        from, run!, map, and_then, map2 }
+
+- **Pipelines**: `Req.param_named("id").and_then(load).map(shape)` — chaining
+  on call results works (same mechanism as `Res.fx(…).opt(…)`).
+- **Record builder**: the new compiler's dormant `{ a: ra, b: rb }.TypeName`
+  syntax desugars through `TypeName.map2` — with `Resolver.map2` defined,
+  `{ a: Req.reserved_id, b: Req.reserved_id }.Resolver` builds a resolver of
+  a named record. Verified at runtime (spike + pure e2e, including memo
+  dedup underneath). ≥2 fields required. This is Re-frame's coeffect *map*.
+- `Ctx.withN` now take `Resolver` values; `Req` built-ins are pre-wrapped so
+  route spellings barely change; handlers still receive raw values.
+
+Costs accepted:
+- Resolver values are no longer expect-testable at all (the payload is typed
+  `=>`, so even pure ones count as effectful). Pure `Req.*` helpers keep the
+  unit coverage; resolver behavior is e2e-covered.
+- The `!` purity marker is gone from resolver names (`reserved_id!` →
+  `reserved_id`): a wrapped resolver is a pure value carrying a
+  possibly-effectful function.
+
+Two more value-restriction findings (top-level VALUES, unlike function
+definitions, cannot carry unresolved constraints):
+1. A method-constrained type var errors outright ("POLYMORPHIC VALUE"):
+   `json_body`'s decode target has `a.parser_for`, so it must stay a FACTORY
+   — `Req.json_body()`.
+2. An unpinned numeral DEFAULTS silently: `reject`'s `400`/`500` became
+   `status: Dec` inside wrapped values, breaking unification with the app's
+   `U16` response — fixed by pinning `code : U16` inside `reject`.
