@@ -220,7 +220,10 @@ fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, Eff
             Action::Db { sql, params, .. } => (sql, params),
             _ => unreachable!("only DB Must effects reach run_db_transaction"),
         };
-        if let Err(err) = tx.execute(sql, rusqlite::params_from_iter(params.iter())) {
+        let outcome = tx
+            .prepare_cached(sql)
+            .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(params.iter())));
+        if let Err(err) = outcome {
             let classified = classify_db_error(&err);
             tracing::warn!("effect: DbWrite failed ({classified:?}); rolling back transaction");
             // Dropping `tx` without commit rolls the whole group back.
@@ -262,7 +265,8 @@ fn run_action(action: &Action) -> Result<(), EffectErr> {
         Action::Db { db, sql, params } => {
             let connection = checkout_sqlite(db).map_err(EffectErr::Other)?;
             connection
-                .execute(sql, rusqlite::params_from_iter(params.iter()))
+                .prepare_cached(sql)
+                .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(params.iter())))
                 .map(|_| ())
                 .map_err(|err| classify_db_error(&err))
         }

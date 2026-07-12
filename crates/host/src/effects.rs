@@ -339,6 +339,9 @@ pub(crate) fn sqlite_pool(db: &str) -> Result<SqlitePool, String> {
             .map_err(|err| format!("cannot enable WAL on {db:?}: {err}"))?;
     }
     let manager = SqliteConnectionManager::file(db).with_init(|connection| {
+        // Room for every distinct statement a request mix repeats (rusqlite
+        // default is 16; the RealWorld example alone has ~20).
+        connection.set_prepared_statement_cache_capacity(64);
         connection.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "NORMAL")?;
@@ -367,7 +370,10 @@ fn execute_statement(
     params: Vec<rusqlite::types::Value>,
 ) -> Result<(Vec<String>, Vec<Vec<SqlCell>>), String> {
     let connection = checkout_sqlite(db)?;
-    let mut statement = connection.prepare(sql).map_err(|err| err.to_string())?;
+    // Cached per connection: coeffect reads repeat a small set of (sometimes
+    // large) SQL strings every request, and re-parsing dominates cheap
+    // indexed queries.
+    let mut statement = connection.prepare_cached(sql).map_err(|err| err.to_string())?;
     let column_count = statement.column_count();
 
     if column_count == 0 {
