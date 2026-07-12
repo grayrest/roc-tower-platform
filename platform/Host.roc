@@ -14,6 +14,15 @@ Host := [].{
     ## Cryptographically secure random bytes.
     random_bytes! : U64 => List(U8)
 
+    ## Hash a password with argon2id and a fresh random salt; returns a PHC
+    ## string (`$argon2id$...`) safe to store. Store only this, never the
+    ## password.
+    password_hash! : Str => Str
+
+    ## Verify a password against a stored PHC hash string. False on mismatch
+    ## or when the stored string is not a valid PHC hash.
+    password_verify! : Str, Str => Bool
+
     ## Send an outbound HTTP request and wait for the response.
     http_send! : {
         method : Str,

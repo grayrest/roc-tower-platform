@@ -1561,14 +1561,14 @@ const _: () = assert!(core::mem::offset_of!(HostMemoGetResult, tag) == 4, "HostM
 /// Tag discriminant for Try.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TryType47Tag {
+pub enum TryType48Tag {
     Err = 0,
     Ok = 1,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub union TryType47Payload {
+pub union TryType48Payload {
     pub err: core::mem::ManuallyDrop<RocStr>,
     pub ok: [u8; 0],
 }
@@ -1576,28 +1576,28 @@ pub union TryType47Payload {
 #[cfg(target_pointer_width = "32")]
 #[repr(align(4))]
 #[derive(Clone, Copy)]
-pub struct TryType47PayloadAlignment;
+pub struct TryType48PayloadAlignment;
 
 /// Tag union: Try
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TryType47 {
-    pub _payload_alignment: [TryType47PayloadAlignment; 0],
+pub struct TryType48 {
+    pub _payload_alignment: [TryType48PayloadAlignment; 0],
     pub payload: [u8; 12],
-    pub tag: TryType47Tag,
+    pub tag: TryType48Tag,
 }
 
 /// Tag union: Try
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TryType47 {
-    pub payload: TryType47Payload,
-    pub tag: TryType47Tag,
+pub struct TryType48 {
+    pub payload: TryType48Payload,
+    pub tag: TryType48Tag,
 }
 
-impl TryType47 {
+impl TryType48 {
     #[cfg(target_pointer_width = "32")]
     pub fn payload_err(&self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
@@ -1611,17 +1611,17 @@ impl TryType47 {
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<TryType47>() == 32, "TryType47 size mismatch");
+const _: () = assert!(core::mem::size_of::<TryType48>() == 32, "TryType48 size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<TryType47>() == 8, "TryType47 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<TryType48>() == 8, "TryType48 alignment mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::offset_of!(TryType47, tag) == 24, "TryType47 tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(TryType48, tag) == 24, "TryType48 tag offset mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<TryType47>() == 16, "TryType47 size mismatch");
+const _: () = assert!(core::mem::size_of::<TryType48>() == 16, "TryType48 size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<TryType47>() == 4, "TryType47 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<TryType48>() == 4, "TryType48 alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::offset_of!(TryType47, tag) == 12, "TryType47 tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(TryType48, tag) == 12, "TryType48 tag offset mismatch");
 
 /// Payload struct for Must variant.
 #[cfg(target_pointer_width = "32")]
@@ -2191,6 +2191,25 @@ pub struct HostMemoPutArgs {
     pub arg2: RocErasedCallable,
 }
 
+/// Arguments for Host.password_hash!
+/// Roc signature: Str => Str
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostPasswordHashArgs {
+    pub arg0: RocStr,
+}
+
+/// Arguments for Host.password_verify!
+/// Roc signature: Str, Str => Bool
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostPasswordVerifyArgs {
+    pub arg0: RocStr,
+    pub arg1: RocStr,
+}
+
 /// Arguments for Host.random_bytes!
 /// Roc signature: U64 => List(U8)
 /// Refcounted fields are owned by the hosted function.
@@ -2672,7 +2691,7 @@ impl AnonStructC36e85b27c5677aa {
     }
 }
 
-impl TryType47 {
+impl TryType48 {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
@@ -2681,11 +2700,11 @@ impl TryType47 {
         let value = self;
         let _ = roc_host;
         match value.tag {
-            TryType47Tag::Err => {
+            TryType48Tag::Err => {
                 let payload = value.payload_err();
                 unsafe { payload.decref(roc_host); }
             },
-            TryType47Tag::Ok => {},
+            TryType48Tag::Ok => {},
         }
     }
 
@@ -2698,11 +2717,11 @@ impl TryType47 {
         let value = self;
         let _ = amount;
         match value.tag {
-            TryType47Tag::Err => {
+            TryType48Tag::Err => {
                 let payload = value.payload_err();
                 unsafe { payload.incref(amount); }
             },
-            TryType47Tag::Ok => {},
+            TryType48Tag::Ok => {},
         }
     }
 }
@@ -3252,6 +3271,14 @@ unsafe extern "C" {
     /// Hosted symbol for Host.panic_test!
     /// Roc signature: {} => {}
     pub fn roc_panic_test();
+
+    /// Hosted symbol for Host.password_hash!
+    /// Roc signature: Str => Str
+    pub fn password_hash(arg0: RocStr) -> RocStr;
+
+    /// Hosted symbol for Host.password_verify!
+    /// Roc signature: Str, Str => Bool
+    pub fn password_verify(arg0: RocStr, arg1: RocStr) -> bool;
 
     /// Hosted symbol for Host.random_bytes!
     /// Roc signature: U64 => List(U8)

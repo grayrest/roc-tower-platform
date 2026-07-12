@@ -121,6 +121,46 @@ pub extern "C" fn roc_random_bytes(count: u64) -> abi::RocListWith<u8, false> {
     unsafe { abi::RocListWith::<u8, false>::from_slice(&buffer, roc_host()) }
 }
 
+/// `Host.password_hash! : Str => Str` — argon2id with a fresh OS-random salt,
+/// returned as a PHC string. Hashing with default params cannot fail on valid
+/// input; if it somehow does, log and return an empty string, which
+/// `password_verify` can never match.
+#[unsafe(no_mangle)]
+pub extern "C" fn password_hash(arg0: abi::RocStr) -> abi::RocStr {
+    use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+
+    let password = arg0.as_slice().to_vec();
+    unsafe { arg0.decref(roc_host()) };
+    let salt = SaltString::generate(&mut OsRng);
+    match argon2::Argon2::default().hash_password(&password, &salt) {
+        Ok(hash) => roc_str(&hash.to_string()),
+        Err(err) => {
+            tracing::error!("password_hash: argon2 failed: {err}");
+            roc_str("")
+        }
+    }
+}
+
+/// `Host.password_verify! : Str, Str => Bool` — verify a password against a
+/// stored PHC string; false on mismatch or an unparseable hash.
+#[unsafe(no_mangle)]
+pub extern "C" fn password_verify(arg0: abi::RocStr, arg1: abi::RocStr) -> bool {
+    use argon2::password_hash::{PasswordHash, PasswordVerifier};
+
+    let password = arg0.as_slice().to_vec();
+    let stored = String::from_utf8_lossy(arg1.as_slice()).into_owned();
+    unsafe {
+        arg0.decref(roc_host());
+        arg1.decref(roc_host());
+    }
+    match PasswordHash::new(&stored) {
+        Ok(parsed) => argon2::Argon2::default()
+            .verify_password(&password, &parsed)
+            .is_ok(),
+        Err(_) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Outbound HTTP.
 // ---------------------------------------------------------------------------

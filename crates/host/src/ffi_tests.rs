@@ -149,3 +149,18 @@ fn empty_list_allocates_nothing() {
     unsafe { list.decref(&host) };
     assert_eq!(counters.allocs.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn password_hash_then_verify_round_trips() {
+    use crate::effects::{password_hash, password_verify};
+    use crate::roc_call::roc_str;
+    use crate::roc_host;
+
+    let hash = password_hash(roc_str("s3cret"));
+    let phc = String::from_utf8_lossy(hash.as_slice()).into_owned();
+    unsafe { hash.decref(roc_host()) };
+    assert!(phc.starts_with("$argon2id$"), "expected a PHC string, got {phc}");
+    assert!(password_verify(roc_str("s3cret"), roc_str(&phc)));
+    assert!(!password_verify(roc_str("wrong"), roc_str(&phc)));
+    assert!(!password_verify(roc_str("s3cret"), roc_str("not-a-phc-hash")));
+}

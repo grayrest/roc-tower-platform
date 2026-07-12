@@ -41,5 +41,6 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 getrandom = "0.3"
+argon2 = { version = "0.5", features = ["std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

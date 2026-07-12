@@ -24,5 +24,6 @@ rusqlite.workspace = true
 r2d2.workspace = true
 r2d2_sqlite.workspace = true
 getrandom.workspace = true
+argon2.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

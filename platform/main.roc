@@ -77,6 +77,8 @@ platform ""
         "roc_env_var": Host.env_var!,
         "roc_now_ms": Host.now_ms!,
         "roc_random_bytes": Host.random_bytes!,
+        "password_hash": Host.password_hash!,
+        "password_verify": Host.password_verify!,
         "roc_http_send": Host.http_send!,
         "roc_sqlite_exec": Host.sqlite_exec!,
         "roc_reserve_id": Host.reserve_id!,
