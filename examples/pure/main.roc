@@ -35,15 +35,18 @@ db_path = "/tmp/tower-platform-pure-e2e.db"
 # already resolve without it).
 SqlValue : Host.SqlValue
 
-## An app-defined READ coeffect, built as a PIPELINE: the platform's
-## parameterized `{id}` factory feeds the arrow-call operator (`x->f(y)` is
-## `f(x, y)`) into a dependent DB load. A read miss rejects with 404, so the
-## pure handler only ever sees a present user. Every step is a plain
-## function; effectful resolvers carry the `!`.
+## An app-defined READ coeffect, built as a PIPELINE: a record-builder block
+## gathers the `{id}` path param and the db path (the `Req.model` resolver
+## unboxes the model; `->Resolver.map` projects the field), then the
+## arrow-call operator (`x->f(y)` is `f(x, y)`) chains into the dependent DB
+## load — no raw `req` access anywhere. A read miss rejects with 404, so the
+## pure handler only ever sees a present user.
 fetched_user! : Request => Try({ id : I64, name : Str }, Response)
-fetched_user! = Req.param_named("id")
-    ->Resolver.and_then(|id, req| {
-        db = Box.unbox(req.model).db
+fetched_user! = {
+        id: Req.param_named("id"),
+        db: Req.model->Resolver.map(|model| model.db),
+    }.Resolver
+    ->Resolver.and_then(|{id, db}, _req| {
         match Host.sqlite_exec!({ db: db, sql: "SELECT id, name FROM users WHERE id = CAST(? AS INTEGER)", params: [Text(id)] }) {
             Ok(result) => match read_user_row(result) {
                 Ok(user) => Ok(user)
