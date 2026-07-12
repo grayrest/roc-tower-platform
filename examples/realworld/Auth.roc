@@ -36,29 +36,7 @@ Auth := [].{
 
     ## Memoized auth state: the header parse + token join runs at most once
     ## per request, whichever of the coeffects below ask for it.
-    lookup! = |req| Cofx.get!(req.ctx, "auth.viewer", |{}| Auth.fetch!(req))
-
-    ## Internal: the memo-miss path. Any failure along the way (no header,
-    ## malformed header, unknown token) is simply an anonymous request.
-    fetch! = |req| {
-        match Auth.token_of(req) {
-            Err(NoToken) => Anon
-            Ok(token) => {
-                db = Box.unbox(req.model).db
-                sql = "SELECT u.id, u.email, u.username, u.bio, u.image FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?"
-                match Host.sqlite_exec!({ db: db, sql: sql, params: [Text(token)] }) {
-                    Err(_) => Anon
-                    Ok(result) => match Sql.first(result) {
-                        Err(_) => Anon
-                        Ok(row) => match Auth.decode_user(row, token) {
-                            Ok(user) => Found(user)
-                            Err(_) => Anon
-                        }
-                    }
-                }
-            }
-        }
-    }
+    lookup! = |req| Cofx.get!(req.ctx, "auth.viewer", |{}| fetch!(req))
 
     ## Pure: decode the user columns (id, email, username, bio, image),
     ## attaching the token that proved them. Shared with the login flow.
@@ -92,24 +70,48 @@ Auth := [].{
 
     ## Coeffect: a freshly minted token, memoized per request (register and
     ## login each store exactly one).
-    fresh_token! = |req| Ok(Cofx.get!(req.ctx, "auth.fresh_token", |{}| Auth.mint!()))
-
-    ## Internal: 16 random bytes as 32 hex chars.
-    mint! = || Auth.hex(Host.random_bytes!(16))
+    fresh_token! = |req| Ok(Cofx.get!(req.ctx, "auth.fresh_token", |{}| mint!()))
 
     ## Pure: lowercase hex encoding.
     hex : List(U8) -> Str
     hex = |bytes| {
         digits = bytes.fold([], |acc, byte| {
-            acc.append(Auth.hex_digit(byte // 16)).append(Auth.hex_digit(byte % 16))
+            acc.append(hex_digit(byte // 16)).append(hex_digit(byte % 16))
         })
         Str.from_utf8_lossy(digits)
     }
-
-    ## Internal: one hex digit's ASCII byte.
-    hex_digit : U8 -> U8
-    hex_digit = |n| if n < 10 n + 48 else n + 87
 }
+
+# --- module-private helpers (unreachable from other modules) ---
+
+## Internal: the memo-miss path. Any failure along the way (no header,
+## malformed header, unknown token) is simply an anonymous request.
+fetch! = |req| {
+    match Auth.token_of(req) {
+        Err(NoToken) => Anon
+        Ok(token) => {
+            db = Box.unbox(req.model).db
+            sql = "SELECT u.id, u.email, u.username, u.bio, u.image FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?"
+            match Host.sqlite_exec!({ db: db, sql: sql, params: [Text(token)] }) {
+                Err(_) => Anon
+                Ok(result) => match Sql.first(result) {
+                    Err(_) => Anon
+                    Ok(row) => match Auth.decode_user(row, token) {
+                        Ok(user) => Found(user)
+                        Err(_) => Anon
+                    }
+                }
+            }
+        }
+    }
+}
+
+## Internal: 16 random bytes as 32 hex chars.
+mint! = || Auth.hex(Host.random_bytes!(16))
+
+## Internal: one hex digit's ASCII byte.
+hex_digit : U8 -> U8
+hex_digit = |n| if n < 10 n + 48 else n + 87
 
 ## token_of extracts the token from a well-formed Authorization header
 expect Auth.token_of({ headers: [{ name: "Authorization", value: "Token abc123" }] }) == Ok("abc123")

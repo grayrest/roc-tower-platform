@@ -183,32 +183,13 @@ Db := [].{
         clauses = tag_part.clause.concat(author_part.clause).concat(favorited_part.clause)
         where_params = tag_part.params.concat(author_part.params).concat(favorited_part.params)
         where_sql = if clauses.is_empty() "" else " WHERE ${Str.join_with(clauses, " AND ")}"
-        Db.run_article_page!(db, viewer, where_sql, where_params, filters.limit, filters.offset)
+        run_article_page!(db, viewer, where_sql, where_params, filters.limit, filters.offset)
     }
 
     ## The viewer's feed: articles by followed authors, most recent first.
     feed_articles! = |db, viewer, limit, offset| {
         where_sql = " WHERE a.author_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
-        Db.run_article_page!(db, viewer, where_sql, [Integer(viewer)], limit, offset)
-    }
-
-    ## Internal: run one article page query plus its unpaginated count.
-    run_article_page! = |db, viewer, where_sql, where_params, limit, offset| {
-        list_sql = "${Db.article_select}${where_sql} ORDER BY a.id DESC LIMIT ? OFFSET ?"
-        list_params = [Integer(viewer), Integer(viewer)]
-            .concat(where_params)
-            .append(Integer(limit))
-            .append(Integer(offset))
-        list_result = Host.sqlite_exec!({ db: db, sql: list_sql, params: list_params })
-            ? |message| Api.error(500, "db error: ${message}")
-        articles = Db.decode_articles(list_result) ? |_| Api.error(500, "corrupt article row")
-
-        count_sql = "SELECT COUNT(*) AS n FROM articles a JOIN users u ON u.id = a.author_id${where_sql}"
-        count_result = Host.sqlite_exec!({ db: db, sql: count_sql, params: where_params })
-            ? |message| Api.error(500, "db error: ${message}")
-        count_row = Sql.first(count_result) ? |_| Api.error(500, "count returned no rows")
-        count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
-        Ok({ articles: articles, articlesCount: count })
+        run_article_page!(db, viewer, where_sql, [Integer(viewer)], limit, offset)
     }
 
     ## Load a profile by username with the viewer's following flag; rejects
@@ -290,6 +271,27 @@ Db := [].{
             }
         })
     }
+}
+
+# --- module-private helpers (unreachable from other modules) ---
+
+## Internal: run one article page query plus its unpaginated count.
+run_article_page! = |db, viewer, where_sql, where_params, limit, offset| {
+    list_sql = "${Db.article_select}${where_sql} ORDER BY a.id DESC LIMIT ? OFFSET ?"
+    list_params = [Integer(viewer), Integer(viewer)]
+        .concat(where_params)
+        .append(Integer(limit))
+        .append(Integer(offset))
+    list_result = Host.sqlite_exec!({ db: db, sql: list_sql, params: list_params })
+        ? |message| Api.error(500, "db error: ${message}")
+    articles = Db.decode_articles(list_result) ? |_| Api.error(500, "corrupt article row")
+
+    count_sql = "SELECT COUNT(*) AS n FROM articles a JOIN users u ON u.id = a.author_id${where_sql}"
+    count_result = Host.sqlite_exec!({ db: db, sql: count_sql, params: where_params })
+        ? |message| Api.error(500, "db error: ${message}")
+    count_row = Sql.first(count_result) ? |_| Api.error(500, "count returned no rows")
+    count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
+    Ok({ articles: articles, articlesCount: count })
 }
 
 ## split_tags: NULL means no tags

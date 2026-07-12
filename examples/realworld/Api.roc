@@ -85,24 +85,10 @@ Api := [].{
         year_of_era = yoe + era * 400
         year = if month <= 2 year_of_era + 1 else year_of_era
 
-        "${year.to_str()}-${Api.pad2(month)}-${Api.pad2(day)}T${Api.pad2(hour)}:${Api.pad2(minute)}:${Api.pad2(second)}.${Api.pad3(millis)}Z"
+        "${year.to_str()}-${pad2(month)}-${pad2(day)}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}.${pad3(millis)}Z"
     }
 
-    ## Internal: zero-pad to two digits.
-    pad2 : U64 -> Str
-    pad2 = |n| if n < 10 "0${n.to_str()}" else n.to_str()
 
-    ## Internal: zero-pad to three digits.
-    pad3 : U64 -> Str
-    pad3 = |n| {
-        if n < 10 {
-            "00${n.to_str()}"
-        } else if n < 100 {
-            "0${n.to_str()}"
-        } else {
-            n.to_str()
-        }
-    }
 
     ## URL slug from a title plus the article's reserved id, which makes the
     ## slug unique without probing the DB: lowercased ASCII alphanumerics,
@@ -127,6 +113,24 @@ Api := [].{
         } else {
             "${stem}-${id.to_str()}"
         }
+    }
+}
+
+# --- module-private helpers (unreachable from other modules) ---
+
+## Internal: zero-pad to two digits.
+pad2 : U64 -> Str
+pad2 = |n| if n < 10 "0${n.to_str()}" else n.to_str()
+
+## Internal: zero-pad to three digits.
+pad3 : U64 -> Str
+pad3 = |n| {
+    if n < 10 {
+        "00${n.to_str()}"
+    } else if n < 100 {
+        "0${n.to_str()}"
+    } else {
+        n.to_str()
     }
 }
 
