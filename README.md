@@ -157,26 +157,26 @@ UserId := [UserId(Str)].{
 }
 ```
 
-**Effects (out).** A pure handler can't call `Host.*!`; instead it attaches
-effects to its response (`Res.with_effect`), and the host runs them after the
-handler returns. Effects come from a closed vocabulary (`Effect.Tag`):
-`DbWrite`, `HttpSend`, `Log`. Each is `Res.must(tag, on_err)` — critical, runs
-in a per-request transaction, and a `UniqueViolation`/etc. failure invokes the
-pure `on_err` handler for the response — or `Res.opt(tag)`, fire-and-forget.
+**Effects (out).** A pure handler can't call `Host.*!`; instead it builds a chain
+of effects with `Res.fx` / `Res.fx_err` (critical) and `.opt` (fire-and-forget),
+then finishes with a response terminal (`.text` / `.json` / `.bytes` / ...) that
+folds the effects into the returned `Response`. The host runs them after the
+handler: critical effects in a per-request transaction (a `UniqueViolation`/etc.
+failure invokes the pure `fx_err` handler for the response), `.opt` after.
+Effects come from a closed vocabulary (`Effect.Tag`): `DbWrite`, `HttpSend`, `Log`.
 
 ```roc
 create : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response
 create = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)|
-    Res.with_effect(
-        Res.json(201, { id }),
-        Res.must(
+    Res.fx_err(
             DbWrite({ db, sql: "INSERT INTO users (id, name) VALUES (?, ?)", params }),
             |err| match err {
                 UniqueViolation(_) => { status: 409, headers: [], body: "taken".to_utf8() }
                 _ => { status: 500, headers: [], body: "failed".to_utf8() }
             },
-        ),
-    )
+        )
+        .opt(Log("created ${id.to_str()}"))
+        .json(201, { id })
 ```
 
 **Escape hatch.** Raw effectful handlers (`Request => Response`, no wrapper,

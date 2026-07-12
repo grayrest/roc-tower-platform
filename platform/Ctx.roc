@@ -37,6 +37,11 @@ Ctx := [].{
         }
     }
 
+    ## Wrap a 0-coeffect PURE handler (one that reads nothing from the request,
+    ## e.g. a handler that only emits effects) into an effectful request handler.
+    args0 : (() -> resp) -> (req => resp)
+    args0 = |handler| |_req| handler()
+
     ## Wrap a 1-argument PURE handler into an effectful request handler. The
     ## argument type's `inject!` method resolves it from the request; an Err
     ## rejection is returned as the response. Coeffects resolve left to right;

@@ -124,6 +124,89 @@ Res := [].{
     opt : Res.Tag -> Res.Effect
     opt = |tag| Opt(tag)
 
+    ## The default failure handler used by `Res.fx` / `.fx`: HTTP 500.
+    default_err : Res.Err -> Res.Reply
+    default_err = |_err| { status: 500, headers: [], body: "effect failed".to_utf8() }
+
+    ## Start a chainable effect builder with a critical effect (default 500 on
+    ## failure). Add more with `.fx` / `.fx_err` / `.opt`, then finish with a
+    ## response terminal (`.text` / `.json` / `.bytes` / ...):
+    ##
+    ##     Res.fx(DbWrite({ ... })).opt(Log("...")).text(201, "created")
+    fx : Res.Tag -> Res.Fx
+    fx = |tag| Res.Fx.{ effects: [Must(tag, Box.box(Res.default_err))] }
+
+    ## Start a chainable effect builder with a critical effect and a custom
+    ## failure handler:
+    ##
+    ##     Res.fx_err(DbWrite({ ... }), |err| ...).json(201, body)
+    fx_err : Res.Tag, (Res.Err -> Res.Reply) -> Res.Fx
+    fx_err = |tag, err_handler| Res.Fx.{ effects: [Must(tag, Box.box(err_handler))] }
+
+    ## A chainable builder that accumulates effects and folds them into the
+    ## response produced by a terminal method. Built via `Res.fx` / `Res.fx_err`.
+    Fx := { effects : List(Res.Effect) }.{
+        ## Add a critical effect (default 500 on failure).
+        fx : Res.Fx, Res.Tag -> Res.Fx
+        fx = |builder, tag| Res.Fx.{ effects: builder.effects.append(Must(tag, Box.box(Res.default_err))) }
+
+        ## Add a critical effect with a custom failure handler.
+        fx_err : Res.Fx, Res.Tag, (Res.Err -> Res.Reply) -> Res.Fx
+        fx_err = |builder, tag, err_handler| Res.Fx.{ effects: builder.effects.append(Must(tag, Box.box(err_handler))) }
+
+        ## Add a fire-and-forget effect.
+        opt : Res.Fx, Res.Tag -> Res.Fx
+        opt = |builder, tag| Res.Fx.{ effects: builder.effects.append(Opt(tag)) }
+
+        ## Terminal: a plain-text response carrying the accumulated effects.
+        text : Res.Fx, U16, Str -> Res.Response
+        text = |builder, status, message| {
+            status: status,
+            headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+            body: message.to_utf8(),
+            effects: builder.effects,
+        }
+
+        ## Terminal: an HTML response carrying the accumulated effects.
+        html : Res.Fx, U16, Str -> Res.Response
+        html = |builder, status, message| {
+            status: status,
+            headers: [{ name: "content-type", value: "text/html; charset=utf-8" }],
+            body: message.to_utf8(),
+            effects: builder.effects,
+        }
+
+        ## Terminal: a JSON response (builtin Json encoding) with the effects.
+        json = |builder, status, value| {
+            status: status,
+            headers: [{ name: "content-type", value: "application/json" }],
+            body: Json.to_str(value).to_utf8(),
+            effects: builder.effects,
+        }
+
+        ## Terminal: raw body bytes with an explicit content type and the effects.
+        bytes : Res.Fx, U16, Str, List(U8) -> Res.Response
+        bytes = |builder, status, content_type, body| {
+            status: status,
+            headers: [{ name: "content-type", value: content_type }],
+            body: body,
+            effects: builder.effects,
+        }
+
+        ## Terminal: 204 No Content carrying the accumulated effects.
+        no_content : Res.Fx -> Res.Response
+        no_content = |builder| { status: 204, headers: [], body: [], effects: builder.effects }
+
+        ## Terminal: a redirect carrying the accumulated effects.
+        redirect : Res.Fx, U16, Str -> Res.Response
+        redirect = |builder, status, location| {
+            status: status,
+            headers: [{ name: "location", value: location }],
+            body: [],
+            effects: builder.effects,
+        }
+    }
+
     ## Collapse a Try whose both sides are responses. Lets handlers delegate
     ## to an inner `Request => Try(Response, Response)` function where `?`
     ## works, then merge:
@@ -182,3 +265,28 @@ expect {
 expect Res.from_try(Ok(Res.text(200, "a"))).status == 200
 
 expect Res.from_try(Err(Res.text(500, "b"))).status == 500
+
+# --- chainable effect builder ---
+
+expect {
+    response = Res.fx(Log("recorded")).text(201, "ok")
+    response.status == 201 and response.effects.len() == 1 and response.body == "ok".to_utf8()
+}
+
+expect {
+    response =
+        Res.fx(DbWrite({ db: "d", sql: "insert", params: [] }))
+            .opt(Log("also"))
+            .text(200, "done")
+    response.status == 200 and response.effects.len() == 2
+}
+
+expect {
+    response =
+        Res.fx_err(
+            DbWrite({ db: "d", sql: "insert", params: [] }),
+            |_err| { status: 409, headers: [], body: "taken".to_utf8() },
+        )
+        .json(201, { id: 1.U64 })
+    response.status == 201 and response.effects.len() == 1
+}

@@ -87,11 +87,11 @@ main = |{}| {
         # POST /users: reserve an id (non-idempotent coeffect) + decode the
         # JSON body, then a pure handler returns a Must(DbWrite) with a
         # UniqueViolation -> 409 err_handler and an Opt(Log).
-        { method: "POST", path: "/users", handler: Box.box(Ctx.args2(create_user!)) },
+        { method: "POST", path: "/users", handler: Box.box(Ctx.args2(create_user)) },
         # GET /users/{id}: a read coeffect loads the row (404 on miss).
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.args1(get_user!)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.args1(get_user)) },
         # Two ReservedId slots in one request share ONE reservation (memoized).
-        { method: "GET", path: "/reserve-twice", handler: Box.box(Ctx.args2(reserve_twice!)) },
+        { method: "GET", path: "/reserve-twice", handler: Box.box(Ctx.args2(reserve_twice)) },
     ],
 }
 
@@ -109,8 +109,8 @@ json_header = { name: "content-type", value: "application/json" }
 ## the Must, so the host invokes the boxed err_handler (which captures `id`)
 ## and returns its 409 instead — and the transaction rolls back, so no row
 ## with that id survives.
-create_user! : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response
-create_user! = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)| {
+create_user : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response
+create_user = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)| {
     name = body.name
     on_error = |err| match err {
         UniqueViolation(_) => {
@@ -124,23 +124,20 @@ create_user! = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)| {
             body: "{\"error\":\"insert failed\"}".to_utf8(),
         }
     }
-    created = Res.json(201, { id: id, name: name })
-    with_write = Res.with_effect(
-        created,
-        Res.must(
+    Res.fx_err(
             DbWrite({ db: db_path, sql: "INSERT INTO users (id, name) VALUES (?, ?)", params: [Host.SqlValue.Integer(id), Host.SqlValue.Text(name)] }),
             on_error,
-        ),
-    )
-    Res.with_effect(with_write, Res.opt(Log("created user ${id.to_str()} (${name})")))
+        )
+        .opt(Log("created user ${id.to_str()} (${name})"))
+        .json(201, { id: id, name: name })
 }
 
 ## PURE handler: the FetchedUser coeffect already loaded (or 404'd) the row.
-get_user! : FetchedUser -> Response
-get_user! = |FetchedUser.FetchedUser(user)| Res.json(200, { id: user.id, name: user.name })
+get_user : FetchedUser -> Response
+get_user = |FetchedUser.FetchedUser(user)| Res.json(200, { id: user.id, name: user.name })
 
 ## PURE handler proving single-reservation: both ReservedId slots resolve to
 ## the SAME memoized id (a == b), consuming exactly one counter increment.
-reserve_twice! : Req.ReservedId, Req.ReservedId -> Response
-reserve_twice! = |Req.ReservedId.ReservedId(a), Req.ReservedId.ReservedId(b)|
+reserve_twice : Req.ReservedId, Req.ReservedId -> Response
+reserve_twice = |Req.ReservedId.ReservedId(a), Req.ReservedId.ReservedId(b)|
     Res.text(200, "a=${a.to_str()};b=${b.to_str()}")
