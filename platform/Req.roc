@@ -63,9 +63,17 @@ Req := [].{
     }
 
     ## The raw request body bytes. Extraction never fails.
+    ##
+    ## Dual API for the coeffect transition: `from_request` powers the shipped
+    ## `Req.argsN`; `inject!` (+ the unique `key`) powers the new coeffect
+    ## wrapper `Ctx.argsN`. `inject!` runs the pure `from_request` on the
+    ## request `Ctx` wraps.
     Body := [Body(List(U8))].{
         from_request : { body : List(U8), .. } -> Try(Body, resp)
         from_request = |req| Ok(Body.Body(req.body))
+
+        key = "req.body"
+        inject! = |req| Ctx.get!(req.ctx, Body.key, |{}| Body.from_request(req))
 
         value : Body -> List(U8)
         value = |wrapped| match wrapped { Body.Body(bytes) => bytes }
@@ -79,6 +87,9 @@ Req := [].{
                 Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
             }
         }
+
+        key = "req.body_str"
+        inject! = |req| Ctx.get!(req.ctx, BodyStr.key, |{}| BodyStr.from_request(req))
 
         value : BodyStr -> Str
         value = |wrapped| match wrapped { BodyStr.BodyStr(text) => text }
@@ -94,6 +105,9 @@ Req := [].{
             }
         }
 
+        key = "req.json_body"
+        inject! = |req| Ctx.get!(req.ctx, JsonBody.key, |{}| JsonBody.from_request(req))
+
         value : JsonBody(a) -> a
         value = |wrapped| match wrapped { JsonBody.JsonBody(decoded) => decoded }
     }
@@ -107,6 +121,9 @@ Req := [].{
                 Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
             }
         }
+
+        key = "req.form_body"
+        inject! = |req| Ctx.get!(req.ctx, FormBody.key, |{}| FormBody.from_request(req))
 
         value : FormBody -> List({ name : Str, value : Str })
         value = |wrapped| match wrapped { FormBody.FormBody(fields) => fields }
@@ -125,6 +142,9 @@ Req := [].{
         from_request : { query : Str, .. } -> Try(QueryParams, resp)
         from_request = |req| Ok(QueryParams.QueryParams(Req.query_params(req)))
 
+        key = "req.query_params"
+        inject! = |req| Ctx.get!(req.ctx, QueryParams.key, |{}| QueryParams.from_request(req))
+
         value : QueryParams -> List({ name : Str, value : Str })
         value = |wrapped| match wrapped { QueryParams.QueryParams(pairs) => pairs }
 
@@ -142,6 +162,9 @@ Req := [].{
         from_request : { headers : List({ name : Str, value : Str }), .. } -> Try(Headers, resp)
         from_request = |req| Ok(Headers.Headers(req.headers))
 
+        key = "req.headers"
+        inject! = |req| Ctx.get!(req.ctx, Headers.key, |{}| Headers.from_request(req))
+
         value : Headers -> List({ name : Str, value : Str })
         value = |wrapped| match wrapped { Headers.Headers(pairs) => pairs }
 
@@ -153,8 +176,59 @@ Req := [].{
     Model(m) := [Model(m)].{
         from_request = |req| Ok(Model.Model(Box.unbox(req.model)))
 
+        key = "req.model"
+        inject! = |req| Ctx.get!(req.ctx, Model.key, |{}| Model.from_request(req))
+
         value : Model(m) -> m
         value = |wrapped| match wrapped { Model.Model(model) => model }
+    }
+
+    ## A freshly reserved, non-idempotent id — the canonical read-shaped
+    ## coeffect. `inject!` bumps a per-name counter in a DB sequence table
+    ## (`UPDATE ... RETURNING`) via `Host.sqlite_exec!`, creating the table on
+    ## first use. It resolves THROUGH the wrapper's `Ctx.get!` (memoized by
+    ## `key`), so several slots requesting a `ReservedId` in one request share
+    ## ONE reservation. The counter lives in the app's database, read from the
+    ## model's `db : Str` field (any app using this coeffect must expose one).
+    ReservedId := [ReservedId(I64)].{
+        key = "coeffect.reserved_id"
+
+        ## Resolve THROUGH `Ctx.get!` (memoized by `key`) so several slots
+        ## requesting a `ReservedId` in one request share ONE reservation.
+        inject! = |req| Ctx.get!(req.ctx, ReservedId.key, |{}| ReservedId.reserve!(req))
+
+        ## Bump a per-name counter in the app database (read from the model's
+        ## `db : Str` field), creating the sequence table on first use.
+        reserve! = |req| {
+            db = Box.unbox(req.model).db
+            _ = Host.sqlite_exec!({ db: db, sql: "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", params: [] })
+            _ = Host.sqlite_exec!({ db: db, sql: "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", params: [] })
+            match Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] }) {
+                Ok(result) => match ReservedId.read_id(result) {
+                    Ok(reserved) => Ok(ReservedId.ReservedId(reserved))
+                    Err(_) => Err(Req.reject(500, "reserved id: sequence returned no value"))
+                }
+                Err(message) => Err(Req.reject(500, "reserved id: ${message}"))
+            }
+        }
+
+        ## Read the single INTEGER cell an `UPDATE ... RETURNING v` produces.
+        read_id : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try(I64, [NoValue])
+        read_id = |result| {
+            match result.rows.first() {
+                Ok(row) => match row.first() {
+                    Ok(cell) => match cell {
+                        Host.SqlValue.Integer(n) => Ok(n)
+                        _ => Err(NoValue)
+                    }
+                    Err(_) => Err(NoValue)
+                }
+                Err(_) => Err(NoValue)
+            }
+        }
+
+        value : ReservedId -> I64
+        value = |wrapped| match wrapped { ReservedId.ReservedId(reserved) => reserved }
     }
 
     ## Wrap a 1-argument handler into a request handler. The argument type's
@@ -374,6 +448,9 @@ Req := [].{
         Str.from_utf8_lossy(lowered)
     }
 }
+
+import Host
+import Ctx
 
 expect Req.param({ params: [{ name: "id", value: "42" }] }, "id") == Ok("42")
 
