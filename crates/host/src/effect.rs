@@ -1,14 +1,19 @@
 //! Host-side effect executor (Arch B).
 //!
-//! A pure handler returns a `Response` carrying a list of `Effect`s. This
-//! module runs them, inside the handler's `spawn_blocking` thread (spike S2),
-//! after the handler returns and before the `ResponseParts` are synthesized:
+//! A pure handler returns a `Response` carrying a list of `Effect`s. The
+//! critical `Must` effects run inside the handler's `spawn_blocking` thread
+//! (spike S2), after the handler returns and before the `ResponseParts` are
+//! synthesized; the fire-and-forget `Opt` effects are deferred to after the
+//! response is flushed (B3):
 //!
 //!   1. DB `Must` writes run FIRST, in order, in one `BEGIN IMMEDIATE`
 //!      transaction on a pooled connection — atomic, so any failure rolls the
 //!      whole group back.
 //!   2. External `Must` writes (HttpSend, Log) run AFTER the commit.
-//!   3. `Opt` effects run last, synchronously, best-effort.
+//!   3. `Opt` effects are returned to the caller as `DeferredEffects`, which
+//!      the router runs on the blocking pool concurrent with the socket write,
+//!      off the response's critical path — so they add no latency and never
+//!      block the client.
 //!
 //! The first `Must` failure is classified into an `Effect.Err` and handed to
 //! that effect's boxed `err_handler` (invoked through the erased-callable ABI,
@@ -65,6 +70,35 @@ struct MustItem {
     err_handler: abi::RocErasedCallable,
 }
 
+/// The fire-and-forget `Opt` effects a handler returned, deferred so the caller
+/// runs them AFTER the response is flushed (B3). They carry only owned data
+/// (each `Action` is copied out of the Roc `effects` list, no refcounts), so
+/// they safely outlive the response's decref and can move to another thread.
+pub struct DeferredEffects {
+    opts: Vec<Action>,
+}
+
+impl DeferredEffects {
+    fn new(opts: Vec<Action>) -> Self {
+        Self { opts }
+    }
+
+    /// True when there is nothing to run — the common no-effects path, letting
+    /// the router skip the detached spawn entirely.
+    pub fn is_empty(&self) -> bool {
+        self.opts.is_empty()
+    }
+
+    /// Run every deferred `Opt` serially, best-effort (failures logged only).
+    /// The router calls this on the blocking pool, detached and concurrent with
+    /// hyper writing the response body, so `Opt` effects add no latency to the
+    /// client. In-flight `Opt`s are lost on process shutdown, which is
+    /// acceptable for fire-and-forget semantics.
+    pub fn run(self) {
+        run_opts(&self.opts);
+    }
+}
+
 fn string_of(text: &abi::RocStr) -> String {
     String::from_utf8_lossy(text.as_slice()).into_owned()
 }
@@ -72,10 +106,13 @@ fn string_of(text: &abi::RocStr) -> String {
 /// Run the effects a handler returned; return the response to send. Reads the
 /// effect data (including the boxed `err_handler` pointers) before the caller
 /// decrefs `response`.
-pub fn run_effects(response: &RocResponse, handler_response: ResponseParts) -> ResponseParts {
+pub fn run_effects(
+    response: &RocResponse,
+    handler_response: ResponseParts,
+) -> (ResponseParts, DeferredEffects) {
     let effects = response.effects.as_slice();
     if effects.is_empty() {
-        return handler_response;
+        return (handler_response, DeferredEffects::new(Vec::new()));
     }
 
     // Partition preserving relative order: DB `Must` first, external `Must`
@@ -102,11 +139,12 @@ pub fn run_effects(response: &RocResponse, handler_response: ResponseParts) -> R
         }
     }
 
-    // Phase 1: DB `Must` writes in one transaction.
+    // Phase 1: DB `Must` writes in one transaction. On failure the classified
+    // error goes to the failing effect's `err_handler`, whose reply becomes the
+    // response; the deferred `Opt`s still fire (fire-and-forget).
     if let Some((err_handler, err)) = run_db_transaction(&db_musts) {
         let reply = invoke_err_handler(err_handler, &err);
-        run_opts(&opts);
-        return reply;
+        return (reply, DeferredEffects::new(opts));
     }
 
     // Phase 2: external `Must` writes after commit.
@@ -114,21 +152,15 @@ pub fn run_effects(response: &RocResponse, handler_response: ResponseParts) -> R
         if let Err(err) = run_action(&item.action) {
             tracing::warn!("effect: external Must failed: {err:?}");
             let reply = invoke_err_handler(item.err_handler, &err);
-            run_opts(&opts);
-            return reply;
+            return (reply, DeferredEffects::new(opts));
         }
     }
 
-    // Phase 3: `Opt` effects, best-effort, before returning.
-    //
-    // B3: the shipped server has no post-flush hook (`dispatch` buffers the
-    // body and hyper writes it later, in the connection task), so "after the
-    // response is flushed, in order" is unachievable. We run `Opt` effects
-    // synchronously here — in order, adding latency — and log failures only.
-    // TODO(B3): true post-flush execution would need a detached `tokio::spawn`
-    // concurrent with the socket write, owning its own effect teardown.
-    run_opts(&opts);
-    handler_response
+    // Phase 3: `Opt` effects are handed back for the router to run AFTER this
+    // response is flushed (B3), concurrent with the socket write, so they never
+    // add latency to the client. They carry only owned data, so they outlive
+    // the response's decref below.
+    (handler_response, DeferredEffects::new(opts))
 }
 
 /// Decode one `DbWrite | HttpSend | Log` tag payload into an owned `Action`.

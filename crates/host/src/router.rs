@@ -197,7 +197,7 @@ impl RouterInner {
         // not run when a panic unwinds out of a hosted fn.
         let ctx_guard = crate::effects::mint_ctx();
         let ctx = ctx_guard.id();
-        let roc_response =
+        let (roc_response, deferred) =
             tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts, ctx))
                 .await?;
         drop(ctx_guard);
@@ -219,6 +219,15 @@ impl RouterInner {
                 _ => tracing::warn!("Roc handler returned invalid header {name:?}"),
             }
         }
+
+        // Fire-and-forget `Opt` effects (B3): run them detached on the blocking
+        // pool, concurrent with hyper writing this response's body, so they add
+        // no latency to the client. Failures are logged inside `run`; the
+        // handle is dropped so a panicking `Opt` cannot affect the response.
+        if !deferred.is_empty() {
+            tokio::task::spawn_blocking(move || deferred.run());
+        }
+
         Ok(response)
     }
 

@@ -162,8 +162,11 @@ of effects with `Res.fx` / `Res.fx_err` (critical) and `.opt` (fire-and-forget),
 then finishes with a response terminal (`.text` / `.json` / `.bytes` / ...) that
 folds the effects into the returned `Response`. The host runs them after the
 handler: critical effects in a per-request transaction (a `UniqueViolation`/etc.
-failure invokes the pure `fx_err` handler for the response), `.opt` after.
-Effects come from a closed vocabulary (`Effect.Tag`): `DbWrite`, `HttpSend`, `Log`.
+failure invokes the pure `fx_err` handler for the response) before the response
+is sent; `.opt` effects are fire-and-forget and run *after* the response is
+flushed, off its critical path — so they add no latency and their result is not
+observable by the returning request. Effects come from a closed vocabulary
+(`Effect.Tag`): `DbWrite`, `HttpSend`, `Log`.
 
 ```roc
 create : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response

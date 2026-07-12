@@ -479,14 +479,24 @@ async fn opt_effects_fire_without_affecting_status() {
     assert_eq!(response.status(), 200);
     assert_eq!(response.text().await.unwrap(), "opt ok");
 
-    // The Opt(DbWrite) actually ran: at least one row is present.
-    let check = client
-        .get(format!("{base}/effects/opt-check"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(check.status(), 200);
-    let body = check.text().await.unwrap();
-    let count: u64 = body.strip_prefix("opt_rows=").unwrap().parse().unwrap();
-    assert!(count >= 1, "Opt(DbWrite) did not run: {body}");
+    // The Opt(DbWrite) actually ran. `Opt` effects are fire-and-forget and run
+    // post-flush (B3), off the response's critical path — so the row appears
+    // eventually, not necessarily by the time the 200 lands. Poll the check
+    // endpoint until the insert is observed.
+    let mut last = String::new();
+    for _ in 0..50 {
+        let check = client
+            .get(format!("{base}/effects/opt-check"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(check.status(), 200);
+        last = check.text().await.unwrap();
+        let count: u64 = last.strip_prefix("opt_rows=").unwrap().parse().unwrap();
+        if count >= 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("Opt(DbWrite) did not run within timeout: {last}");
 }

@@ -101,7 +101,7 @@ pub fn call_handler(
     model: RocModel,
     parts: RequestParts,
     ctx: u64,
-) -> ResponseParts {
+) -> (ResponseParts, crate::effect::DeferredEffects) {
     #[repr(C)]
     struct Args {
         arg0: RocRequest,
@@ -139,17 +139,20 @@ pub fn call_handler(
             body: response.body.as_slice().to_vec(),
         };
 
-        // Host executes the effects the handler returned (Arch B), inside this
-        // spawn_blocking thread (S2): DB `Must` writes run first in one
-        // `BEGIN IMMEDIATE` transaction, external `Must` writes after commit,
-        // `Opt` effects last. A failing `Must` replaces the response with its
-        // boxed err_handler's reply. An empty effects list is a no-op, so the
-        // escape-hatch (`effects: []`) path behaves exactly as before.
-        let out = crate::effect::run_effects(&response, handler_response);
+        // Host executes the critical effects the handler returned (Arch B),
+        // inside this spawn_blocking thread (S2): DB `Must` writes run first in
+        // one `BEGIN IMMEDIATE` transaction, external `Must` writes after
+        // commit. A failing `Must` replaces the response with its boxed
+        // err_handler's reply. The fire-and-forget `Opt` effects come back as
+        // `DeferredEffects` for the router to run post-flush (B3). An empty
+        // effects list yields empty deferred effects, so the escape-hatch
+        // (`effects: []`) path behaves exactly as before.
+        let (out, deferred) = crate::effect::run_effects(&response, handler_response);
 
         // One recursive decref frees the whole response, including each effect's
-        // tag payload and boxed err_handler (erased callable).
+        // tag payload and boxed err_handler (erased callable). The deferred
+        // `Opt`s hold owned copies, so they survive this decref.
         response.decref(host);
-        out
+        (out, deferred)
     }
 }
