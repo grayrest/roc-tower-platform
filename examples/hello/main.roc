@@ -3,8 +3,9 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 import pf.Host
 import pf.Res
 import pf.Req
+import pf.Ctx
 
-Model : { greeting : Str, started_at_ms : U64 }
+Model : { greeting : Str }
 
 Request : {
     ctx : U64,
@@ -19,11 +20,15 @@ Request : {
 
 Response : Res.Response
 
-## A custom extractor: any nominal type with a from_request method can be a
-## handler argument. Rejections (Err) are returned as the response.
+db_path : Str
+db_path = "/tmp/tower-platform-demo.db"
+
+## An app-defined coeffect: the {id} path parameter. Its `inject!` resolves it
+## before the (pure) handler runs; a miss rejects with 400 so the handler only
+## ever sees a present id. This is the sanctioned way to add typed inputs.
 UserId := [UserId(Str)].{
-    from_request : Request -> Try(UserId, Response)
-    from_request = |req| {
+    inject! : Request => Try(UserId, Response)
+    inject! = |req| {
         match Req.param(req, "id") {
             Ok(value) => Ok(UserId.UserId(value))
             Err(_) => Err(Res.text(400, "missing id path parameter"))
@@ -41,11 +46,16 @@ main = |{}| {
     ],
     init!: init!,
     routes: [
-        { method: "GET", path: "/", handler: Box.box(Req.args1(home!)) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Req.args1(user!)) },
-        { method: "POST", path: "/echo", handler: Box.box(Req.args1(echo!)) },
-        { method: "POST", path: "/greet", handler: Box.box(Req.args2(greet!)) },
-        { method: "GET", path: "/uptime", handler: Box.box(Req.args1(uptime!)) },
+        # Sanctioned style: pure `->` handlers, coeffects in, Response out.
+        # Wrapped with Ctx.argsN, which resolves each coeffect before the handler.
+        { method: "GET", path: "/", handler: Box.box(Ctx.args1(home)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.args1(user)) },
+        { method: "POST", path: "/echo", handler: Box.box(Ctx.args1(echo)) },
+        { method: "POST", path: "/greet", handler: Box.box(Ctx.args2(greet)) },
+        { method: "GET", path: "/visit", handler: Box.box(Ctx.args1(visit)) },
+        # Escape hatch: raw effectful `Request => Response` handlers, for logic
+        # that interleaves I/O with response-building. Still supported; not the
+        # default. See examples/pure for the fully pure style end to end.
         { method: "GET", path: "/random", handler: Box.box(random!) },
         { method: "GET", path: "/proxy", handler: Box.box(proxy!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
@@ -55,35 +65,46 @@ main = |{}| {
 init! : () => Try(Model, Str)
 init! = || {
     Host.log!("initializing hello app")
+    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", params: [] })
     greeting = match Host.env_var!("GREETING") {
         Ok(value) => value
         Err(_) => "Hello"
     }
-    Ok({ greeting: greeting, started_at_ms: Host.now_ms!() })
+    Ok({ greeting: greeting })
 }
 
-## Destructure the wrapper right in the parameter to bind the payload
-## directly — imported wrappers use the full Module.Type.Tag form.
-home! : Req.Model(Model) => Response
-home! = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
+# --- Pure handlers (`->`: the compiler forbids any I/O in these bodies) ------
 
-## App-local wrappers can use the bare tag.
-user! : UserId => Response
-user! = |UserId(id)| Res.text(200, "user ${id}")
+home : Req.Model(Model) -> Response
+home = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
 
-echo! : Req.Body => Response
-echo! = |Req.Body.Body(bytes)| Res.bytes(200, "application/octet-stream", bytes)
+user : UserId -> Response
+user = |UserId(id)| Res.text(200, "user ${id}")
+
+echo : Req.Body -> Response
+echo = |Req.Body.Body(bytes)| Res.bytes(200, "application/octet-stream", bytes)
 
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
-greet! : Req.JsonBody({ name : Str }), Req.Model(Model) => Response
-greet! = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)| {
+greet : Req.JsonBody({ name : Str }), Req.Model(Model) -> Response
+greet = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)|
     Res.json(200, { message: "${model.greeting}, ${body.name}" })
+
+## Effect showcase: a pure handler records a visit via a Must(DbWrite) effect
+## that the host runs (transactionally) after the handler returns. No Host.*!
+## call appears in the body.
+visit : Req.Model(Model) -> Response
+visit = |Req.Model.Model(_model)| {
+    recorded = Res.text(201, "visit recorded")
+    Res.with_effect(
+        recorded,
+        Res.must(
+            DbWrite({ db: db_path, sql: "INSERT INTO visits (at_ms) VALUES (0)", params: [] }),
+            |_err| { status: 500, headers: [], body: "could not record visit".to_utf8() },
+        ),
+    )
 }
 
-uptime! : Req.Model(Model) => Response
-uptime! = |Req.Model.Model(model)| {
-    Res.text(200, "uptime_ms=${(Host.now_ms!() - model.started_at_ms).to_str()}")
-}
+# --- Escape hatch: raw effectful handlers -----------------------------------
 
 random! : Request => Response
 random! = |_req| Res.text(200, "random=${Str.inspect(Host.random_bytes!(8))}")
@@ -103,10 +124,9 @@ proxy! = |_req| {
     }
 }
 
+## Read-modify-read is naturally imperative — a good escape-hatch case.
 db! : Request => Response
 db! = |_req| {
-    db_path = "/tmp/tower-platform-demo.db"
-    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", params: [] })
     _ = Host.sqlite_exec!({ db: db_path, sql: "INSERT INTO visits (at_ms) VALUES (?)", params: [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())] })
     match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) AS n FROM visits", params: [] }) {
         Ok(result) => {

@@ -10,12 +10,17 @@ source, and tracks its moving platform ABI via generated glue.
 
 ## What a Roc app looks like
 
+Handlers are **pure** functions (`->`, not `=>`): the compiler forbids I/O in
+their bodies. Inputs arrive as **coeffects** resolved before the handler; writes
+leave as **effects** the host runs after it returns.
+
 ```roc
 app [Model, main] { pf: platform "../../platform/main.roc" }
 
 import pf.Host
 import pf.Res
 import pf.Req
+import pf.Ctx
 
 Model : { greeting : Str }
 
@@ -23,8 +28,9 @@ main = |{}| {
     settings: [Port(8000), Compression, CorsPermissive],
     init!: init!,
     routes: [
-        { method: "GET", path: "/", handler: Box.box(Req.args1(home!)) },
-        { method: "POST", path: "/greet", handler: Box.box(Req.args2(greet!)) },
+        # Ctx.argsN resolves each coeffect, then calls the pure handler.
+        { method: "GET", path: "/", handler: Box.box(Ctx.args1(home)) },
+        { method: "POST", path: "/greet", handler: Box.box(Ctx.args2(greet)) },
     ],
 }
 
@@ -37,19 +43,22 @@ init! = || {
     Ok({ greeting: greeting })
 }
 
-home! : Req.Model(Model) => Response
-home! = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
+# Pure: `->` arrow. No Host.*! call can appear here — it would not compile.
+home : Req.Model(Model) -> Response
+home = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
 
-## Handler arguments are extracted from the request by type: a bad JSON body
-## never reaches the handler — the extractor rejects it with a 400.
-greet! : Req.JsonBody({ name : Str }), Req.Model(Model) => Response
-greet! = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)| {
+# Coeffects are resolved by type before the handler runs: a bad JSON body never
+# reaches `greet` — the JsonBody coeffect rejects it with a 400.
+greet : Req.JsonBody({ name : Str }), Req.Model(Model) -> Response
+greet = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)|
     Res.json(200, { message: "${model.greeting}, ${body.name}" })
-}
 ```
 
-See [examples/hello/main.roc](examples/hello/main.roc) for the full version,
-including path params, SQLite, and outbound HTTP.
+See [examples/pure/main.roc](examples/pure/main.roc) for the full model —
+reserved-id coeffects, a `Must(DbWrite)` effect that runs transactionally with a
+`UniqueViolation -> 409` handler, and an `Opt(Log)` — and
+[examples/hello/main.roc](examples/hello/main.roc) for a mix of pure handlers
+and the effectful escape hatch.
 
 ## Architecture
 
@@ -104,51 +113,42 @@ Rust host (staticlib linked by `roc build`)
 SQL parameters and cells use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
 
-## Handlers and extractors (`Req.argsN`)
+## Pure handlers: coeffects and effects (`Ctx.argsN`, `pf.Effect`)
 
-The blessed handler style: declare typed arguments, and each argument type's
-`from_request` method pulls it out of the request. Wrap the handler with
-`Req.args1` … `Req.args5` (matching its arity) in the route list:
+The sanctioned handler style. A handler is a **pure** function (`->`): it
+declares typed **coeffects** as its arguments and returns a `Response` that may
+carry **effects**. `Ctx.args1` … `Ctx.args5` (matching arity) wrap it into a
+route handler that resolves each coeffect, then calls the pure handler:
 
 ```roc
-{ method: "GET", path: "/combo/{id}", handler: Box.box(Req.args3(combo!)) }
+{ method: "GET", path: "/combo/{id}", handler: Box.box(Ctx.args3(combo)) }
 
-combo! : UserId, Req.QueryParams, Req.Model(Model) => Response
-combo! = |UserId(id), query_arg, Req.Model.Model(model)| ...
+combo : UserId, Req.QueryParams, Req.Model(Model) -> Response
+combo = |UserId(id), query_arg, Req.Model.Model(model)| ...
 ```
 
-Arguments extract left to right; the first `Err` rejection is returned as the
-response and the handler never runs.
+**Coeffects (in).** Each coeffect type carries an effectful `inject! : Ctx =>
+Try(a, Response)` that resolves it *before* the handler — this is where reads
+happen (parse a param, load a row, reserve an id). Coeffects resolve left to
+right; the first `Err` becomes the response and the handler never runs.
+Destructure the payload in the parameter — imported (`Req.*`) coeffects use the
+full `Module.Type.Tag` form, app-local ones accept the bare tag.
 
-Destructure the wrapper right in the parameter to bind its payload — no
-`.value()` needed. Imported (`Req.*`) wrappers use the full `Module.Type.Tag`
-form (`Req.Model.Model(model)`); app-local wrappers accept the bare tag
-(`UserId(id)`). Keep a wrapper as a plain argument (like `query_arg` above)
-when you want its `.get()` accessor instead of the raw payload.
-
-Platform extractors (all under `Req`):
-
-| Type | Extracts | Rejects |
+| Coeffect | Resolves to | Rejects |
 | --- | --- | --- |
-| `Req.Body` | raw body bytes | never |
-| `Req.BodyStr` | body as UTF-8 text | 400 on invalid UTF-8 |
-| `Req.JsonBody(a)` | body decoded as JSON into `a` | 400 on bad JSON |
-| `Req.FormBody` | urlencoded form pairs | 400 on invalid UTF-8 |
-| `Req.QueryParams` | decoded query pairs | never |
-| `Req.Headers` | request headers | never |
-| `Req.Model(m)` | the shared app model, unboxed | never |
+| `Req.Body` / `Req.BodyStr` | raw / UTF-8 body | 400 on bad UTF-8 |
+| `Req.JsonBody(a)` | body decoded into `a` | 400 on bad JSON |
+| `Req.FormBody` / `Req.QueryParams` / `Req.Headers` | pairs (with `.get`) | — |
+| `Req.Model(m)` | the shared app model | — |
+| `Req.ReservedId` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
 
-Each wraps its payload: `.value()` returns it, and `Req.FormBody`,
-`Req.QueryParams`, and `Req.Headers` also have `.get(name)` (headers
-case-insensitive).
-
-Custom extractors are nominal types with a `from_request` method — this is
-how path parameters get names:
+Custom coeffects are nominal types with an `inject!` method — this is how path
+parameters and typed reads get names:
 
 ```roc
 UserId := [UserId(Str)].{
-    from_request : Request -> Try(UserId, Response)
-    from_request = |req| {
+    inject! : Request => Try(UserId, Response)
+    inject! = |req| {
         match Req.param(req, "id") {
             Ok(value) => Ok(UserId.UserId(value))
             Err(_) => Err(Res.text(400, "missing id path parameter"))
@@ -157,11 +157,32 @@ UserId := [UserId(Str)].{
 }
 ```
 
-Raw handlers (`Request => Response`, no wrapper) remain fully supported —
-see `random!`, `proxy!`, and `db!` in the hello example.
+**Effects (out).** A pure handler can't call `Host.*!`; instead it attaches
+effects to its response (`Res.with_effect`), and the host runs them after the
+handler returns. Effects come from a closed vocabulary (`Effect.Tag`):
+`DbWrite`, `HttpSend`, `Log`. Each is `Res.must(tag, on_err)` — critical, runs
+in a per-request transaction, and a `UniqueViolation`/etc. failure invokes the
+pure `on_err` handler for the response — or `Res.opt(tag)`, fire-and-forget.
 
-Note: multi-argument handler *types* are written `(a, b => resp)` — the arrow
-inside the parens. `(a, b) => resp` is a function taking one tuple.
+```roc
+create : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response
+create = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)|
+    Res.with_effect(
+        Res.json(201, { id }),
+        Res.must(
+            DbWrite({ db, sql: "INSERT INTO users (id, name) VALUES (?, ?)", params }),
+            |err| match err {
+                UniqueViolation(_) => { status: 409, headers: [], body: "taken".to_utf8() }
+                _ => { status: 500, headers: [], body: "failed".to_utf8() }
+            },
+        ),
+    )
+```
+
+**Escape hatch.** Raw effectful handlers (`Request => Response`, no wrapper,
+calling `Host.*!` directly) remain fully supported for logic that interleaves
+I/O with response-building — see `random!`, `proxy!`, and `db!` in the hello
+example. The pure model is the default; this is the exception.
 
 ## Helpers (`pf.Res`, `pf.Req`)
 
