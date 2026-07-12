@@ -53,5 +53,12 @@ init! = || {
     exec!("CREATE TABLE IF NOT EXISTS article_tags (article_id INTEGER NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (article_id, tag))")?
     exec!("CREATE TABLE IF NOT EXISTS favorites (user_id INTEGER NOT NULL, article_id INTEGER NOT NULL, PRIMARY KEY (user_id, article_id))")?
     exec!("CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id), author_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")?
+    # Indexes for every WHERE/JOIN the queries actually run. Without these,
+    # each article list row pays TWO full favorites scans (count + viewer
+    # EXISTS), and tag/author filters and comment lists scan their tables.
+    exec!("CREATE INDEX IF NOT EXISTS idx_articles_author ON articles(author_id)")?
+    exec!("CREATE INDEX IF NOT EXISTS idx_article_tags_tag ON article_tags(tag)")?
+    exec!("CREATE INDEX IF NOT EXISTS idx_favorites_article ON favorites(article_id, user_id)")?
+    exec!("CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id)")?
     Ok({ db: Db.db_path })
 }

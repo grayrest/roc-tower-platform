@@ -157,8 +157,23 @@ import Cofx
 # this is the platform's real privacy boundary.
 
 ## Internal: one un-memoized reservation (the `reserved_id!` cache miss).
+## Fast path first: after the very first reservation the counter row always
+## exists, so the increment is ONE statement; only a miss (fresh database)
+## pays the create-table/seed-row setup.
 reserve_fresh_id! = |req| {
     db = Box.unbox(req.model).db
+    match Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] }) {
+        Ok(result) => match read_reserved_id(result) {
+            Ok(reserved) => Ok(reserved)
+            Err(_) => reserve_first_id!(db)
+        }
+        Err(_) => reserve_first_id!(db)
+    }
+}
+
+## Internal: the fresh-database path — create the sequence table and its
+## row, then take the first reservation.
+reserve_first_id! = |db| {
     _ = Host.sqlite_exec!({ db: db, sql: "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", params: [] })
     _ = Host.sqlite_exec!({ db: db, sql: "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", params: [] })
     result = Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] })
