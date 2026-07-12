@@ -63,6 +63,10 @@ Db := [].{
         author: article.author,
     }
 
+    ## The database file the request's model names — the standard first step
+    ## of a coeffect that reads.
+    of = |req| Box.unbox(req.model).db
+
     ## A NullableStr as a SQL parameter (Val -> TEXT, Null -> NULL).
     to_sql : NullableStr -> Host.SqlValue
     to_sql = |nullable| match nullable {
@@ -157,6 +161,19 @@ Db := [].{
         author_id = row.i64("author_id") ? |_| Api.error(500, "corrupt article row")
         article = Db.decode_article(row) ? |_| Api.error(500, "corrupt article row")
         Ok({ id: id, author_id: author_id, article: article })
+    }
+
+    ## The LIGHT article lookup for existence and ownership checks: just the
+    ## row id and author, no joins/aggregates. Use `load_article!` only when
+    ## the response needs the full JSON-shaped article.
+    load_article_meta! = |db, slug| {
+        result = Host.sqlite_exec!({ db: db, sql: "SELECT id, author_id FROM articles WHERE slug = ?", params: [Text(slug)] })
+            ? |message| Api.error(500, "db error: ${message}")
+        row = Sql.first(result) ? |_| Api.not_found("article")
+        Ok({
+            id: row.i64("id") ? |_| Api.error(500, "corrupt article row"),
+            author_id: row.i64("author_id") ? |_| Api.error(500, "corrupt article row"),
+        })
     }
 
     ## List articles with optional tag/author/favorited filters, most recent

@@ -49,6 +49,16 @@ Api := [].{
         }
     }
 
+    ## Validate an OPTIONAL field is non-blank when present; absent fields
+    ## pass through (PATCH-body validation).
+    nonblank_opt = |field, value| match value {
+        Ok(text) => match Api.nonblank(field, text) {
+            Ok(_) => Ok(value)
+            Err(response) => Err(response)
+        }
+        Err(Missing) => Ok(value)
+    }
+
     ## 401 Unauthorized — no/invalid token: `errors.token = ["is missing"]`.
     unauthorized = || Api.field_error(401, "token", "is missing")
 

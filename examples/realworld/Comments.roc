@@ -7,78 +7,80 @@ import Db
 import Articles
 
 ## Comments: add to an article, list an article's comments, delete own.
+## Article existence checks go through the LIGHT `Db.load_article_meta!`
+## (comments never need the article body); `withN` slot order gives the
+## spec's 401 → 404 → 422 precedence.
 Comments := [].{
     routes = |{}| [
-        { method: "POST", path: "/api/articles/{slug}/comments", handler: Box.box(Cofx.with1(Comments.add_input!, Comments.add)) },
-        { method: "GET", path: "/api/articles/{slug}/comments", handler: Box.box(Cofx.with1(Comments.list_input!, Comments.list)) },
-        { method: "DELETE", path: "/api/articles/{slug}/comments/{id}", handler: Box.box(Cofx.with1(Comments.delete_input!, Comments.delete)) },
+        { method: "POST", path: "/api/articles/{slug}/comments", handler: Box.box(Cofx.with5(Auth.current_user!, Comments.article_id!, Comments.comment_body, Req.reserved_id!, Req.now!, Comments.add)) },
+        { method: "GET", path: "/api/articles/{slug}/comments", handler: Box.box(Cofx.with1(Comments.article_comments!, Comments.list)) },
+        { method: "DELETE", path: "/api/articles/{slug}/comments/{id}", handler: Box.box(Cofx.with1(Comments.owned_comment_id!, Comments.delete)) },
     ]
 
-    ## Coeffect: author, target article (404), decoded body, a reserved
-    ## comment id, and the request instant.
-    add_input! = |req| {
-        author = Auth.current_user!(req)?
-        slug = Req.get_param(req, "slug") ? |_| Api.error(400, "missing slug")
-        loaded = Db.load_article!(Box.unbox(req.model).db, author.id, slug)?
+    ## Coeffect: the target article's row id — the light existence check,
+    ## 404 when the slug is unknown.
+    article_id! = Req.param("slug")
+        ->Cofx.and_then(|slug, req| {
+            meta = Db.load_article_meta!(Db.of(req), slug)?
+            Ok(meta.id)
+        })
+
+    ## Coeffect: the decoded, validated comment text. Pure.
+    comment_body = |req| {
         body : { comment : { body : Str } }
         body = Req.json_body(req) ? |_| Api.error(422, "invalid comment body")
-        text = Api.nonblank("body", body.comment.body)?
-        id = Req.reserved_id!(req)?
-        now = Req.now!(req)?
-        Ok({ author: author, article_id: loaded.id, text: text, id: id, now: now })
+        Api.nonblank("body", body.comment.body)
     }
 
     ## PURE handler: INSERT the comment, answer the comment object as its
     ## author sees it.
-    add = |input| {
-        stamp = Api.iso8601(input.now)
+    add : Auth.User, I64, Str, I64, U64 -> Res.Response
+    add = |author, article_id, text, id, now| {
+        stamp = Api.iso8601(now)
         Res.fx(DbWrite({
                 db: Db.db_path,
                 sql: "INSERT INTO comments (id, article_id, author_id, body, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 params: [
-                    Integer(input.id),
-                    Integer(input.article_id),
-                    Integer(input.author.id),
-                    Text(input.text),
+                    Integer(id),
+                    Integer(article_id),
+                    Integer(author.id),
+                    Text(text),
                     Text(stamp),
                     Text(stamp),
                 ],
             }))
             .json(201, {
                 comment: {
-                    id: input.id,
+                    id: id,
                     createdAt: stamp,
                     updatedAt: stamp,
-                    body: input.text,
-                    author: Articles.self_profile(input.author),
+                    body: text,
+                    author: Articles.self_profile(author),
                 },
             })
     }
 
     ## Coeffect: the target article's comments as the (possibly anonymous)
     ## viewer sees them (following flags).
-    list_input! = |req| {
-        viewer = Auth.optional_user!(req)?
-        slug = Req.get_param(req, "slug") ? |_| Api.error(400, "missing slug")
-        db = Box.unbox(req.model).db
-        loaded = Db.load_article!(db, Auth.viewer_id(viewer), slug)?
-        Db.load_comments!(db, Auth.viewer_id(viewer), loaded.id)
-    }
+    article_comments! = Comments.article_id!
+        ->Cofx.and_then(|article_id, req| {
+            viewer = Auth.optional_user!(req)?
+            Db.load_comments!(Db.of(req), Auth.viewer_id(viewer), article_id)
+        })
 
     ## PURE handler: the comments envelope.
     list : List(Db.Comment) -> Res.Response
     list = |comments| Res.json(200, { comments: comments })
 
     ## Coeffect: the comment at {slug}/{id}, which the authenticated viewer
-    ## must have written: 401 anonymous, 404 unknown, 403 not-your-comment.
-    delete_input! = |req| {
+    ## must have written — 401 anonymous, 404 unknown article/comment,
+    ## 403 not-your-comment.
+    owned_comment_id! = |req| {
         user = Auth.current_user!(req)?
-        slug = Req.get_param(req, "slug") ? |_| Api.error(400, "missing slug")
-        id_raw = Req.get_param(req, "id") ? |_| Api.error(400, "missing comment id")
-        comment_id = I64.from_str(id_raw) ? |_| Api.not_found("comment")
-        db = Box.unbox(req.model).db
-        loaded = Db.load_article!(db, user.id, slug)?
-        comment = Db.load_comment!(db, comment_id, loaded.id)?
+        article_id = Comments.article_id!(req)?
+        raw_id = Req.get_param(req, "id") ? |_| Api.error(400, "missing comment id")
+        comment_id = I64.from_str(raw_id) ? |_| Api.not_found("comment")
+        comment = Db.load_comment!(Db.of(req), comment_id, article_id)?
         if comment.author_id == user.id {
             Ok(comment.id)
         } else {
