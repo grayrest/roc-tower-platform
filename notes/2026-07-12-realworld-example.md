@@ -69,3 +69,30 @@ bio/image normalizing to null, tagList replacement semantics (absent =
 keep, `[]` = clear, `null` = 422), and body-less article list items.
 `just realworld-conformance` downloads the suite once into
 `target/realworld-spec` and runs it against a fresh server on :8199.
+
+## Perf pass (2026-07-12, commit 3b60503)
+
+Seeded 5k articles / 200 users / 10k comments, wrk -c16. Low-hanging fruit
+found and fixed:
+
+1. **Missing indexes** (the big one): `favorites(article_id, user_id)` — the
+   article SELECT pays a count subquery AND a viewer-EXISTS per row, both
+   were full scans; `articles(author_id)`, `article_tags(tag)`,
+   `comments(article_id)`. List 911→5.2k, comments 5.6k→41.6k req/s.
+2. **Filter predicate shape is per-QUERY, not per-filter**: the page query
+   wants EXISTS (planner keeps the ORDER BY id DESC scan and early-exits at
+   LIMIT; IN materializes every match and computes the SELECT-clause
+   subqueries for ALL of them first) — except sparse-by-nature filters
+   (favorited-by-user) where the IN-list is tiny and wins. The count query
+   wants IN. A tag-only count is a bare index-range count over
+   article_tags — ~10x the join count's throughput under concurrency.
+3. **reserved_id! fast path** (platform): UPDATE..RETURNING first, setup
+   only on a fresh DB (3 statements → 1 per reservation).
+
+Dead ends worth remembering: ANALYZE changed nothing; WAL checkpoint
+changed nothing (contention was query cost, not wal-index size); a Python
+threading harness bottlenecks at ~1k qps on its own GIL — only its
+relative orderings are usable, wrk against the real server is the truth.
+Residual (not low-hanging): argon2 makes register/login ~100ms by design;
+create-article is fsync-bound; the 4 correlated SELECT subqueries per
+article row could become window/join aggregates if lists ever need more.
