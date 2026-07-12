@@ -16,6 +16,7 @@ platform ""
                 method : Str,
                 path : Str,
                 handler : Box({
+                    ctx : U64,
                     method : Str,
                     path : Str,
                     params : List({ name : Str, value : Str }),
@@ -31,7 +32,7 @@ platform ""
             }),
         }
     }
-    exposes [Host, Res, Req, Effect]
+    exposes [Host, Res, Req, Effect, Ctx]
     packages {}
     provides {
         "roc_app": app_for_host,
@@ -44,6 +45,13 @@ platform ""
         "roc_random_bytes": Host.random_bytes!,
         "roc_http_send": Host.http_send!,
         "roc_sqlite_exec": Host.sqlite_exec!,
+        "roc_reserve_id": Host.reserve_id!,
+        "roc_reserve_runs": Host.reserve_runs!,
+        "roc_memo_get": Host.memo_get!,
+        "roc_memo_put": Host.memo_put!,
+        "roc_ctx_registry_size": Host.ctx_registry_size!,
+        "roc_memo_live_boxes": Host.memo_live_boxes!,
+        "roc_panic_test": Host.panic_test!,
     }
     targets: {
         inputs_dir: "targets/",
@@ -55,6 +63,7 @@ import Host
 import Res
 import Req
 import Effect
+import Ctx
 
 app_for_host = |{}| {
     program = main({})

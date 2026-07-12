@@ -7,7 +7,7 @@
 
 use crate::abi;
 
-pub type RocRequest = abi::AnonStructD4ee28fdb1207b43;
+pub type RocRequest = abi::AnonStructAbbb89a8d6948757;
 pub type RocResponse = abi::AnonStructA14cd3b7d5755441;
 pub type RocKeyValue = abi::AnonStruct82a96c5d55d63488;
 pub type RocSetting = abi::AppForHostSettings;

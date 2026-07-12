@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -343,6 +344,213 @@ fn build_sqlite_ok(columns: &[String], rows: Vec<Vec<SqlCell>>) -> RocSqliteResu
             rows: row_list,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-request coeffect memo registry.
+//
+// Each in-flight request owns one `RequestState` in a process-wide registry,
+// keyed by a host-minted u64 ctx id that travels through Roc inside the
+// request record (`req.ctx`). Hosted memo fns index the registry by that id,
+// so concurrent requests get disjoint stores. A Drop guard (`CtxGuard`) held
+// across the handler call on the async side of `spawn_blocking` removes the
+// entry and releases every retained box on normal return AND on panic-unwind.
+// (Roc `crash` is process::exit — out of scope.)
+//
+// Values are boxed THUNKS (`Box({} => a)` = erased callables) stored as
+// `usize` (raw pointers are not Send). A raw `Box(a)` cannot be released by
+// the host: freeing needs the payload's elements_refcounted flag + alignment
+// (they set the allocation header size) and a recursive child decref, all of
+// which the FFI erases. An erased callable has a FIXED layout plus a
+// compiler-generated on_drop that releases the capture, so
+// `decref_erased_callable` is sound.
+//
+// No type discriminant crosses the FFI, so a same-key re-registration can
+// only be handled by releasing the displaced pointer, not by rejecting a
+// type mismatch.
+// ---------------------------------------------------------------------------
+
+/// Non-idempotent effect counter. `reserve_id!` bumps this; `reserve_runs!`
+/// reads it. Memoization proofs assert exact run counts against it.
+static RESERVE_RUNS: AtomicU64 = AtomicU64::new(0);
+
+/// Mints unique per-request ctx ids. Starts at 1 so 0 can mean "no ctx".
+static NEXT_CTX: AtomicU64 = AtomicU64::new(1);
+
+/// Gauge: boxes currently retained by all request stores. Balanced-teardown
+/// evidence: must return to 0 whenever the registry is empty.
+static LIVE_MEMO_BOXES: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Default)]
+struct RequestState {
+    /// key -> raw erased-callable payload pointer. The store holds exactly
+    /// one reference to each thunk (the one transferred by `memo_put!`).
+    memo: HashMap<String, usize>,
+}
+
+/// Release one store-held thunk reference.
+fn release_stored_thunk(raw: usize) {
+    unsafe { abi::decref_erased_callable(raw as abi::RocErasedCallable, roc_host()) };
+    LIVE_MEMO_BOXES.fetch_sub(1, Ordering::SeqCst);
+}
+
+fn ctx_registry() -> &'static Mutex<HashMap<u64, RequestState>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<u64, RequestState>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Registry entry handle for one request. Created before the handler runs;
+/// its `Drop` tears the entry down and releases every retained box, which
+/// runs on normal return and on Rust panic-unwind alike.
+pub struct CtxGuard {
+    id: u64,
+}
+
+impl CtxGuard {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for CtxGuard {
+    fn drop(&mut self) {
+        let state = {
+            // Scope the lock: decref can run arbitrary payload teardown and
+            // must not happen while the registry is locked.
+            let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+            registry.remove(&self.id)
+        };
+        match state {
+            Some(state) => {
+                for (_key, raw) in state.memo {
+                    release_stored_thunk(raw);
+                }
+            }
+            None => tracing::error!("ctx {}: registry entry vanished before teardown", self.id),
+        }
+    }
+}
+
+/// Mint a fresh ctx id and insert its (empty) request store.
+pub fn mint_ctx() -> CtxGuard {
+    let id = NEXT_CTX.fetch_add(1, Ordering::SeqCst);
+    ctx_registry()
+        .lock()
+        .expect("ctx registry poisoned")
+        .insert(id, RequestState::default());
+    CtxGuard { id }
+}
+
+/// `Host.reserve_id! : () => U64` — the non-idempotent injector effect.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_reserve_id() -> u64 {
+    RESERVE_RUNS.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+/// `Host.reserve_runs! : () => U64` — how many times `reserve_id!` has run.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_reserve_runs() -> u64 {
+    RESERVE_RUNS.load(Ordering::SeqCst)
+}
+
+/// `Host.ctx_registry_size! : () => U64` — live request stores (debug).
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_ctx_registry_size() -> u64 {
+    ctx_registry().lock().expect("ctx registry poisoned").len() as u64
+}
+
+/// `Host.panic_test! : () => {}` — test-only host panic, to prove the Drop
+/// guard tears the request down on unwind. "C-unwind" so the panic legally
+/// crosses this boundary; whether it survives the Roc frames above is exactly
+/// what the coeffect teardown test measures.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_panic_test() {
+    panic!("panic_test!: deliberate host panic (coeffect teardown test)");
+}
+
+/// `Host.memo_get! : U64, Str => Try(Box(({} => a)), [Miss])`.
+///
+/// On hit we `incref` the stored thunk before returning it, donating a fresh
+/// reference for Roc to consume (via `Box.unbox` + call) while the store
+/// keeps its own. On miss — or if the ctx has no registry entry, which cannot
+/// happen for an in-flight request — we return the zero-payload `Err`
+/// (`[Miss]`).
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_memo_get(ctx: u64, key: abi::RocStr) -> abi::HostMemoGetResult {
+    let host = roc_host();
+    let name = String::from_utf8_lossy(key.as_slice()).into_owned();
+    unsafe { key.decref(host) };
+
+    let registry = ctx_registry().lock().expect("ctx registry poisoned");
+    let stored = match registry.get(&ctx) {
+        Some(state) => state.memo.get(&name).copied(),
+        None => {
+            tracing::error!("memo_get!({ctx}, {name:?}): no registry entry for ctx");
+            None
+        }
+    };
+    match stored {
+        Some(raw) => {
+            let thunk = raw as abi::RocErasedCallable;
+            unsafe { abi::incref_erased_callable(thunk, 1) };
+            abi::HostMemoGetResult {
+                tag: abi::HostMemoGetResultTag::Ok,
+                payload: abi::HostMemoGetResultPayload {
+                    ok: ManuallyDrop::new(thunk),
+                },
+            }
+        }
+        None => abi::HostMemoGetResult {
+            tag: abi::HostMemoGetResultTag::Err,
+            payload: abi::HostMemoGetResultPayload { err: [] },
+        },
+    }
+}
+
+/// `Host.memo_put! : U64, Str, Box(({} => a)) => {}`.
+///
+/// Takes ownership of one reference to `boxed` (the glue ownership contract
+/// for hosted args) and keeps it alive by storing the raw pointer. A same-key
+/// re-registration displaces the old thunk, whose store-held reference we
+/// must release (unconditionally: even if old == new, the store received TWO
+/// transferred references but can only record one entry). If the ctx has no
+/// registry entry (teardown already ran — cannot happen in-request), the
+/// thunk would leak, so release it and log loudly.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_memo_put(ctx: u64, key: abi::RocStr, boxed: abi::RocErasedCallable) {
+    let host = roc_host();
+    let name = String::from_utf8_lossy(key.as_slice()).into_owned();
+    unsafe { key.decref(host) };
+
+    let displaced = {
+        let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+        match registry.get_mut(&ctx) {
+            Some(state) => {
+                LIVE_MEMO_BOXES.fetch_add(1, Ordering::SeqCst);
+                state.memo.insert(name, boxed as usize)
+            }
+            None => {
+                // Teardown already ran; the transferred reference must still
+                // be released (outside the lock, like the displaced case).
+                // Balance the gauge for release_stored_thunk's decrement.
+                tracing::error!(
+                    "memo_put!({ctx}, {name:?}): no registry entry for ctx; releasing thunk"
+                );
+                LIVE_MEMO_BOXES.fetch_add(1, Ordering::SeqCst);
+                Some(boxed as usize)
+            }
+        }
+    };
+    if let Some(old) = displaced {
+        release_stored_thunk(old);
+    }
+}
+
+/// `Host.memo_live_boxes! : () => U64` — store-held boxes (debug), for
+/// teardown-balance assertions.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_memo_live_boxes() -> u64 {
+    LIVE_MEMO_BOXES.load(Ordering::SeqCst)
 }
 
 fn sql_cell_to_roc(cell: &SqlCell) -> abi::HostSqlValue {

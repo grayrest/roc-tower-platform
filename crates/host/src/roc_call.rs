@@ -76,7 +76,19 @@ pub fn init_model() -> Result<RocModel, String> {
 /// Ownership: the args buffer (request record carrying one retained Model
 /// reference) is consumed by the callee; the returned `RocResponse` is owned
 /// by us and released after copying out.
-pub fn call_handler(handler: RocHandler, model: RocModel, parts: RequestParts) -> ResponseParts {
+///
+/// `ctx` is the per-request coeffect-memo registry id minted by the router.
+/// The router owns the teardown guard — it must NOT live in this frame: a
+/// panic that unwinds out of a hosted fn crosses the Roc frames without
+/// running the Rust cleanups below them (observed on macOS aarch64), so a
+/// guard here would leak on panic. On the async side of `spawn_blocking` the
+/// `JoinError` path is ordinary Rust control flow and the guard is reliable.
+pub fn call_handler(
+    handler: RocHandler,
+    model: RocModel,
+    parts: RequestParts,
+    ctx: u64,
+) -> ResponseParts {
     #[repr(C)]
     struct Args {
         arg0: RocRequest,
@@ -86,6 +98,7 @@ pub fn call_handler(handler: RocHandler, model: RocModel, parts: RequestParts) -
     unsafe { abi::incref_box(model.0, 1) };
     let args = Args {
         arg0: RocRequest {
+            ctx,
             body: unsafe { abi::RocListWith::<u8, false>::from_slice(&parts.body, host) },
             headers: roc_kv_list(&parts.headers),
             method: roc_str(&parts.method),

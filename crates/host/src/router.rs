@@ -189,9 +189,18 @@ impl RouterInner {
         };
 
         let model = self.model;
+        // Mint the per-request coeffect-memo ctx. The guard stays on THIS side
+        // of spawn_blocking: its Drop (normal completion, JoinError from a
+        // handler panic, or this future being cancelled) removes the registry
+        // entry and releases every memoized thunk. A guard inside the blocking
+        // closure would leak on panic — Rust cleanups below the Roc frames do
+        // not run when a panic unwinds out of a hosted fn.
+        let ctx_guard = crate::effects::mint_ctx();
+        let ctx = ctx_guard.id();
         let roc_response =
-            tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts))
+            tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts, ctx))
                 .await?;
+        drop(ctx_guard);
 
         let status = StatusCode::from_u16(roc_response.status).unwrap_or_else(|_| {
             tracing::error!("Roc handler returned invalid status {}", roc_response.status);

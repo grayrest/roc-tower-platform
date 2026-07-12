@@ -8,6 +8,7 @@ import pf.Req
 Model : { prefix : Str, db_path : Str }
 
 Request : {
+    ctx : U64,
     method : Str,
     path : Str,
     params : List({ name : Str, value : Str }),
