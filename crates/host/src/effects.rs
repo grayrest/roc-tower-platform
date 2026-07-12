@@ -282,6 +282,22 @@ pub(crate) fn sqlite_pool(db: &str) -> Result<SqlitePool, String> {
     if let Some(pool) = pools.get(db) {
         return Ok(pool.clone());
     }
+    // Establish WAL mode once, on a lone connection, BEFORE the pool builds
+    // its connections. `Pool::build` opens `min_idle` (= max_size) connections
+    // concurrently, and on a fresh database each one's `journal_mode=WAL` in
+    // `with_init` would race on the one-time WAL-mode switch (a brief exclusive
+    // lock that `busy_timeout` does not cover for a mode transition), producing
+    // a transient r2d2 "database is locked". Once WAL is the file's persistent
+    // mode, every pooled connection's `journal_mode=WAL` is a no-op with no
+    // switch to race on. This runs under the pool-registry lock, so it is the
+    // sole accessor here.
+    {
+        let init = rusqlite::Connection::open(db)
+            .map_err(|err| format!("cannot open database {db:?}: {err}"))?;
+        init.busy_timeout(SQLITE_BUSY_TIMEOUT)
+            .and_then(|()| init.pragma_update(None, "journal_mode", "WAL"))
+            .map_err(|err| format!("cannot enable WAL on {db:?}: {err}"))?;
+    }
     let manager = SqliteConnectionManager::file(db).with_init(|connection| {
         connection.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
         connection.pragma_update(None, "journal_mode", "WAL")?;
