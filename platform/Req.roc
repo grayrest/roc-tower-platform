@@ -1,5 +1,5 @@
-## Request inspection helpers. All fallible helpers return Try; bridge into
-## a Response with Res.from_try.
+## Request inspection: pure helpers for raw handlers, and the built-in
+## coeffect resolvers/factories for pure handlers (see `Ctx`).
 Req := [].{
     ## Look up a path parameter by name.
     param : { params : List({ name : Str, value : Str }), .. }, Str -> Try(Str, [MissingParam])
@@ -62,155 +62,114 @@ Req := [].{
         }
     }
 
-    ## The raw request body bytes. Extraction never fails.
+    ## --- Coeffects -----------------------------------------------------------
     ##
-    ## A built-in coeffect: `inject!` (+ the unique memo `key`) resolves it for
-    ## `Ctx.argsN`, running through `Ctx.get!` so several slots requesting it in
-    ## one request share a single read.
-    Body := [Body(List(U8))].{
-        key = "req.body"
-        inject! = |req| Ctx.get!(req.ctx, Body.key, |{}| Ok(Body.Body(req.body)))
+    ## A coeffect is a resolver VALUE — `req => Try(a, Response)` — bound to a
+    ## pure handler's positional arguments by `Ctx.withN`:
+    ##
+    ##     { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) }
+    ##     greet : { name : Str }, Model -> Response
+    ##
+    ## The handler receives the RAW resolved value — nothing to destructure.
+    ## Parameterized coeffects are factories returning resolvers
+    ## (`Req.param_named("id")`); app-defined coeffects are more values of the
+    ## same shape, composed with `Ctx.map` / `Ctx.and_then`. The built-ins
+    ## below are pure projections of the request, so they run per-slot without
+    ## memoization; `reserved_id` is non-idempotent, so it memoizes through
+    ## `Ctx.get!` and several slots in one request share ONE reservation.
 
-        value : Body -> List(U8)
-        value = |wrapped| match wrapped { Body.Body(bytes) => bytes }
-    }
+    ## The raw request body bytes. Never rejects.
+    body = |req| Ok(req.body)
 
     ## The request body as UTF-8 text. Rejects with 400 on invalid UTF-8.
-    BodyStr := [BodyStr(Str)].{
-        key = "req.body_str"
-        inject! = |req|
-            Ctx.get!(req.ctx, BodyStr.key, |{}|
-                match Req.body_str(req) {
-                    Ok(text) => Ok(BodyStr.BodyStr(text))
-                    Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
-                })
-
-        value : BodyStr -> Str
-        value = |wrapped| match wrapped { BodyStr.BodyStr(text) => text }
+    text_body = |req| match Req.body_str(req) {
+        Ok(text) => Ok(text)
+        Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
     }
 
-    ## The request body decoded as JSON into any parseable type. Rejects
-    ## with 400 when the body is not valid JSON for that type.
-    JsonBody(a) := [JsonBody(a)].{
-        key = "req.json_body"
-        inject! = |req|
-            Ctx.get!(req.ctx, JsonBody.key, |{}|
-                match Req.json(req) {
-                    Ok(decoded) => Ok(JsonBody.JsonBody(decoded))
-                    Err(_) => Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
-                })
-
-        value : JsonBody(a) -> a
-        value = |wrapped| match wrapped { JsonBody.JsonBody(decoded) => decoded }
+    ## The request body decoded as JSON into the handler argument's type.
+    ## Rejects with 400 when the body is not valid JSON for that shape.
+    json_body = |req| match Req.json(req) {
+        Ok(decoded) => Ok(decoded)
+        Err(_) => Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
     }
 
     ## The request body parsed as application/x-www-form-urlencoded pairs.
     ## Rejects with 400 on invalid UTF-8.
-    FormBody := [FormBody(List({ name : Str, value : Str }))].{
-        key = "req.form_body"
-        inject! = |req|
-            Ctx.get!(req.ctx, FormBody.key, |{}|
-                match Req.form(req) {
-                    Ok(fields) => Ok(FormBody.FormBody(fields))
-                    Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
-                })
-
-        value : FormBody -> List({ name : Str, value : Str })
-        value = |wrapped| match wrapped { FormBody.FormBody(fields) => fields }
-
-        get : FormBody, Str -> Try(Str, [MissingField])
-        get = |wrapped, name| {
-            match FormBody.value(wrapped).find_first(|entry| entry.name == name) {
-                Ok(entry) => Ok(entry.value)
-                Err(_) => Err(MissingField)
-            }
-        }
+    form_body = |req| match Req.form(req) {
+        Ok(fields) => Ok(fields)
+        Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
     }
 
-    ## All query parameters, percent-decoded. Extraction never fails.
-    QueryParams := [QueryParams(List({ name : Str, value : Str }))].{
-        key = "req.query_params"
-        inject! = |req| Ctx.get!(req.ctx, QueryParams.key, |{}| Ok(QueryParams.QueryParams(Req.query_params(req))))
+    ## All query parameters, percent-decoded. Never rejects.
+    query_pairs = |req| Ok(Req.query_params(req))
 
-        value : QueryParams -> List({ name : Str, value : Str })
-        value = |wrapped| match wrapped { QueryParams.QueryParams(pairs) => pairs }
+    ## All request headers. Never rejects.
+    headers = |req| Ok(req.headers)
 
-        get : QueryParams, Str -> Try(Str, [MissingQueryParam])
-        get = |wrapped, name| {
-            match QueryParams.value(wrapped).find_first(|entry| entry.name == name) {
-                Ok(entry) => Ok(entry.value)
-                Err(_) => Err(MissingQueryParam)
-            }
-        }
+    ## The app's shared model, unboxed. Never rejects.
+    model = |req| Ok(Box.unbox(req.model))
+
+    ## Coeffect factory: the named path parameter. Rejects with 400 on a miss.
+    ##
+    ##     Ctx.with1(Req.param_named("id"), show_user)
+    param_named = |name| |req| match Req.param(req, name) {
+        Ok(value) => Ok(value)
+        Err(_) => Err(Req.reject(400, "missing path parameter ${name}"))
     }
 
-    ## All request headers. Extraction never fails.
-    Headers := [Headers(List({ name : Str, value : Str }))].{
-        key = "req.headers"
-        inject! = |req| Ctx.get!(req.ctx, Headers.key, |{}| Ok(Headers.Headers(req.headers)))
-
-        value : Headers -> List({ name : Str, value : Str })
-        value = |wrapped| match wrapped { Headers.Headers(pairs) => pairs }
-
-        get : Headers, Str -> Try(Str, [MissingHeader])
-        get = |wrapped, name| Req.header({ headers: Headers.value(wrapped) }, name)
+    ## Coeffect factory: the named query parameter (first occurrence wins).
+    ## Rejects with 400 on a miss.
+    query_named = |name| |req| match Req.query(req, name) {
+        Ok(value) => Ok(value)
+        Err(_) => Err(Req.reject(400, "missing query parameter ${name}"))
     }
 
-    ## The app's shared model, unboxed. Extraction never fails.
-    Model(m) := [Model(m)].{
-        key = "req.model"
-        inject! = |req| Ctx.get!(req.ctx, Model.key, |{}| Ok(Model.Model(Box.unbox(req.model))))
-
-        value : Model(m) -> m
-        value = |wrapped| match wrapped { Model.Model(model) => model }
+    ## Coeffect factory: the named request header (case-insensitive). Rejects
+    ## with 400 on a miss.
+    header_named = |name| |req| match Req.header(req, name) {
+        Ok(value) => Ok(value)
+        Err(_) => Err(Req.reject(400, "missing header ${name}"))
     }
 
-    ## A freshly reserved, non-idempotent id — the canonical read-shaped
-    ## coeffect. `inject!` bumps a per-name counter in a DB sequence table
+    ## A freshly reserved, non-idempotent id — the canonical memoized
+    ## coeffect. Bumps a per-name counter in a DB sequence table
     ## (`UPDATE ... RETURNING`) via `Host.sqlite_exec!`, creating the table on
-    ## first use. It resolves THROUGH the wrapper's `Ctx.get!` (memoized by
-    ## `key`), so several slots requesting a `ReservedId` in one request share
-    ## ONE reservation. The counter lives in the app's database, read from the
-    ## model's `db : Str` field (any app using this coeffect must expose one).
-    ReservedId := [ReservedId(I64)].{
-        key = "coeffect.reserved_id"
+    ## first use. Resolves THROUGH `Ctx.get!`, so several slots requesting it
+    ## in one request share ONE reservation. The counter lives in the app's
+    ## database, read from the model's `db : Str` field (any app using this
+    ## coeffect must expose one). Effectful, so the name carries the `!` —
+    ## pure resolvers are unmarked, memoizing/reading ones are marked.
+    reserved_id! = |req| Ctx.get!(req.ctx, "coeffect.reserved_id", |{}| Req.reserve_fresh_id!(req))
 
-        ## Resolve THROUGH `Ctx.get!` (memoized by `key`) so several slots
-        ## requesting a `ReservedId` in one request share ONE reservation.
-        inject! = |req| Ctx.get!(req.ctx, ReservedId.key, |{}| ReservedId.reserve!(req))
-
-        ## Bump a per-name counter in the app database (read from the model's
-        ## `db : Str` field), creating the sequence table on first use.
-        reserve! = |req| {
-            db = Box.unbox(req.model).db
-            _ = Host.sqlite_exec!({ db: db, sql: "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", params: [] })
-            _ = Host.sqlite_exec!({ db: db, sql: "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", params: [] })
-            match Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] }) {
-                Ok(result) => match ReservedId.read_id(result) {
-                    Ok(reserved) => Ok(ReservedId.ReservedId(reserved))
-                    Err(_) => Err(Req.reject(500, "reserved id: sequence returned no value"))
-                }
-                Err(message) => Err(Req.reject(500, "reserved id: ${message}"))
+    ## Internal: one un-memoized reservation (the `reserved_id` cache miss).
+    reserve_fresh_id! = |req| {
+        db = Box.unbox(req.model).db
+        _ = Host.sqlite_exec!({ db: db, sql: "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", params: [] })
+        _ = Host.sqlite_exec!({ db: db, sql: "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", params: [] })
+        match Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] }) {
+            Ok(result) => match Req.read_reserved_id(result) {
+                Ok(reserved) => Ok(reserved)
+                Err(_) => Err(Req.reject(500, "reserved id: sequence returned no value"))
             }
+            Err(message) => Err(Req.reject(500, "reserved id: ${message}"))
         }
+    }
 
-        ## Read the single INTEGER cell an `UPDATE ... RETURNING v` produces.
-        read_id : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try(I64, [NoValue])
-        read_id = |result| {
-            match result.rows.first() {
-                Ok(row) => match row.first() {
-                    Ok(cell) => match cell {
-                        Host.SqlValue.Integer(n) => Ok(n)
-                        _ => Err(NoValue)
-                    }
-                    Err(_) => Err(NoValue)
+    ## Internal: read the single INTEGER cell an `UPDATE ... RETURNING v`
+    ## produces.
+    read_reserved_id : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try(I64, [NoValue])
+    read_reserved_id = |result| {
+        match result.rows.first() {
+            Ok(row) => match row.first() {
+                Ok(cell) => match cell {
+                    Host.SqlValue.Integer(n) => Ok(n)
+                    _ => Err(NoValue)
                 }
                 Err(_) => Err(NoValue)
             }
+            Err(_) => Err(NoValue)
         }
-
-        value : ReservedId -> I64
-        value = |wrapped| match wrapped { ReservedId.ReservedId(reserved) => reserved }
     }
 
     ## Internal: a plain-text rejection response for coeffect failures.
@@ -360,29 +319,67 @@ expect {
     decoded == Ok({ id: 7 })
 }
 
-# --- coeffect accessors ---
+# --- coeffect resolvers ---
 #
-# Each coeffect's `inject!` resolution is effectful (it memoizes through
-# `Ctx.get!`), so `expect` — which rejects effectful calls — can't drive it;
-# that path is covered end to end by the e2e suite. The pure parsing behind it
-# stays unit-tested via the `Req.json` / `Req.form` / `Req.body_str` /
-# `query_params` expects above. Here we cover the pure payload accessors on
-# directly-constructed coeffect values.
+# The built-ins are pure projections, so they are directly testable here.
+# `reserved_id` memoizes through the effectful `Ctx.get!` (which `expect`
+# rejects); its run-once semantics are covered end to end by the e2e suite.
 
-expect Req.Body.value(Req.Body.Body([1, 2])) == [1, 2]
+expect Req.body({ body: [104, 105] }) == Ok([104, 105])
+
+expect Req.text_body({ body: [104, 105] }) == Ok("hi")
+
+expect Req.text_body({ body: [255, 254] }) == Err(Req.reject(400, "request body is not valid UTF-8"))
 
 expect {
-    wrapped : Req.JsonBody({ id : U64 })
-    wrapped = Req.JsonBody.JsonBody({ id: 7 })
-    wrapped.value() == { id: 7 }
+    decoded : Try({ id : U64 }, _)
+    decoded = Req.json_body({ body: "{\"id\":7}".to_utf8() })
+    decoded == Ok({ id: 7 })
 }
 
-expect Req.FormBody.get(Req.FormBody.FormBody([{ name: "b", value: "x y" }]), "b") == Ok("x y")
+expect {
+    decoded : Try({ id : U64 }, _)
+    decoded = Req.json_body({ body: "nope".to_utf8() })
+    decoded == Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
+}
 
-expect Req.QueryParams.get(Req.QueryParams.QueryParams([{ name: "q", value: "zed" }]), "q") == Ok("zed")
+expect Req.form_body({ body: "a=1&b=x+y".to_utf8() }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "x y" }])
 
-expect Req.QueryParams.value(Req.QueryParams.QueryParams([{ name: "a", value: "1" }])) == [{ name: "a", value: "1" }]
+expect Req.query_pairs({ query: "a=1&b=two%20words" }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "two words" }])
 
-expect Req.Headers.get(Req.Headers.Headers([{ name: "X-Custom", value: "abc" }]), "x-custom") == Ok("abc")
+expect Req.headers({ headers: [{ name: "X-Custom", value: "abc" }] }) == Ok([{ name: "X-Custom", value: "abc" }])
 
-expect Req.Model.value(Req.Model.Model({ greeting: "hey" })) == { greeting: "hey" }
+expect Req.model({ model: Box.box({ greeting: "hey" }) }) == Ok({ greeting: "hey" })
+
+# --- coeffect factories (parameterization = partial application) ---
+
+expect {
+    resolver = Req.param_named("id")
+    resolver({ params: [{ name: "id", value: "42" }] }) == Ok("42")
+}
+
+expect {
+    resolver = Req.param_named("id")
+    match resolver({ params: [] }) {
+        Ok(_) => False
+        Err(response) => response.status == 400
+    }
+}
+
+expect {
+    resolver = Req.query_named("q")
+    resolver({ query: "q=zed" }) == Ok("zed")
+}
+
+expect {
+    resolver = Req.header_named("X-Custom")
+    resolver({ headers: [{ name: "x-custom", value: "abc" }] }) == Ok("abc")
+}
+
+# NOTE: do NOT expect-test a composition like `Ctx.map(Req.param_named("id"), …)`
+# here. Applying a sibling module's combinator to this module's factory inside
+# an expect freezes the factory's request row to the expect's (closed) record,
+# which then fails to unify with the full request record in downstream apps
+# (compiler quirk, observed 2026-07-12). Composition over a factory is covered
+# by the pure example's `fetched_user` (Ctx.and_then over param_named) through
+# the e2e gate.

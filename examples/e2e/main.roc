@@ -21,18 +21,6 @@ Request : {
 
 Response : Res.Response
 
-## App-defined coeffect: pulls the {id} path parameter. `inject!` resolves it
-## before the pure handler; a miss rejects with 400.
-UserId := [UserId(Str)].{
-    inject! : Request => Try(UserId, Response)
-    inject! = |req| {
-        match Req.param(req, "id") {
-            Ok(value) => Ok(UserId.UserId(value))
-            Err(_) => Err(Res.text(400, "missing id path parameter"))
-        }
-    }
-}
-
 main = |{}| {
     settings: [
         Compression,
@@ -44,18 +32,18 @@ main = |{}| {
     init!: init!,
     routes: [
         { method: "GET", path: "/", handler: Box.box(root!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.args1(user)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(Req.param_named("id"), user)) },
         { method: "POST", path: "/echo", handler: Box.box(echo!) },
         { method: "GET", path: "/big", handler: Box.box(big!) },
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(Ctx.args1(helper_greet)) },
-        { method: "POST", path: "/helper/form", handler: Box.box(Ctx.args1(helper_form)) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Ctx.with1(Req.json_body, helper_greet)) },
+        { method: "POST", path: "/helper/form", handler: Box.box(Ctx.with1(Req.form_body, helper_form)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
-        { method: "GET", path: "/helper/header", handler: Box.box(Ctx.args1(helper_header)) },
-        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Ctx.args3(helper_combo)) },
+        { method: "GET", path: "/helper/header", handler: Box.box(Ctx.with1(Req.header_named("x-custom"), helper_header)) },
+        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Ctx.with3(Req.param_named("id"), Req.query_pairs, Req.model, helper_combo)) },
         # Phase 3: host-executed effects.
         { method: "GET", path: "/effects/insert/{tag}", handler: Box.box(effects_insert!) },
         { method: "GET", path: "/effects/rollback", handler: Box.box(effects_rollback!) },
@@ -81,8 +69,8 @@ init! = || {
 root! : Request => Response
 root! = |_req| text(200, "root ok")
 
-user : UserId -> Response
-user = |UserId(id)| text(200, "user ${id}")
+user : Str -> Response
+user = |id| text(200, "user ${id}")
 
 echo! : Request => Response
 echo! = |req| {
@@ -141,11 +129,11 @@ text = |status, message| {
     effects: [],
 }
 
-helper_greet : Req.JsonBody({ name : Str }) -> Response
-helper_greet = |Req.JsonBody.JsonBody(body)| Res.json(200, { message: "hello, ${body.name}" })
+helper_greet : { name : Str } -> Response
+helper_greet = |body| Res.json(200, { message: "hello, ${body.name}" })
 
-helper_form : Req.FormBody -> Response
-helper_form = |Req.FormBody.FormBody(fields)| {
+helper_form : List({ name : Str, value : Str }) -> Response
+helper_form = |fields| {
     rendered = fields.map(|field| "${field.name}=${field.value}")
     Res.text(200, Str.join_with(rendered, ";"))
 }
@@ -164,20 +152,15 @@ helper_q_impl! = |req| {
 helper_redirect! : Request => Response
 helper_redirect! = |_req| Res.redirect(302, "/")
 
-helper_header : Req.Headers -> Response
-helper_header = |headers_arg| {
-    match headers_arg.get("x-custom") {
-        Ok(value) => Res.text(200, "x-custom=${value}")
-        Err(_) => Res.text(400, "missing header")
-    }
-}
+## The `Req.header_named("x-custom")` factory resolves (or 400-rejects) the
+## header before this runs, so the handler sees the raw value.
+helper_header : Str -> Response
+helper_header = |value| Res.text(200, "x-custom=${value}")
 
-# Destructure the payload wrappers (UserId, Model); keep QueryParams as a
-# named arg so its .get() accessor stays available.
-helper_combo : UserId, Req.QueryParams, Req.Model(Model) -> Response
-helper_combo = |UserId(id), query_arg, Req.Model.Model(model)| {
-    q = match query_arg.get("q") {
-        Ok(value) => value
+helper_combo : Str, List({ name : Str, value : Str }), Model -> Response
+helper_combo = |id, query_pairs, model| {
+    q = match query_pairs.find_first(|entry| entry.name == "q") {
+        Ok(entry) => entry.value
         Err(_) => "none"
     }
     Res.text(200, "id=${id};q=${q};prefix=${model.prefix}")

@@ -28,9 +28,9 @@ main = |{}| {
     settings: [Port(8000), Compression, CorsPermissive],
     init!: init!,
     routes: [
-        # Ctx.argsN resolves each coeffect, then calls the pure handler.
-        { method: "GET", path: "/", handler: Box.box(Ctx.args1(home)) },
-        { method: "POST", path: "/greet", handler: Box.box(Ctx.args2(greet)) },
+        # Ctx.withN binds coeffect resolvers to the pure handler's arguments.
+        { method: "GET", path: "/", handler: Box.box(Ctx.with1(Req.model, home)) },
+        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) },
     ],
 }
 
@@ -44,14 +44,14 @@ init! = || {
 }
 
 # Pure: `->` arrow. No Host.*! call can appear here — it would not compile.
-home : Req.Model(Model) -> Response
-home = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
+home : Model -> Response
+home = |model| Res.text(200, "${model.greeting}, world!")
 
-# Coeffects are resolved by type before the handler runs: a bad JSON body never
-# reaches `greet` — the JsonBody coeffect rejects it with a 400.
-greet : Req.JsonBody({ name : Str }), Req.Model(Model) -> Response
-greet = |Req.JsonBody.JsonBody(body), Req.Model.Model(model)|
-    Res.json(200, { message: "${model.greeting}, ${body.name}" })
+# Coeffects resolve before the handler runs, and the handler receives the raw
+# values: a bad JSON body never reaches `greet` — the json_body resolver
+# rejects it with a 400.
+greet : { name : Str }, Model -> Response
+greet = |body, model| Res.json(200, { message: "${model.greeting}, ${body.name}" })
 ```
 
 See [examples/pure/main.roc](examples/pure/main.roc) for the full model —
@@ -113,49 +113,60 @@ Rust host (staticlib linked by `roc build`)
 SQL parameters and cells use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
 
-## Pure handlers: coeffects and effects (`Ctx.argsN`, `pf.Effect`)
+## Pure handlers: coeffects and effects (`Ctx.withN`, `Res.fx*`)
 
-The sanctioned handler style. A handler is a **pure** function (`->`): it
-declares typed **coeffects** as its arguments and returns a `Response` that may
-carry **effects**. `Ctx.args1` … `Ctx.args5` (matching arity) wrap it into a
-route handler that resolves each coeffect, then calls the pure handler:
+The sanctioned handler style. A handler is a **pure** function (`->`) over raw
+values: **coeffects** deliver its inputs before it runs, and the `Response` it
+returns may carry **effects** the host runs after.
+
+**Coeffects (in).** A coeffect is a resolver **value** — any function
+`req => Try(a, Response)`. `Ctx.with1` … `Ctx.with5` bind resolvers to the
+handler's positional arguments: each runs left to right (this is where reads
+happen — parse a param, load a row, reserve an id), the first `Err` becomes
+the response and the handler never runs, otherwise the handler is called with
+the raw resolved values — nothing to destructure:
 
 ```roc
-{ method: "GET", path: "/combo/{id}", handler: Box.box(Ctx.args3(combo)) }
+{ method: "GET", path: "/combo/{id}",
+  handler: Box.box(Ctx.with3(Req.param_named("id"), Req.query_pairs, Req.model, combo)) }
 
-combo : UserId, Req.QueryParams, Req.Model(Model) -> Response
-combo = |UserId(id), query_arg, Req.Model.Model(model)| ...
+combo : Str, List({ name : Str, value : Str }), Model -> Response
+combo = |id, query_pairs, model| ...
 ```
 
-**Coeffects (in).** Each coeffect type carries an effectful `inject! : Ctx =>
-Try(a, Response)` that resolves it *before* the handler — this is where reads
-happen (parse a param, load a row, reserve an id). Coeffects resolve left to
-right; the first `Err` becomes the response and the handler never runs.
-Destructure the payload in the parameter — imported (`Req.*`) coeffects use the
-full `Module.Type.Tag` form, app-local ones accept the bare tag.
+Because a resolver is an ordinary function value, the reuse story is just
+functions:
 
-| Coeffect | Resolves to | Rejects |
+- **Parameterize** by partial application — `Req.param_named("id")`,
+  `paginated(50)`, `require_role("admin")` are functions *returning* resolvers.
+- **Compose** with `Ctx.map` (transform a resolved value) and `Ctx.and_then`
+  (a resolver whose work depends on another resolver's output).
+- **Reuse** across routes by naming the value.
+
+| Resolver | Resolves to | Rejects |
 | --- | --- | --- |
-| `Req.Body` / `Req.BodyStr` | raw / UTF-8 body | 400 on bad UTF-8 |
-| `Req.JsonBody(a)` | body decoded into `a` | 400 on bad JSON |
-| `Req.FormBody` / `Req.QueryParams` / `Req.Headers` | pairs (with `.get`) | — |
-| `Req.Model(m)` | the shared app model | — |
-| `Req.ReservedId` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
+| `Req.body` / `Req.text_body` | raw bytes / UTF-8 body | 400 on bad UTF-8 |
+| `Req.json_body` | body decoded into the argument's type | 400 on bad JSON |
+| `Req.form_body` | urlencoded pairs | 400 on bad UTF-8 |
+| `Req.query_pairs` / `Req.headers` | all query / header pairs | — |
+| `Req.param_named(n)` / `Req.query_named(n)` / `Req.header_named(n)` | the named path param / query param / header | 400 on a miss |
+| `Req.model` | the shared app model | — |
+| `Req.reserved_id!` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
 
-Custom coeffects are nominal types with an `inject!` method — this is how path
-parameters and typed reads get names:
+An app-defined coeffect is just another resolver value; a dependent read
+chains with `Ctx.and_then` (from `examples/pure` — the `{id}` param resolves,
+then the row it names loads, with a 404 on a miss):
 
 ```roc
-UserId := [UserId(Str)].{
-    inject! : Request => Try(UserId, Response)
-    inject! = |req| {
-        match Req.param(req, "id") {
-            Ok(value) => Ok(UserId.UserId(value))
-            Err(_) => Err(Res.text(400, "missing id path parameter"))
-        }
-    }
-}
+fetched_user! : Request => Try({ id : I64, name : Str }, Response)
+fetched_user! = Ctx.and_then(Req.param_named("id"), |id, req| load_user!(id, req))
 ```
+
+Pure resolvers are unmarked; effectful ones carry the `!`. **Memoization is
+opt-in:** a non-idempotent resolver (or one several resolvers share) routes
+its work through `Ctx.get!(req.ctx, key, miss!)` with a key that includes its
+parameters, making it run at most once per request — two slots requesting
+`Req.reserved_id!` share ONE reservation. Pure projections skip it.
 
 **Effects (out).** A pure handler can't call `Host.*!`; instead it builds a chain
 of effects with `Res.fx` / `Res.fx_err` (critical) or `Res.fx_opt`
@@ -170,8 +181,8 @@ observable by the returning request. Effects come from a closed vocabulary
 (`Effect.Tag`): `DbWrite`, `HttpSend`, `Log`.
 
 ```roc
-create : Req.ReservedId, Req.JsonBody({ name : Str }) -> Response
-create = |Req.ReservedId.ReservedId(id), Req.JsonBody.JsonBody(body)|
+create : I64, { name : Str } -> Response
+create = |id, body|
     Res.fx_err(
             DbWrite({ db, sql: "INSERT INTO users (id, name) VALUES (?, ?)", params }),
             |err| match err {

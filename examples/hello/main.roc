@@ -23,19 +23,6 @@ Response : Res.Response
 db_path : Str
 db_path = "/tmp/tower-platform-demo.db"
 
-## An app-defined coeffect: the {id} path parameter. Its `inject!` resolves it
-## before the (pure) handler runs; a miss rejects with 400 so the handler only
-## ever sees a present id. This is the sanctioned way to add typed inputs.
-UserId := [UserId(Str)].{
-    inject! : Request => Try(UserId, Response)
-    inject! = |req| {
-        match Req.param(req, "id") {
-            Ok(value) => Ok(UserId.UserId(value))
-            Err(_) => Err(Res.text(400, "missing id path parameter"))
-        }
-    }
-}
-
 main = |{}| {
     settings: [
         Port(8000),
@@ -47,12 +34,15 @@ main = |{}| {
     init!: init!,
     routes: [
         # Sanctioned style: pure `->` handlers, coeffects in, Response out.
-        # Wrapped with Ctx.argsN, which resolves each coeffect before the handler.
-        { method: "GET", path: "/", handler: Box.box(Ctx.args1(home)) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.args1(user)) },
-        { method: "POST", path: "/echo", handler: Box.box(Ctx.args1(echo)) },
-        { method: "POST", path: "/greet", handler: Box.box(Ctx.args2(greet)) },
-        { method: "GET", path: "/visit", handler: Box.box(Ctx.args0(visit)) },
+        # A coeffect is a resolver VALUE (`req => Try(a, resp)`); Ctx.withN
+        # binds them to the handler's positional args. Parameterizing one is
+        # partial application: `Req.param_named("id")` is a resolver for that
+        # specific path parameter.
+        { method: "GET", path: "/", handler: Box.box(Ctx.with1(Req.model, home)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(Req.param_named("id"), user)) },
+        { method: "POST", path: "/echo", handler: Box.box(Ctx.with1(Req.body, echo)) },
+        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) },
+        { method: "GET", path: "/visit", handler: Box.box(Ctx.with0(visit)) },
         # Escape hatch: raw effectful `Request => Response` handlers, for logic
         # that interleaves I/O with response-building. Still supported; not the
         # default. See examples/pure for the fully pure style end to end.
@@ -74,20 +64,21 @@ init! = || {
 }
 
 # --- Pure handlers (`->`: the compiler forbids any I/O in these bodies) ------
+# Handlers receive the RAW resolved values — no wrapper types to destructure.
 
-home : Req.Model -> Response
-home = |Req.Model.Model(model)| Res.text(200, "${model.greeting}, world!")
+home : Model -> Response
+home = |model| Res.text(200, "${model.greeting}, world!")
 
-## Showing how to use the local coeffect
-user : UserId -> Response
-user = |UserId(id)| Res.text(200, "user ${id}")
+## The `{id}` path parameter, resolved by the `Req.param_named("id")` factory.
+user : Str -> Response
+user = |id| Res.text(200, "user ${id}")
 
-## Type Annotation is optional if the tag is qualified
-echo = |Req.Body.Body(bytes)| Res.bytes(200, "application/octet-stream", bytes)
+echo : List(U8) -> Response
+echo = |bytes| Res.bytes(200, "application/octet-stream", bytes)
 
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
-greet : Req.JsonBody({ name : Str }), Req.Model -> Response
-greet = |JsonBody(body), Model(model)|
+greet : { name : Str }, Model -> Response
+greet = |body, model|
     Res.json(200, { message: "${model.greeting}, ${body.name}" })
 
 ## Effect showcase: a pure handler records a visit via a Must(DbWrite) effect
