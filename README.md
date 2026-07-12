@@ -109,6 +109,8 @@ Rust host (staticlib linked by `roc build`)
 | `random_bytes!` | `U64 => List(U8)` (OS entropy, capped at 1 MiB) |
 | `http_send!` | request record `=> Try(response record, Str)` (reqwest, rustls) |
 | `sqlite_exec!` | `{ db, sql, params } => Try({ columns, rows }, Str)` |
+| `password_hash!` | `Str => Str` (argon2id, PHC string — store this, never the password) |
+| `password_verify!` | `Str, Str => Bool` (password, stored PHC string) |
 
 SQL parameters and cells use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
@@ -141,9 +143,10 @@ The reuse story is functions plus a **pipelined** composition surface:
   resolvers.
 - **Chain** with the arrow-call operator (`x->f(y)` calls `f(x, y)`) through
   the `Cofx` combinators: `->Cofx.map(…)` transforms a resolved value,
-  `->Cofx.resolve(…)` adds a dependent step on the value alone, and
+  `->Cofx.resolve(…)` adds a dependent step on the value alone,
   `->Cofx.and_then(…)` a dependent step that gets the value *and* the
-  request.
+  request, and `->Cofx.map_reject(…)` rebrands the rejection response
+  (e.g. a built-in 400 into an app's error shape).
 - **Combine** independent resolvers into one *named* block with the record
   builder, which desugars through `Cofx.map2` (two or more fields,
   resolved left to right, first rejection wins):
@@ -163,7 +166,9 @@ The reuse story is functions plus a **pipelined** composition surface:
 | `Req.form_body` | urlencoded pairs | 400 on bad UTF-8 |
 | `Req.query_pairs` / `Req.headers` | all query / header pairs | — |
 | `Req.param(n)` / `Req.query(n)` / `Req.header(n)` | the named path param / query param / header | 400 on a miss |
+| `Req.query_or(n, d)` | the named query param, or `d` when absent | — |
 | `Req.model` | the shared app model | — |
+| `Req.now!` | the request instant in epoch ms (memoized: one instant per request) | — |
 | `Req.reserved_id!` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
 
 An app-defined coeffect is just another function of the same shape; a
@@ -231,6 +236,38 @@ Fallible `Req` helpers return `Try`; inside a raw handler, delegate to an
 inner `Request => Try(Response, Response)` function where `?` works, then
 merge with `Res.from_try`.
 
+Three more platform modules round out real JSON APIs over SQL:
+
+- **Sql** — named-column decoding of `Host.sqlite_exec!` results.
+  `Sql.first(result)` / `Sql.rows(result)` pair rows with the column names;
+  `row.str("title")`, `row.i64("id")`, `row.f64`, `row.bool` (SQLite 0/1
+  flags), and `row.nullable_str("bio")` decode cells by NAME into `Try`,
+  with the offending column in the error.
+- **NullableStr** — a string that is really nullable in JSON. Encodes as
+  `null` / `"text"` (the derived encoder would stringify a tag union), and
+  decodes both; `Try(NullableStr, [Missing])` distinguishes all three PATCH
+  states: absent, explicit `null`, and a value.
+- **JsonBool** — a Bool that encodes as JSON `true`/`false`. Temporary: the
+  derived encoder currently stringifies `Bool` ("True") even though decode
+  works — see notes/2026-07-12-compiler-bool-encode-gap.md; delete once the
+  compiler derivation is fixed.
+
+Optional JSON *input* fields decode as `Try(a, [Missing])` — an absent field
+parses to `Err(Missing)` instead of failing the body.
+
+## Examples
+
+- **hello** — smallest app; also shows the raw-handler escape hatch.
+- **pure** — the coeffect/effect reference: reserved ids, pipelined read
+  coeffects, record-builder blocks, transactional writes with err_handlers.
+- **e2e**, **ctxmemo** — fixtures for the HTTP and memoization test suites.
+- **realworld** — a complete [RealWorld/Conduit](https://realworld-docs.netlify.app)
+  backend (19 endpoints: auth, profiles/follows, articles, feed, favorites,
+  comments, tags) with every handler pure. Passes the official conformance
+  suite (`just realworld-conformance`, 154 requests). Auth is a memoized
+  coeffect over opaque tokens; authorization (author-only edits) is a
+  resolver; validation rejections ARE the error responses.
+
 ## Building
 
 Prerequisites:
@@ -260,6 +297,8 @@ just test-host   # FFI round-trips under a counting allocator
 just test-e2e    # real server over HTTP
 just test        # all of the above
 just check       # fmt + clippy + all tests
+
+just realworld-conformance   # official RealWorld API suite (needs hurl)
 ```
 
 ## Known limitations
