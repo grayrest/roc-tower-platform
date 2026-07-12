@@ -3,7 +3,7 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 import pf.Host
 import pf.Res
 import pf.Req
-import pf.Ctx
+import pf.Cofx
 
 # E2E test fixture app. No Port setting so the PORT env var controls binding.
 Model : { prefix : Str, db_path : Str }
@@ -32,18 +32,18 @@ main = |{}| {
     init!: init!,
     routes: [
         { method: "GET", path: "/", handler: Box.box(root!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(Req.param_named("id"), user)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Cofx.with1(Req.param("id"), user)) },
         { method: "POST", path: "/echo", handler: Box.box(echo!) },
         { method: "GET", path: "/big", handler: Box.box(big!) },
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(Ctx.with1(Req.json_body, helper_greet)) },
-        { method: "POST", path: "/helper/form", handler: Box.box(Ctx.with1(Req.form_body, helper_form)) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Cofx.with1(Req.json_body, helper_greet)) },
+        { method: "POST", path: "/helper/form", handler: Box.box(Cofx.with1(Req.form_body, helper_form)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
-        { method: "GET", path: "/helper/header", handler: Box.box(Ctx.with1(Req.header_named("x-custom"), helper_header)) },
-        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Ctx.with3(Req.param_named("id"), Req.query_pairs, Req.model, helper_combo)) },
+        { method: "GET", path: "/helper/header", handler: Box.box(Cofx.with1(Req.header("x-custom"), helper_header)) },
+        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Cofx.with3(Req.param("id"), Req.query_pairs, Req.model, helper_combo)) },
         # Phase 3: host-executed effects.
         { method: "GET", path: "/effects/insert/{tag}", handler: Box.box(effects_insert!) },
         { method: "GET", path: "/effects/rollback", handler: Box.box(effects_rollback!) },
@@ -143,7 +143,7 @@ helper_q! = |req| Res.from_try(helper_q_impl!(req))
 
 helper_q_impl! : Request => Try(Response, Response)
 helper_q_impl! = |req| {
-    match Req.query(req, "name") {
+    match Req.get_query(req, "name") {
         Ok(name) => Ok(Res.text(200, "q=${name}"))
         Err(_) => Err(Res.text(400, "missing name"))
     }
@@ -152,7 +152,7 @@ helper_q_impl! = |req| {
 helper_redirect! : Request => Response
 helper_redirect! = |_req| Res.redirect(302, "/")
 
-## The `Req.header_named("x-custom")` factory resolves (or 400-rejects) the
+## The `Req.header("x-custom")` factory resolves (or 400-rejects) the
 ## header before this runs, so the handler sees the raw value.
 helper_header : Str -> Response
 helper_header = |value| Res.text(200, "x-custom=${value}")
@@ -179,7 +179,7 @@ effects_insert! : Request => Response
 effects_insert! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    tag = match Req.param(req, "tag") {
+    tag = match Req.get_param(req, "tag") {
         Ok(value) => value
         Err(_) => "x"
     }

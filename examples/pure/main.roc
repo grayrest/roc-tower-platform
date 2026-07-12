@@ -3,8 +3,7 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 import pf.Host
 import pf.Res
 import pf.Req
-import pf.Ctx
-import pf.Resolver
+import pf.Cofx
 
 # Reference PURE app: coeffects in, a pure handler that returns a Response
 # carrying host-run effects. No handler calls Host.*! directly — reads are
@@ -38,18 +37,19 @@ SqlValue : Host.SqlValue
 ## An app-defined coeffect FACTORY, parameterized by which path param names
 ## the user id — `user_from!("id")` — and built as a PIPELINE: a
 ## record-builder block gathers the path param and the db path (the
-## `Req.model` resolver unboxes the model; `->Resolver.map` projects the
+## `Req.model` resolver unboxes the model; `->Cofx.map` projects the
 ## field), then the arrow-call operator (`x->f(y)` is `f(x, y)`) chains into
-## the dependent DB load — no raw `req` access anywhere. A read miss rejects
-## with 404, so the pure handler only ever sees a present user. The factory
-## itself is pure (it only BUILDS the resolver); the `!` documents that what
-## it returns does effectful reads.
+## the dependent DB load via `Cofx.resolve` (the step needs only the gathered
+## values, not the request — use `Cofx.and_then` when it needs both). A read
+## miss rejects with 404, so the pure handler only ever sees a present user.
+## The factory itself is pure (it only BUILDS the resolver); the `!`
+## documents that what it returns does effectful reads.
 user_from! : Str -> (Request => Try({ id : I64, name : Str }, Response))
 user_from! = |param_name| {
-        id: Req.param_named(param_name),
-        db: Req.model->Resolver.map(|model| model.db),
-    }.Resolver
-    ->Resolver.and_then(|{id, db}, _req| {
+        id: Req.param(param_name),
+        db: Req.model->Cofx.map(|model| model.db),
+    }.Cofx
+    ->Cofx.resolve(|{id, db}| {
         match Host.sqlite_exec!({ db: db, sql: "SELECT id, name FROM users WHERE id = CAST(? AS INTEGER)", params: [Text(id)] }) {
             Ok(result) => match read_user_row(result) {
                 Ok(user) => Ok(user)
@@ -95,13 +95,13 @@ main = |{}| {
         # POST /users: reserve an id (non-idempotent, memoized coeffect) +
         # decode the JSON body, then a pure handler returns a Must(DbWrite)
         # with a UniqueViolation -> 409 err_handler and an Opt(Log).
-        { method: "POST", path: "/users", handler: Box.box(Ctx.with2(Req.reserved_id!, Req.json_body, create_user)) },
+        { method: "POST", path: "/users", handler: Box.box(Cofx.with2(Req.reserved_id!, Req.json_body, create_user)) },
         # GET /users/{id}: the pipelined read coeffect loads the row (404 miss).
-        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.with1(user_from!("id"), get_user)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Cofx.with1(user_from!("id"), get_user)) },
         # Record-builder coeffect: two reserved_id! slots combined into one
-        # NAMED block (desugars through Resolver.map2) — and they still share
+        # NAMED block (desugars through Cofx.map2) — and they still share
         # ONE reservation, because the memo runs underneath.
-        { method: "GET", path: "/reserve-twice", handler: Box.box(Ctx.with1({ a: Req.reserved_id!, b: Req.reserved_id! }.Resolver, reserve_twice)) },
+        { method: "GET", path: "/reserve-twice", handler: Box.box(Cofx.with1({ a: Req.reserved_id!, b: Req.reserved_id! }.Cofx, reserve_twice)) },
     ],
 }
 

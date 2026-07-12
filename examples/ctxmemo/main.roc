@@ -2,7 +2,7 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 
 import pf.Host
 import pf.Res
-import pf.Ctx
+import pf.Cofx
 
 # SPIKE I1 fixture: per-request coeffect memoization. No Port setting so the
 # PORT env var controls binding (e2e harness picks a free port).
@@ -52,8 +52,8 @@ reserve! = |{}| Host.reserve_id!()
 
 memo! : Request => Response
 memo! = |req| {
-    first = Ctx.get!(req.ctx, "reserved_id", reserve!)
-    second = Ctx.get!(req.ctx, "reserved_id", reserve!)
+    first = Cofx.get!(req.ctx, "reserved_id", reserve!)
+    second = Cofx.get!(req.ctx, "reserved_id", reserve!)
     Res.text(200, "ctx=${req.ctx.to_str()};first=${first.to_str()};second=${second.to_str()}")
 }
 
@@ -70,8 +70,8 @@ failing! = |{}| Err("b is unavailable")
 
 reject! : Request => Response
 reject! = |req| {
-    a = Ctx.get!(req.ctx, "reject_a", reserve!)
-    match Ctx.get!(req.ctx, "reject_b", failing!) {
+    a = Cofx.get!(req.ctx, "reject_a", reserve!)
+    match Cofx.get!(req.ctx, "reject_b", failing!) {
         Ok(_) => Res.text(200, "unexpected: b resolved")
         Err(_) => Res.text(403, "rejected after a=${a.to_str()}")
     }
@@ -80,7 +80,7 @@ reject! = |req| {
 # Bisection: store ONLY the Try-valued coeffect.
 trystore! : Request => Response
 trystore! = |req| {
-    match Ctx.get!(req.ctx, "try_b", failing!) {
+    match Cofx.get!(req.ctx, "try_b", failing!) {
         Ok(_) => Res.text(200, "b resolved")
         Err(_) => Res.text(403, "b failed as expected")
     }
@@ -92,21 +92,21 @@ greeting! = |{}| "hello-${Host.reserve_id!().to_str()}"
 
 strstore! : Request => Response
 strstore! = |req| {
-    g = Ctx.get!(req.ctx, "greeting", greeting!)
+    g = Cofx.get!(req.ctx, "greeting", greeting!)
     Res.text(200, "g=${g}")
 }
 
 # Bisection: store TWO U64 coeffects in one request.
 twostores! : Request => Response
 twostores! = |req| {
-    a = Ctx.get!(req.ctx, "two_a", reserve!)
-    b = Ctx.get!(req.ctx, "two_b", reserve!)
+    a = Cofx.get!(req.ctx, "two_a", reserve!)
+    b = Cofx.get!(req.ctx, "two_b", reserve!)
     Res.text(200, "a=${a.to_str()};b=${b.to_str()}")
 }
 
 panic! : Request => Response
 panic! = |req| {
-    a = Ctx.get!(req.ctx, "panic_a", reserve!)
+    a = Cofx.get!(req.ctx, "panic_a", reserve!)
     Host.panic_test!()
     Res.text(200, "unreachable a=${a.to_str()}")
 }

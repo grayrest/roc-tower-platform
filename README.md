@@ -20,7 +20,7 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 import pf.Host
 import pf.Res
 import pf.Req
-import pf.Ctx
+import pf.Cofx
 
 Model : { greeting : Str }
 
@@ -28,9 +28,9 @@ main = |{}| {
     settings: [Port(8000), Compression, CorsPermissive],
     init!: init!,
     routes: [
-        # Ctx.withN binds coeffect resolvers to the pure handler's arguments.
-        { method: "GET", path: "/", handler: Box.box(Ctx.with1(Req.model, home)) },
-        { method: "POST", path: "/greet", handler: Box.box(Ctx.with2(Req.json_body, Req.model, greet)) },
+        # Cofx.withN binds coeffect resolvers to the pure handler's arguments.
+        { method: "GET", path: "/", handler: Box.box(Cofx.with1(Req.model, home)) },
+        { method: "POST", path: "/greet", handler: Box.box(Cofx.with2(Req.json_body, Req.model, greet)) },
     ],
 }
 
@@ -113,14 +113,14 @@ Rust host (staticlib linked by `roc build`)
 SQL parameters and cells use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
 
-## Pure handlers: coeffects and effects (`Ctx.withN`, `Res.fx*`)
+## Pure handlers: coeffects and effects (`Cofx.withN`, `Res.fx*`)
 
 The sanctioned handler style. A handler is a **pure** function (`->`) over raw
 values: **coeffects** deliver its inputs before it runs, and the `Response` it
 returns may carry **effects** the host runs after.
 
 **Coeffects (in).** A coeffect is a **plain function** —
-`req => Try(a, Response)`. `Ctx.with1` … `Ctx.with5` bind resolvers to the
+`req => Try(a, Response)`. `Cofx.with1` … `Cofx.with5` bind resolvers to the
 handler's positional arguments: each runs left to right (this is where reads
 happen — parse a param, load a row, reserve an id), the first `Err` becomes
 the response and the handler never runs, otherwise the handler is called with
@@ -128,7 +128,7 @@ the raw resolved values — nothing to destructure:
 
 ```roc
 { method: "GET", path: "/combo/{id}",
-  handler: Box.box(Ctx.with3(Req.param_named("id"), Req.query_pairs, Req.model, combo)) }
+  handler: Box.box(Cofx.with3(Req.param("id"), Req.query_pairs, Req.model, combo)) }
 
 combo : Str, List({ name : Str, value : Str }), Model -> Response
 combo = |id, query_pairs, model| ...
@@ -136,20 +136,21 @@ combo = |id, query_pairs, model| ...
 
 The reuse story is functions plus a **pipelined** composition surface:
 
-- **Parameterize** by partial application — `Req.param_named("id")`,
+- **Parameterize** by partial application — `Req.param("id")`,
   `paginated(50)`, `require_role("admin")` are functions *returning*
   resolvers.
 - **Chain** with the arrow-call operator (`x->f(y)` calls `f(x, y)`) through
-  the `Resolver` combinators: `->Resolver.map(…)` transforms a resolved
-  value, `->Resolver.and_then(…)` adds a dependent step that gets the value
-  *and* the request.
+  the `Cofx` combinators: `->Cofx.map(…)` transforms a resolved value,
+  `->Cofx.resolve(…)` adds a dependent step on the value alone, and
+  `->Cofx.and_then(…)` a dependent step that gets the value *and* the
+  request.
 - **Combine** independent resolvers into one *named* block with the record
-  builder, which desugars through `Resolver.map2` (two or more fields,
+  builder, which desugars through `Cofx.map2` (two or more fields,
   resolved left to right, first rejection wins):
 
   ```roc
   { method: "GET", path: "/reserve-twice",
-    handler: Box.box(Ctx.with1({ a: Req.reserved_id!, b: Req.reserved_id! }.Resolver, reserve_twice)) }
+    handler: Box.box(Cofx.with1({ a: Req.reserved_id!, b: Req.reserved_id! }.Cofx, reserve_twice)) }
 
   reserve_twice : { a : I64, b : I64 } -> Response
   ```
@@ -161,7 +162,7 @@ The reuse story is functions plus a **pipelined** composition surface:
 | `Req.json_body` | body decoded into the argument's type | 400 on bad JSON |
 | `Req.form_body` | urlencoded pairs | 400 on bad UTF-8 |
 | `Req.query_pairs` / `Req.headers` | all query / header pairs | — |
-| `Req.param_named(n)` / `Req.query_named(n)` / `Req.header_named(n)` | the named path param / query param / header | 400 on a miss |
+| `Req.param(n)` / `Req.query(n)` / `Req.header(n)` | the named path param / query param / header | 400 on a miss |
 | `Req.model` | the shared app model | — |
 | `Req.reserved_id!` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
 
@@ -171,13 +172,13 @@ param resolves, then the row it names loads, with a 404 on a miss):
 
 ```roc
 fetched_user! : Request => Try({ id : I64, name : Str }, Response)
-fetched_user! = Req.param_named("id")
-    ->Resolver.and_then(|id, req| load_user!(id, req))
+fetched_user! = Req.param("id")
+    ->Cofx.and_then(|id, req| load_user!(id, req))
 ```
 
 Pure resolvers are unmarked; effectful ones carry the compiler-enforced `!`.
 **Memoization is opt-in:** a non-idempotent resolver (or one several
-resolvers share) routes its work through `Ctx.get!(req.ctx, key, miss!)` with
+resolvers share) routes its work through `Cofx.get!(req.ctx, key, miss!)` with
 a key that includes its parameters, making it run at most once per request —
 the two `Req.reserved_id!` fields above share ONE reservation. Pure
 projections skip it.
@@ -220,9 +221,10 @@ Sugar over the structural request/response records:
 - **Res**: `text`, `html`, `json` (builtin derive-style `Json.to_str` — works
   on your own records), `bytes`, `no_content`, `redirect`, `with_header`, and
   `from_try : Try(Response, Response) -> Response` for merging error paths.
-- **Req**: `param`, `header` (case-insensitive), `query_params` / `query`
-  (percent-decoded, `+` as space), `body_str`, `json` (typed `Json.parse` of
-  the body), `form` (urlencoded).
+- **Req**: `get_param`, `get_header` (case-insensitive), `query_params` /
+  `get_query` (percent-decoded, `+` as space), `body_str`, `json` (typed
+  `Json.parse` of the body), `form` (urlencoded). (The short names `param` /
+  `header` / `query` are the route-facing coeffect factories above.)
 
 Fallible `Req` helpers return `Try`; inside a raw handler, delegate to an
 inner `Request => Try(Response, Response)` function where `?` works, then
