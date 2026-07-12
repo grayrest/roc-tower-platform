@@ -4,20 +4,16 @@ Req := [].{
     ## Look up a path parameter by name.
     param : { params : List({ name : Str, value : Str }), .. }, Str -> Try(Str, [MissingParam])
     param = |req, name| {
-        match req.params.find_first(|entry| entry.name == name) {
-            Ok(entry) => Ok(entry.value)
-            Err(_) => Err(MissingParam)
-        }
+        entry = req.params.find_first(|candidate| candidate.name == name) ? |_| MissingParam
+        Ok(entry.value)
     }
 
     ## Look up a request header by name (case-insensitive).
     header : { headers : List({ name : Str, value : Str }), .. }, Str -> Try(Str, [MissingHeader])
     header = |req, name| {
         wanted = Req.ascii_lower(name)
-        match req.headers.find_first(|entry| Req.ascii_lower(entry.name) == wanted) {
-            Ok(entry) => Ok(entry.value)
-            Err(_) => Err(MissingHeader)
-        }
+        entry = req.headers.find_first(|candidate| Req.ascii_lower(candidate.name) == wanted) ? |_| MissingHeader
+        Ok(entry.value)
     }
 
     ## All query parameters, percent-decoded, in order of appearance.
@@ -27,39 +23,31 @@ Req := [].{
     ## Look up a single query parameter by name (first occurrence wins).
     query : { query : Str, .. }, Str -> Try(Str, [MissingQueryParam])
     query = |req, name| {
-        match Req.parse_pairs(req.query).find_first(|entry| entry.name == name) {
-            Ok(entry) => Ok(entry.value)
-            Err(_) => Err(MissingQueryParam)
-        }
+        entry = Req.parse_pairs(req.query).find_first(|candidate| candidate.name == name) ? |_| MissingQueryParam
+        Ok(entry.value)
     }
 
     ## The request body as UTF-8 text.
     body_str : { body : List(U8), .. } -> Try(Str, [InvalidUtf8])
     body_str = |req| {
-        match Str.from_utf8(req.body) {
-            Ok(text) => Ok(text)
-            Err(_) => Err(InvalidUtf8)
-        }
+        text = Str.from_utf8(req.body) ? |_| InvalidUtf8
+        Ok(text)
     }
 
-    ## Decode the request body as JSON into any parseable type.
+    ## Decode the request body as JSON into any parseable type. The
+    ## `InvalidJson` error carries the parse error (bare-tag `?` applies the
+    ## mapping tag WITH the original error as its payload).
     json = |req| {
-        match Str.from_utf8(req.body) {
-            Ok(text) => match Json.parse(text) {
-                Ok(value) => Ok(value)
-                Err(err) => Err(InvalidJson(err))
-            }
-            Err(_) => Err(InvalidUtf8)
-        }
+        text = Str.from_utf8(req.body) ? |_| InvalidUtf8
+        value = Json.parse(text) ? InvalidJson
+        Ok(value)
     }
 
     ## Parse an application/x-www-form-urlencoded body.
     form : { body : List(U8), .. } -> Try(List({ name : Str, value : Str }), [InvalidUtf8])
     form = |req| {
-        match Str.from_utf8(req.body) {
-            Ok(text) => Ok(Req.parse_pairs(text))
-            Err(_) => Err(InvalidUtf8)
-        }
+        text = Str.from_utf8(req.body) ? |_| InvalidUtf8
+        Ok(Req.parse_pairs(text))
     }
 
     ## --- Coeffects -----------------------------------------------------------
@@ -86,23 +74,23 @@ Req := [].{
     body = |req| Ok(req.body)
 
     ## The request body as UTF-8 text. Rejects with 400 on invalid UTF-8.
-    text_body = |req| match Req.body_str(req) {
-        Ok(text) => Ok(text)
-        Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
+    text_body = |req| {
+        text = Req.body_str(req) ? |_| Req.reject(400, "request body is not valid UTF-8")
+        Ok(text)
     }
 
     ## The request body decoded as JSON into the handler argument's type.
     ## Rejects with 400 when the body is not valid JSON for that shape.
-    json_body = |req| match Req.json(req) {
-        Ok(decoded) => Ok(decoded)
-        Err(_) => Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
+    json_body = |req| {
+        decoded = Req.json(req) ? |_| Req.reject(400, "request body is not valid JSON for the expected shape")
+        Ok(decoded)
     }
 
     ## The request body parsed as application/x-www-form-urlencoded pairs.
     ## Rejects with 400 on invalid UTF-8.
-    form_body = |req| match Req.form(req) {
-        Ok(fields) => Ok(fields)
-        Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
+    form_body = |req| {
+        fields = Req.form(req) ? |_| Req.reject(400, "request body is not a valid urlencoded form")
+        Ok(fields)
     }
 
     ## All query parameters, percent-decoded. Never rejects.
@@ -117,23 +105,23 @@ Req := [].{
     ## Coeffect factory: the named path parameter. Rejects with 400 on a miss.
     ##
     ##     Ctx.with1(Req.param_named("id"), show_user)
-    param_named = |name| |req| match Req.param(req, name) {
-        Ok(value) => Ok(value)
-        Err(_) => Err(Req.reject(400, "missing path parameter ${name}"))
+    param_named = |name| |req| {
+        value = Req.param(req, name) ? |_| Req.reject(400, "missing path parameter ${name}")
+        Ok(value)
     }
 
     ## Coeffect factory: the named query parameter (first occurrence wins).
     ## Rejects with 400 on a miss.
-    query_named = |name| |req| match Req.query(req, name) {
-        Ok(value) => Ok(value)
-        Err(_) => Err(Req.reject(400, "missing query parameter ${name}"))
+    query_named = |name| |req| {
+        value = Req.query(req, name) ? |_| Req.reject(400, "missing query parameter ${name}")
+        Ok(value)
     }
 
     ## Coeffect factory: the named request header (case-insensitive). Rejects
     ## with 400 on a miss.
-    header_named = |name| |req| match Req.header(req, name) {
-        Ok(value) => Ok(value)
-        Err(_) => Err(Req.reject(400, "missing header ${name}"))
+    header_named = |name| |req| {
+        value = Req.header(req, name) ? |_| Req.reject(400, "missing header ${name}")
+        Ok(value)
     }
 
     ## A freshly reserved, non-idempotent id — the canonical memoized
@@ -145,18 +133,15 @@ Req := [].{
     ## coeffect must expose one).
     reserved_id! = |req| Ctx.get!(req.ctx, "coeffect.reserved_id", |{}| Req.reserve_fresh_id!(req))
 
-    ## Internal: one un-memoized reservation (the `reserved_id` cache miss).
+    ## Internal: one un-memoized reservation (the `reserved_id!` cache miss).
     reserve_fresh_id! = |req| {
         db = Box.unbox(req.model).db
         _ = Host.sqlite_exec!({ db: db, sql: "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", params: [] })
         _ = Host.sqlite_exec!({ db: db, sql: "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", params: [] })
-        match Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] }) {
-            Ok(result) => match Req.read_reserved_id(result) {
-                Ok(reserved) => Ok(reserved)
-                Err(_) => Err(Req.reject(500, "reserved id: sequence returned no value"))
-            }
-            Err(message) => Err(Req.reject(500, "reserved id: ${message}"))
-        }
+        result = Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] })
+            ? |message| Req.reject(500, "reserved id: ${message}")
+        reserved = Req.read_reserved_id(result) ? |_| Req.reject(500, "reserved id: sequence returned no value")
+        Ok(reserved)
     }
 
     ## Internal: read the single INTEGER cell an `UPDATE ... RETURNING v`
