@@ -106,24 +106,6 @@ Res := [].{
         effects: response.effects,
     }
 
-    ## Attach a host-executed effect to an existing response.
-    with_effect : Res.Response, Res.Effect -> Res.Response
-    with_effect = |response, effect| {
-        status: response.status,
-        headers: response.headers,
-        body: response.body,
-        effects: response.effects.append(effect),
-    }
-
-    ## Build a critical effect. The `err_handler` is boxed here because an
-    ## unboxed lambda glues to an uninvocable pointer host-side.
-    must : Res.Tag, (Res.Err -> Res.Reply) -> Res.Effect
-    must = |tag, err_handler| Must(tag, Box.box(err_handler))
-
-    ## Build a fire-and-forget effect.
-    opt : Res.Tag -> Res.Effect
-    opt = |tag| Opt(tag)
-
     ## The default failure handler used by `Res.fx` / `.fx`: HTTP 500.
     default_err : Res.Err -> Res.Reply
     default_err = |_err| { status: 500, headers: [], body: "effect failed".to_utf8() }
@@ -142,6 +124,14 @@ Res := [].{
     ##     Res.fx_err(DbWrite({ ... }), |err| ...).json(201, body)
     fx_err : Res.Tag, (Res.Err -> Res.Reply) -> Res.Fx
     fx_err = |tag, err_handler| Res.Fx.{ effects: [Must(tag, Box.box(err_handler))] }
+
+    ## Start a chainable effect builder with a fire-and-forget effect (no
+    ## err_handler; failures are logged only). Use for responses that carry
+    ## only optional effects:
+    ##
+    ##     Res.fx_opt(Log("...")).opt(DbWrite({ ... })).text(200, "ok")
+    fx_opt : Res.Tag -> Res.Fx
+    fx_opt = |tag| Res.Fx.{ effects: [Opt(tag)] }
 
     ## A chainable builder that accumulates effects and folds them into the
     ## response produced by a terminal method. Built via `Res.fx` / `Res.fx_err`.
@@ -289,4 +279,12 @@ expect {
         )
         .json(201, { id: 1.U64 })
     response.status == 201 and response.effects.len() == 1
+}
+
+expect {
+    response =
+        Res.fx_opt(Log("first"))
+            .opt(DbWrite({ db: "d", sql: "insert", params: [] }))
+            .text(200, "ok")
+    response.status == 200 and response.effects.len() == 2 and response.body == "ok".to_utf8()
 }

@@ -3,6 +3,7 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 import pf.Host
 import pf.Res
 import pf.Req
+import pf.Ctx
 
 # E2E test fixture app. No Port setting so the PORT env var controls binding.
 Model : { prefix : Str, db_path : Str }
@@ -20,10 +21,11 @@ Request : {
 
 Response : Res.Response
 
-## App-defined extractor: pulls the {id} path parameter.
+## App-defined coeffect: pulls the {id} path parameter. `inject!` resolves it
+## before the pure handler; a miss rejects with 400.
 UserId := [UserId(Str)].{
-    from_request : Request -> Try(UserId, Response)
-    from_request = |req| {
+    inject! : Request => Try(UserId, Response)
+    inject! = |req| {
         match Req.param(req, "id") {
             Ok(value) => Ok(UserId.UserId(value))
             Err(_) => Err(Res.text(400, "missing id path parameter"))
@@ -42,18 +44,18 @@ main = |{}| {
     init!: init!,
     routes: [
         { method: "GET", path: "/", handler: Box.box(root!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Req.args1(user!)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Ctx.args1(user)) },
         { method: "POST", path: "/echo", handler: Box.box(echo!) },
         { method: "GET", path: "/big", handler: Box.box(big!) },
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(Req.args1(helper_greet!)) },
-        { method: "POST", path: "/helper/form", handler: Box.box(Req.args1(helper_form!)) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Ctx.args1(helper_greet)) },
+        { method: "POST", path: "/helper/form", handler: Box.box(Ctx.args1(helper_form)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
-        { method: "GET", path: "/helper/header", handler: Box.box(Req.args1(helper_header!)) },
-        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Req.args3(helper_combo!)) },
+        { method: "GET", path: "/helper/header", handler: Box.box(Ctx.args1(helper_header)) },
+        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Ctx.args3(helper_combo)) },
         # Phase 3: host-executed effects.
         { method: "GET", path: "/effects/insert/{tag}", handler: Box.box(effects_insert!) },
         { method: "GET", path: "/effects/rollback", handler: Box.box(effects_rollback!) },
@@ -79,8 +81,8 @@ init! = || {
 root! : Request => Response
 root! = |_req| text(200, "root ok")
 
-user! : UserId => Response
-user! = |UserId(id)| text(200, "user ${id}")
+user : UserId -> Response
+user = |UserId(id)| text(200, "user ${id}")
 
 echo! : Request => Response
 echo! = |req| {
@@ -139,11 +141,11 @@ text = |status, message| {
     effects: [],
 }
 
-helper_greet! : Req.JsonBody({ name : Str }) => Response
-helper_greet! = |Req.JsonBody.JsonBody(body)| Res.json(200, { message: "hello, ${body.name}" })
+helper_greet : Req.JsonBody({ name : Str }) -> Response
+helper_greet = |Req.JsonBody.JsonBody(body)| Res.json(200, { message: "hello, ${body.name}" })
 
-helper_form! : Req.FormBody => Response
-helper_form! = |Req.FormBody.FormBody(fields)| {
+helper_form : Req.FormBody -> Response
+helper_form = |Req.FormBody.FormBody(fields)| {
     rendered = fields.map(|field| "${field.name}=${field.value}")
     Res.text(200, Str.join_with(rendered, ";"))
 }
@@ -162,8 +164,8 @@ helper_q_impl! = |req| {
 helper_redirect! : Request => Response
 helper_redirect! = |_req| Res.redirect(302, "/")
 
-helper_header! : Req.Headers => Response
-helper_header! = |headers_arg| {
+helper_header : Req.Headers -> Response
+helper_header = |headers_arg| {
     match headers_arg.get("x-custom") {
         Ok(value) => Res.text(200, "x-custom=${value}")
         Err(_) => Res.text(400, "missing header")
@@ -172,8 +174,8 @@ helper_header! = |headers_arg| {
 
 # Destructure the payload wrappers (UserId, Model); keep QueryParams as a
 # named arg so its .get() accessor stays available.
-helper_combo! : UserId, Req.QueryParams, Req.Model(Model) => Response
-helper_combo! = |UserId(id), query_arg, Req.Model.Model(model)| {
+helper_combo : UserId, Req.QueryParams, Req.Model(Model) -> Response
+helper_combo = |UserId(id), query_arg, Req.Model.Model(model)| {
     q = match query_arg.get("q") {
         Ok(value) => value
         Err(_) => "none"
@@ -199,28 +201,22 @@ effects_insert! = |req| {
         Err(_) => "x"
     }
     _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", params: [] })
-    {
-        status: 200,
-        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-        body: "inserted ${tag}".to_utf8(),
-        effects: [
-            Res.must(
-                DbWrite({ db: db_path, sql: "INSERT INTO effect_users (email) VALUES (?)", params: [Host.SqlValue.Text(tag)] }),
-                |err| match err {
-                    UniqueViolation(_) => {
-                        status: 409,
-                        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-                        body: "duplicate ${tag}".to_utf8(),
-                    }
-                    _ => {
-                        status: 500,
-                        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-                        body: "insert failed".to_utf8(),
-                    }
-                },
-            ),
-        ],
-    }
+    Res.fx_err(
+            DbWrite({ db: db_path, sql: "INSERT INTO effect_users (email) VALUES (?)", params: [Host.SqlValue.Text(tag)] }),
+            |err| match err {
+                UniqueViolation(_) => {
+                    status: 409,
+                    headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+                    body: "duplicate ${tag}".to_utf8(),
+                }
+                _ => {
+                    status: 500,
+                    headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
+                    body: "insert failed".to_utf8(),
+                }
+            },
+        )
+        .text(200, "inserted ${tag}")
 }
 
 ## Two ordered Must(DbWrite): the first inserts a fresh row, the second
@@ -245,15 +241,9 @@ effects_rollback! = |req| {
             body: "unexpected".to_utf8(),
         }
     }
-    {
-        status: 200,
-        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-        body: "should never be seen".to_utf8(),
-        effects: [
-            Res.must(DbWrite({ db: db_path, sql: "INSERT INTO effect_rollback (val) VALUES ('rollback_fresh')", params: [] }), on_dup),
-            Res.must(DbWrite({ db: db_path, sql: "INSERT INTO effect_rollback (val) VALUES ('rollback_dup')", params: [] }), on_dup),
-        ],
-    }
+    Res.fx_err(DbWrite({ db: db_path, sql: "INSERT INTO effect_rollback (val) VALUES ('rollback_fresh')", params: [] }), on_dup)
+        .fx_err(DbWrite({ db: db_path, sql: "INSERT INTO effect_rollback (val) VALUES ('rollback_dup')", params: [] }), on_dup)
+        .text(200, "should never be seen")
 }
 
 ## Reports whether the rolled-back 'rollback_fresh' row is present.
@@ -274,15 +264,9 @@ effects_opt! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
     _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", params: [] })
-    {
-        status: 200,
-        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-        body: "opt ok".to_utf8(),
-        effects: [
-            Res.opt(Log("optional log fired")),
-            Res.opt(DbWrite({ db: db_path, sql: "INSERT INTO effect_opt DEFAULT VALUES", params: [] })),
-        ],
-    }
+    Res.fx_opt(Log("optional log fired"))
+        .opt(DbWrite({ db: db_path, sql: "INSERT INTO effect_opt DEFAULT VALUES", params: [] }))
+        .text(200, "opt ok")
 }
 
 ## Reports how many rows the Opt(DbWrite) inserted.

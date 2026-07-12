@@ -158,8 +158,9 @@ UserId := [UserId(Str)].{
 ```
 
 **Effects (out).** A pure handler can't call `Host.*!`; instead it builds a chain
-of effects with `Res.fx` / `Res.fx_err` (critical) and `.opt` (fire-and-forget),
-then finishes with a response terminal (`.text` / `.json` / `.bytes` / ...) that
+of effects with `Res.fx` / `Res.fx_err` (critical) or `Res.fx_opt`
+(fire-and-forget), extends it with `.fx` / `.fx_err` / `.opt`, then finishes with
+a response terminal (`.text` / `.json` / `.bytes` / ...) that
 folds the effects into the returned `Response`. The host runs them after the
 handler: critical effects in a per-request transaction (a `UniqueViolation`/etc.
 failure invokes the pure `fx_err` handler for the response) before the response

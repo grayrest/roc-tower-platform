@@ -54,6 +54,17 @@ build app="examples/hello/main.roc": host
 run app="examples/hello/main.roc": (build app)
     ./main
 
+# Type-check every example against the platform. The e2e/pure/ctxmemo suites
+# already build their apps; this also covers `hello`, which no test builds, so
+# a platform-API change that breaks an example is caught by `just check`.
+# (`stress` is an abandoned Spike-2 fixture that predates the current ABI.)
+check-examples: glue
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for ex in hello e2e pure ctxmemo; do
+        "{{ roc }}" check "examples/$ex/main.roc"
+    done
+
 # Roc-side helper expects (platform Res/Req modules).
 test-roc:
     "{{ roc }}" test platform/main.roc
@@ -75,4 +86,4 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # Everything a commit must pass.
-check: lint test
+check: lint check-examples test

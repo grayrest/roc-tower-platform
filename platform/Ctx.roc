@@ -1,6 +1,6 @@
 ## Per-request coeffect resolution with host-backed memoization, and the
-## coeffect wrapper family (`args1..args5`) — the pure-handler successor to
-## `Req.argsN`.
+## coeffect wrapper family (`args1..args5`) that turns a pure `->` handler into
+## a route handler.
 ##
 ## `get!` resolves a coeffect at most once per REQUEST, keyed by the host-minted
 ## ctx id (`req.ctx`) plus an author-supplied `Str`. On a miss it runs the

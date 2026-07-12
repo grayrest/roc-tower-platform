@@ -64,16 +64,12 @@ Req := [].{
 
     ## The raw request body bytes. Extraction never fails.
     ##
-    ## Dual API for the coeffect transition: `from_request` powers the shipped
-    ## `Req.argsN`; `inject!` (+ the unique `key`) powers the new coeffect
-    ## wrapper `Ctx.argsN`. `inject!` runs the pure `from_request` on the
-    ## request `Ctx` wraps.
+    ## A built-in coeffect: `inject!` (+ the unique memo `key`) resolves it for
+    ## `Ctx.argsN`, running through `Ctx.get!` so several slots requesting it in
+    ## one request share a single read.
     Body := [Body(List(U8))].{
-        from_request : { body : List(U8), .. } -> Try(Body, resp)
-        from_request = |req| Ok(Body.Body(req.body))
-
         key = "req.body"
-        inject! = |req| Ctx.get!(req.ctx, Body.key, |{}| Body.from_request(req))
+        inject! = |req| Ctx.get!(req.ctx, Body.key, |{}| Ok(Body.Body(req.body)))
 
         value : Body -> List(U8)
         value = |wrapped| match wrapped { Body.Body(bytes) => bytes }
@@ -81,15 +77,13 @@ Req := [].{
 
     ## The request body as UTF-8 text. Rejects with 400 on invalid UTF-8.
     BodyStr := [BodyStr(Str)].{
-        from_request = |req| {
-            match Req.body_str(req) {
-                Ok(text) => Ok(BodyStr.BodyStr(text))
-                Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
-            }
-        }
-
         key = "req.body_str"
-        inject! = |req| Ctx.get!(req.ctx, BodyStr.key, |{}| BodyStr.from_request(req))
+        inject! = |req|
+            Ctx.get!(req.ctx, BodyStr.key, |{}|
+                match Req.body_str(req) {
+                    Ok(text) => Ok(BodyStr.BodyStr(text))
+                    Err(_) => Err(Req.reject(400, "request body is not valid UTF-8"))
+                })
 
         value : BodyStr -> Str
         value = |wrapped| match wrapped { BodyStr.BodyStr(text) => text }
@@ -98,15 +92,13 @@ Req := [].{
     ## The request body decoded as JSON into any parseable type. Rejects
     ## with 400 when the body is not valid JSON for that type.
     JsonBody(a) := [JsonBody(a)].{
-        from_request = |req| {
-            match Req.json(req) {
-                Ok(decoded) => Ok(JsonBody.JsonBody(decoded))
-                Err(_) => Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
-            }
-        }
-
         key = "req.json_body"
-        inject! = |req| Ctx.get!(req.ctx, JsonBody.key, |{}| JsonBody.from_request(req))
+        inject! = |req|
+            Ctx.get!(req.ctx, JsonBody.key, |{}|
+                match Req.json(req) {
+                    Ok(decoded) => Ok(JsonBody.JsonBody(decoded))
+                    Err(_) => Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
+                })
 
         value : JsonBody(a) -> a
         value = |wrapped| match wrapped { JsonBody.JsonBody(decoded) => decoded }
@@ -115,15 +107,13 @@ Req := [].{
     ## The request body parsed as application/x-www-form-urlencoded pairs.
     ## Rejects with 400 on invalid UTF-8.
     FormBody := [FormBody(List({ name : Str, value : Str }))].{
-        from_request = |req| {
-            match Req.form(req) {
-                Ok(fields) => Ok(FormBody.FormBody(fields))
-                Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
-            }
-        }
-
         key = "req.form_body"
-        inject! = |req| Ctx.get!(req.ctx, FormBody.key, |{}| FormBody.from_request(req))
+        inject! = |req|
+            Ctx.get!(req.ctx, FormBody.key, |{}|
+                match Req.form(req) {
+                    Ok(fields) => Ok(FormBody.FormBody(fields))
+                    Err(_) => Err(Req.reject(400, "request body is not a valid urlencoded form"))
+                })
 
         value : FormBody -> List({ name : Str, value : Str })
         value = |wrapped| match wrapped { FormBody.FormBody(fields) => fields }
@@ -139,11 +129,8 @@ Req := [].{
 
     ## All query parameters, percent-decoded. Extraction never fails.
     QueryParams := [QueryParams(List({ name : Str, value : Str }))].{
-        from_request : { query : Str, .. } -> Try(QueryParams, resp)
-        from_request = |req| Ok(QueryParams.QueryParams(Req.query_params(req)))
-
         key = "req.query_params"
-        inject! = |req| Ctx.get!(req.ctx, QueryParams.key, |{}| QueryParams.from_request(req))
+        inject! = |req| Ctx.get!(req.ctx, QueryParams.key, |{}| Ok(QueryParams.QueryParams(Req.query_params(req))))
 
         value : QueryParams -> List({ name : Str, value : Str })
         value = |wrapped| match wrapped { QueryParams.QueryParams(pairs) => pairs }
@@ -159,11 +146,8 @@ Req := [].{
 
     ## All request headers. Extraction never fails.
     Headers := [Headers(List({ name : Str, value : Str }))].{
-        from_request : { headers : List({ name : Str, value : Str }), .. } -> Try(Headers, resp)
-        from_request = |req| Ok(Headers.Headers(req.headers))
-
         key = "req.headers"
-        inject! = |req| Ctx.get!(req.ctx, Headers.key, |{}| Headers.from_request(req))
+        inject! = |req| Ctx.get!(req.ctx, Headers.key, |{}| Ok(Headers.Headers(req.headers)))
 
         value : Headers -> List({ name : Str, value : Str })
         value = |wrapped| match wrapped { Headers.Headers(pairs) => pairs }
@@ -174,10 +158,8 @@ Req := [].{
 
     ## The app's shared model, unboxed. Extraction never fails.
     Model(m) := [Model(m)].{
-        from_request = |req| Ok(Model.Model(Box.unbox(req.model)))
-
         key = "req.model"
-        inject! = |req| Ctx.get!(req.ctx, Model.key, |{}| Model.from_request(req))
+        inject! = |req| Ctx.get!(req.ctx, Model.key, |{}| Ok(Model.Model(Box.unbox(req.model))))
 
         value : Model(m) -> m
         value = |wrapped| match wrapped { Model.Model(model) => model }
@@ -231,123 +213,7 @@ Req := [].{
         value = |wrapped| match wrapped { ReservedId.ReservedId(reserved) => reserved }
     }
 
-    ## Wrap a 1-argument handler into a request handler. The argument type's
-    ## from_request method extracts it from the request; an Err rejection is
-    ## returned as the response. Arguments extract left to right; the first
-    ## rejection wins.
-    args1 : (a => resp) -> (req => resp)
-        where [a.from_request : req -> Try(a, resp)]
-    args1 = |handler| {
-        A : a
-        |req| match A.from_request(req) {
-            Ok(x) => handler(x)
-            Err(rejection) => rejection
-        }
-    }
-
-    ## Wrap a 2-argument handler into a request handler (see args1).
-    args2 : (a, b => resp) -> (req => resp)
-        where [
-            a.from_request : req -> Try(a, resp),
-            b.from_request : req -> Try(b, resp),
-        ]
-    args2 = |handler| {
-        A : a
-        B : b
-        |req| match A.from_request(req) {
-            Err(rejection) => rejection
-            Ok(x) => match B.from_request(req) {
-                Err(rejection) => rejection
-                Ok(y) => handler(x, y)
-            }
-        }
-    }
-
-    ## Wrap a 3-argument handler into a request handler (see args1).
-    args3 : (a, b, c => resp) -> (req => resp)
-        where [
-            a.from_request : req -> Try(a, resp),
-            b.from_request : req -> Try(b, resp),
-            c.from_request : req -> Try(c, resp),
-        ]
-    args3 = |handler| {
-        A : a
-        B : b
-        C : c
-        |req| match A.from_request(req) {
-            Err(rejection) => rejection
-            Ok(x) => match B.from_request(req) {
-                Err(rejection) => rejection
-                Ok(y) => match C.from_request(req) {
-                    Err(rejection) => rejection
-                    Ok(z) => handler(x, y, z)
-                }
-            }
-        }
-    }
-
-    ## Wrap a 4-argument handler into a request handler (see args1).
-    args4 : (a, b, c, d => resp) -> (req => resp)
-        where [
-            a.from_request : req -> Try(a, resp),
-            b.from_request : req -> Try(b, resp),
-            c.from_request : req -> Try(c, resp),
-            d.from_request : req -> Try(d, resp),
-        ]
-    args4 = |handler| {
-        A : a
-        B : b
-        C : c
-        D : d
-        |req| match A.from_request(req) {
-            Err(rejection) => rejection
-            Ok(x) => match B.from_request(req) {
-                Err(rejection) => rejection
-                Ok(y) => match C.from_request(req) {
-                    Err(rejection) => rejection
-                    Ok(z) => match D.from_request(req) {
-                        Err(rejection) => rejection
-                        Ok(w) => handler(x, y, z, w)
-                    }
-                }
-            }
-        }
-    }
-
-    ## Wrap a 5-argument handler into a request handler (see args1).
-    args5 : (a, b, c, d, e => resp) -> (req => resp)
-        where [
-            a.from_request : req -> Try(a, resp),
-            b.from_request : req -> Try(b, resp),
-            c.from_request : req -> Try(c, resp),
-            d.from_request : req -> Try(d, resp),
-            e.from_request : req -> Try(e, resp),
-        ]
-    args5 = |handler| {
-        A : a
-        B : b
-        C : c
-        D : d
-        E : e
-        |req| match A.from_request(req) {
-            Err(rejection) => rejection
-            Ok(x) => match B.from_request(req) {
-                Err(rejection) => rejection
-                Ok(y) => match C.from_request(req) {
-                    Err(rejection) => rejection
-                    Ok(z) => match D.from_request(req) {
-                        Err(rejection) => rejection
-                        Ok(w) => match E.from_request(req) {
-                            Err(rejection) => rejection
-                            Ok(v) => handler(x, y, z, w, v)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    ## Internal: a plain-text rejection response for extractor failures.
+    ## Internal: a plain-text rejection response for coeffect failures.
     ## Left unannotated: naming the 4-field effectful Response type would need
     ## to reference a sibling platform module, which annotations can't do. The
     ## empty `effects: []` unifies with whatever the app's Response pins.
@@ -494,55 +360,29 @@ expect {
     decoded == Ok({ id: 7 })
 }
 
-# --- extractor types (from_request / accessors) ---
-
-expect Req.Body.from_request({ body: [104, 105] }) == Ok(Req.Body.Body([104, 105]))
+# --- coeffect accessors ---
+#
+# Each coeffect's `inject!` resolution is effectful (it memoizes through
+# `Ctx.get!`), so `expect` — which rejects effectful calls — can't drive it;
+# that path is covered end to end by the e2e suite. The pure parsing behind it
+# stays unit-tested via the `Req.json` / `Req.form` / `Req.body_str` /
+# `query_params` expects above. Here we cover the pure payload accessors on
+# directly-constructed coeffect values.
 
 expect Req.Body.value(Req.Body.Body([1, 2])) == [1, 2]
 
-expect Req.BodyStr.from_request({ body: [104, 105] }) == Ok(Req.BodyStr.BodyStr("hi"))
-
-expect Req.BodyStr.from_request({ body: [255, 254] }) == Err(Req.reject(400, "request body is not valid UTF-8"))
-
 expect {
-    extracted : Try(Req.JsonBody({ id : U64 }), _)
-    extracted = Req.JsonBody.from_request({ body: "{\"id\":7}".to_utf8() })
-    match extracted {
-        Ok(wrapped) => wrapped.value() == { id: 7 }
-        Err(_) => False
-    }
+    wrapped : Req.JsonBody({ id : U64 })
+    wrapped = Req.JsonBody.JsonBody({ id: 7 })
+    wrapped.value() == { id: 7 }
 }
 
-expect {
-    extracted : Try(Req.JsonBody({ id : U64 }), _)
-    extracted = Req.JsonBody.from_request({ body: "nope".to_utf8() })
-    extracted == Err(Req.reject(400, "request body is not valid JSON for the expected shape"))
-}
-
-expect {
-    extracted = Req.FormBody.from_request({ body: "a=1&b=x+y".to_utf8() })
-    match extracted {
-        Ok(wrapped) => wrapped.get("b") == Ok("x y")
-        Err(_) => False
-    }
-}
+expect Req.FormBody.get(Req.FormBody.FormBody([{ name: "b", value: "x y" }]), "b") == Ok("x y")
 
 expect Req.QueryParams.get(Req.QueryParams.QueryParams([{ name: "q", value: "zed" }]), "q") == Ok("zed")
 
-expect {
-    extracted = Req.QueryParams.from_request({ query: "a=1&b=two%20words" })
-    match extracted {
-        Ok(wrapped) => wrapped.value() == [{ name: "a", value: "1" }, { name: "b", value: "two words" }]
-        Err(_) => False
-    }
-}
+expect Req.QueryParams.value(Req.QueryParams.QueryParams([{ name: "a", value: "1" }])) == [{ name: "a", value: "1" }]
 
 expect Req.Headers.get(Req.Headers.Headers([{ name: "X-Custom", value: "abc" }]), "x-custom") == Ok("abc")
 
-expect {
-    extracted = Req.Model.from_request({ model: Box.box({ greeting: "hey" }) })
-    match extracted {
-        Ok(wrapped) => wrapped.value() == { greeting: "hey" }
-        Err(_) => False
-    }
-}
+expect Req.Model.value(Req.Model.Model({ greeting: "hey" })) == { greeting: "hey" }
