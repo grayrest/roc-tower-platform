@@ -19,10 +19,6 @@ Req := [].{
         Ok(entry.value)
     }
 
-    ## All query parameters, percent-decoded, in order of appearance.
-    query_params : { query : Str, .. } -> List({ name : Str, value : Str })
-    query_params = |req| Req.parse_pairs(req.query)
-
     ## Look up a single query parameter by name (first occurrence wins).
     ## (Factory: `Req.query(name)`.)
     get_query : { query : Str, .. }, Str -> Try(Str, [MissingQueryParam])
@@ -96,8 +92,9 @@ Req := [].{
         Ok(fields)
     }
 
-    ## All query parameters, percent-decoded. Never rejects.
-    query_pairs = |req| Ok(Req.query_params(req))
+    ## All query parameters, percent-decoded, in order of appearance. Never
+    ## rejects.
+    query_pairs = |req| Ok(Req.parse_pairs(req.query))
 
     ## All request headers. Never rejects.
     headers = |req| Ok(req.headers)
@@ -285,18 +282,18 @@ expect Req.get_header({ headers: [{ name: "x-a", value: "1" }] }, "X-A") == Ok("
 
 expect Req.get_header({ headers: [] }, "accept") == Err(MissingHeader)
 
-expect Req.query_params({ query: "a=1&b=two%20words" }) == [{ name: "a", value: "1" }, { name: "b", value: "two words" }]
+expect Req.query_pairs({ query: "a=1&b=two%20words" }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "two words" }])
 
-expect Req.query_params({ query: "" }) == []
+expect Req.query_pairs({ query: "" }) == Ok([])
 
-expect Req.query_params({ query: "flag" }) == [{ name: "flag", value: "" }]
+expect Req.query_pairs({ query: "flag" }) == Ok([{ name: "flag", value: "" }])
 
 expect Req.get_query({ query: "a=1&a=2" }, "a") == Ok("1")
 
 expect Req.get_query({ query: "a=1" }, "b") == Err(MissingQueryParam)
 
 # '+' decodes as space; '=' inside a value survives.
-expect Req.query_params({ query: "q=a+b&eq=x%3Dy=z" }) == [{ name: "q", value: "a b" }, { name: "eq", value: "x=y=z" }]
+expect Req.query_pairs({ query: "q=a+b&eq=x%3Dy=z" }) == Ok([{ name: "q", value: "a b" }, { name: "eq", value: "x=y=z" }])
 
 # Invalid escapes pass through literally.
 expect Req.percent_decode("100%") == "100%"
@@ -342,8 +339,6 @@ expect {
 }
 
 expect Req.form_body({ body: "a=1&b=x+y".to_utf8() }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "x y" }])
-
-expect Req.query_pairs({ query: "a=1&b=two%20words" }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "two words" }])
 
 expect Req.headers({ headers: [{ name: "X-Custom", value: "abc" }] }) == Ok([{ name: "X-Custom", value: "abc" }])
 

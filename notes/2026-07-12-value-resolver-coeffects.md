@@ -154,3 +154,16 @@ The `code : U16` pin in `reject` is kept as cheap defense.
 Residual quirk: APP-local factories share weak type vars across uses within
 the app — an expect applying one to a toy record conflicts with route uses at
 the full request type. Platform-module factory expects are unaffected.
+
+## Follow-up 3 (same day): one `Cofx` module; factories get the short names
+
+- `Ctx` + `Resolver` merged into **`Cofx`** (the Re-frame term): memo `get!`,
+  binders `with0..with5`, combinators `map` / `resolve` / `and_then` / `map2`.
+  The record builder is now `{ a: ra, b: rb }.Cofx`.
+- New **`Cofx.resolve`**: `and_then` minus the request — the dependent step
+  receives only the resolved value, which is the common case (the pure
+  example's `user_from!` pipeline had been ignoring `req`).
+- `Req` name swap: the route-facing coeffect factories own the short names —
+  `Req.param(n)` / `Req.query(n)` / `Req.header(n)` — and the direct pure
+  helpers are `get_param` / `get_query` / `get_header`. The `_named` suffix
+  had been collision-avoidance, not communication.

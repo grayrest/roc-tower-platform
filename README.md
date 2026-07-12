@@ -221,10 +221,11 @@ Sugar over the structural request/response records:
 - **Res**: `text`, `html`, `json` (builtin derive-style `Json.to_str` — works
   on your own records), `bytes`, `no_content`, `redirect`, `with_header`, and
   `from_try : Try(Response, Response) -> Response` for merging error paths.
-- **Req**: `get_param`, `get_header` (case-insensitive), `query_params` /
-  `get_query` (percent-decoded, `+` as space), `body_str`, `json` (typed
-  `Json.parse` of the body), `form` (urlencoded). (The short names `param` /
-  `header` / `query` are the route-facing coeffect factories above.)
+- **Req**: `get_param`, `get_header` (case-insensitive), `get_query`
+  (percent-decoded, `+` as space), `body_str`, `json` (typed `Json.parse` of
+  the body), `form` (urlencoded). (The short names `param` / `header` /
+  `query` are the route-facing coeffect factories above; all query pairs come
+  from the `query_pairs` resolver.)
 
 Fallible `Req` helpers return `Try`; inside a raw handler, delegate to an
 inner `Request => Try(Response, Response)` function where `?` works, then
