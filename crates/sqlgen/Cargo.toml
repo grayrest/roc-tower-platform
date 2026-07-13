@@ -1,0 +1,20 @@
+# NOTE: standalone workspace root during the Phase 1 analyzer spike, so a
+# failed analyzer never enters the parent workspace's `clippy -D warnings`
+# gate (plan decision 8). Folded into the parent workspace in Phase 4 once the
+# analyzer survives the kill criterion.
+[workspace]
+
+[package]
+name = "sqlgen"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[[bin]]
+name = "sqlgen"
+path = "src/main.rs"
+
+[dependencies]
+# Same rusqlite pin as the host workspace ⇒ same bundled SQLite by
+# construction (plan decision 8; libversion asserted at startup).
+rusqlite = { version = "0.32", features = ["bundled", "column_decltype"] }
