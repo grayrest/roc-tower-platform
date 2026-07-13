@@ -112,11 +112,6 @@ Cofx := [].{
         }
     }
 
-    ## Wrap a 0-coeffect PURE handler (one that reads nothing from the request,
-    ## e.g. a handler that only emits effects) into an effectful request handler.
-    with0 : (() -> resp) -> (req => resp)
-    with0 = |handler| |_req| handler()
-
     ## Bind one resolver to a 1-argument PURE handler. The resolver runs first;
     ## an Err rejection is returned as the response, otherwise the handler
     ## receives the raw resolved value.

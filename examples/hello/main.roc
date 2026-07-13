@@ -38,7 +38,7 @@ main = |{}| {
         { method: "POST", path: "/echo", handler: echo_h! },
         { method: "POST", path: "/greet", handler: greet_h! },
         # Cofx isn't required, it's just for populating handler args
-        { method: "GET", path: "/visit", handler: Box.box(visit) },
+        { method: "GET", path: "/visit", handler: Box.box(|_req| visit()) },
         # Escape hatch: raw effectful `Request => Response` handlers, for logic
         # that interleaves I/O with response-building. Still supported; not the
         # default. See examples/realworld for the fully pure style end to end.
