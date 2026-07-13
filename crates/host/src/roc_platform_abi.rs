@@ -900,62 +900,6 @@ const _: () = assert!(core::mem::size_of::<AnonStruct305711d6494b9bb2>() == 56, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct305711d6494b9bb2>() == 8, "AnonStruct305711d6494b9bb2 alignment mismatch");
 
-/// Element type for __AnonStruct_f35fa2e5790aa7e2
-#[cfg(target_pointer_width = "32")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AnonStructF35fa2e5790aa7e2 {
-    pub columns: RocList<RocStr>,
-    pub rows: RocList<RocList<HostSqlValue>>,
-}
-
-/// Element type for __AnonStruct_f35fa2e5790aa7e2
-#[cfg(not(target_pointer_width = "32"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AnonStructF35fa2e5790aa7e2 {
-    pub columns: RocList<RocStr>,
-    pub rows: RocList<RocList<HostSqlValue>>,
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStructF35fa2e5790aa7e2>() == 48, "AnonStructF35fa2e5790aa7e2 size mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStructF35fa2e5790aa7e2>() == 8, "AnonStructF35fa2e5790aa7e2 alignment mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStructF35fa2e5790aa7e2>() == 24, "AnonStructF35fa2e5790aa7e2 size mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStructF35fa2e5790aa7e2>() == 4, "AnonStructF35fa2e5790aa7e2 alignment mismatch");
-
-/// Element type for __AnonStruct_156b5cf265b1adab
-#[cfg(target_pointer_width = "32")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AnonStruct156b5cf265b1adab {
-    pub db: RocStr,
-    pub params: RocList<HostSqlValue>,
-    pub sql: RocStr,
-}
-
-/// Element type for __AnonStruct_156b5cf265b1adab
-#[cfg(not(target_pointer_width = "32"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AnonStruct156b5cf265b1adab {
-    pub db: RocStr,
-    pub params: RocList<HostSqlValue>,
-    pub sql: RocStr,
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStruct156b5cf265b1adab>() == 72, "AnonStruct156b5cf265b1adab size mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStruct156b5cf265b1adab>() == 8, "AnonStruct156b5cf265b1adab alignment mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStruct156b5cf265b1adab>() == 36, "AnonStruct156b5cf265b1adab size mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStruct156b5cf265b1adab>() == 4, "AnonStruct156b5cf265b1adab alignment mismatch");
-
 /// Element type for __AnonStruct_81f0667ceb55f2c1
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -1114,6 +1058,35 @@ const _: () = assert!(core::mem::align_of::<AnonStructC56ced036812b588>() == 8, 
 const _: () = assert!(core::mem::size_of::<AnonStructC56ced036812b588>() == 40, "AnonStructC56ced036812b588 size mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStructC56ced036812b588>() == 4, "AnonStructC56ced036812b588 alignment mismatch");
+
+/// Element type for __AnonStruct_156b5cf265b1adab
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct156b5cf265b1adab {
+    pub db: RocStr,
+    pub params: RocList<HostSqlValue>,
+    pub sql: RocStr,
+}
+
+/// Element type for __AnonStruct_156b5cf265b1adab
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct156b5cf265b1adab {
+    pub db: RocStr,
+    pub params: RocList<HostSqlValue>,
+    pub sql: RocStr,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStruct156b5cf265b1adab>() == 72, "AnonStruct156b5cf265b1adab size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStruct156b5cf265b1adab>() == 8, "AnonStruct156b5cf265b1adab alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStruct156b5cf265b1adab>() == 36, "AnonStruct156b5cf265b1adab size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStruct156b5cf265b1adab>() == 4, "AnonStruct156b5cf265b1adab alignment mismatch");
 
 /// Element type for __AnonStruct_a965a4c67b4c5d53
 #[cfg(target_pointer_width = "32")]
@@ -1351,43 +1324,43 @@ const _: () = assert!(core::mem::offset_of!(HostHttpSendResult, tag) == 28, "Hos
 /// Tag discriminant for Try.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostSqliteExecResultTag {
+pub enum HostSqlBeginResultTag {
     Err = 0,
     Ok = 1,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub union HostSqliteExecResultPayload {
+pub union HostSqlBeginResultPayload {
     pub err: core::mem::ManuallyDrop<RocStr>,
-    pub ok: core::mem::ManuallyDrop<AnonStructF35fa2e5790aa7e2>,
+    pub ok: core::mem::ManuallyDrop<u64>,
 }
 
 #[cfg(target_pointer_width = "32")]
-#[repr(align(4))]
+#[repr(align(8))]
 #[derive(Clone, Copy)]
-pub struct HostSqliteExecResultPayloadAlignment;
+pub struct HostSqlBeginResultPayloadAlignment;
 
 /// Tag union: Try
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostSqliteExecResult {
-    pub _payload_alignment: [HostSqliteExecResultPayloadAlignment; 0],
-    pub payload: [u8; 24],
-    pub tag: HostSqliteExecResultTag,
+pub struct HostSqlBeginResult {
+    pub _payload_alignment: [HostSqlBeginResultPayloadAlignment; 0],
+    pub payload: [u8; 12],
+    pub tag: HostSqlBeginResultTag,
 }
 
 /// Tag union: Try
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostSqliteExecResult {
-    pub payload: HostSqliteExecResultPayload,
-    pub tag: HostSqliteExecResultTag,
+pub struct HostSqlBeginResult {
+    pub payload: HostSqlBeginResultPayload,
+    pub tag: HostSqlBeginResultTag,
 }
 
-impl HostSqliteExecResult {
+impl HostSqlBeginResult {
     #[cfg(target_pointer_width = "32")]
     pub fn payload_err(&self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
@@ -1399,29 +1372,29 @@ impl HostSqliteExecResult {
     }
 
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> AnonStructF35fa2e5790aa7e2 {
-        unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructF35fa2e5790aa7e2) }
+    pub fn payload_ok(&self) -> u64 {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
     }
 
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> AnonStructF35fa2e5790aa7e2 {
+    pub fn payload_ok(&self) -> u64 {
         unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
     }
 
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<HostSqliteExecResult>() == 56, "HostSqliteExecResult size mismatch");
+const _: () = assert!(core::mem::size_of::<HostSqlBeginResult>() == 32, "HostSqlBeginResult size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<HostSqliteExecResult>() == 8, "HostSqliteExecResult alignment mismatch");
+const _: () = assert!(core::mem::align_of::<HostSqlBeginResult>() == 8, "HostSqlBeginResult alignment mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::offset_of!(HostSqliteExecResult, tag) == 48, "HostSqliteExecResult tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(HostSqlBeginResult, tag) == 24, "HostSqlBeginResult tag offset mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<HostSqliteExecResult>() == 28, "HostSqliteExecResult size mismatch");
+const _: () = assert!(core::mem::size_of::<HostSqlBeginResult>() == 16, "HostSqlBeginResult size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<HostSqliteExecResult>() == 4, "HostSqliteExecResult alignment mismatch");
+const _: () = assert!(core::mem::align_of::<HostSqlBeginResult>() == 8, "HostSqlBeginResult alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::offset_of!(HostSqliteExecResult, tag) == 24, "HostSqliteExecResult tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(HostSqlBeginResult, tag) == 12, "HostSqlBeginResult tag offset mismatch");
 
 /// Tag discriminant for Host.SqlValue.
 #[repr(u8)]
@@ -1523,81 +1496,6 @@ const _: () = assert!(core::mem::size_of::<HostSqlValue>() == 16, "HostSqlValue 
 const _: () = assert!(core::mem::align_of::<HostSqlValue>() == 8, "HostSqlValue alignment mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(HostSqlValue, tag) == 12, "HostSqlValue tag offset mismatch");
-
-/// Tag discriminant for Try.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostSqlBeginResultTag {
-    Err = 0,
-    Ok = 1,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub union HostSqlBeginResultPayload {
-    pub err: core::mem::ManuallyDrop<RocStr>,
-    pub ok: core::mem::ManuallyDrop<u64>,
-}
-
-#[cfg(target_pointer_width = "32")]
-#[repr(align(8))]
-#[derive(Clone, Copy)]
-pub struct HostSqlBeginResultPayloadAlignment;
-
-/// Tag union: Try
-#[cfg(target_pointer_width = "32")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostSqlBeginResult {
-    pub _payload_alignment: [HostSqlBeginResultPayloadAlignment; 0],
-    pub payload: [u8; 12],
-    pub tag: HostSqlBeginResultTag,
-}
-
-/// Tag union: Try
-#[cfg(not(target_pointer_width = "32"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostSqlBeginResult {
-    pub payload: HostSqlBeginResultPayload,
-    pub tag: HostSqlBeginResultTag,
-}
-
-impl HostSqlBeginResult {
-    #[cfg(target_pointer_width = "32")]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
-    }
-
-    #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.err) }
-    }
-
-    #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> u64 {
-        unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
-    }
-
-    #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> u64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
-    }
-
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<HostSqlBeginResult>() == 32, "HostSqlBeginResult size mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<HostSqlBeginResult>() == 8, "HostSqlBeginResult alignment mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::offset_of!(HostSqlBeginResult, tag) == 24, "HostSqlBeginResult tag offset mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<HostSqlBeginResult>() == 16, "HostSqlBeginResult size mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<HostSqlBeginResult>() == 8, "HostSqlBeginResult alignment mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::offset_of!(HostSqlBeginResult, tag) == 12, "HostSqlBeginResult tag offset mismatch");
 
 /// Tag discriminant for Try.
 #[repr(u8)]
@@ -1762,14 +1660,14 @@ const _: () = assert!(core::mem::offset_of!(HostMemoGetResult, tag) == 4, "HostM
 /// Tag discriminant for Try.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TryType59Tag {
+pub enum TryType51Tag {
     Err = 0,
     Ok = 1,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub union TryType59Payload {
+pub union TryType51Payload {
     pub err: core::mem::ManuallyDrop<RocStr>,
     pub ok: [u8; 0],
 }
@@ -1777,28 +1675,28 @@ pub union TryType59Payload {
 #[cfg(target_pointer_width = "32")]
 #[repr(align(4))]
 #[derive(Clone, Copy)]
-pub struct TryType59PayloadAlignment;
+pub struct TryType51PayloadAlignment;
 
 /// Tag union: Try
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TryType59 {
-    pub _payload_alignment: [TryType59PayloadAlignment; 0],
+pub struct TryType51 {
+    pub _payload_alignment: [TryType51PayloadAlignment; 0],
     pub payload: [u8; 12],
-    pub tag: TryType59Tag,
+    pub tag: TryType51Tag,
 }
 
 /// Tag union: Try
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct TryType59 {
-    pub payload: TryType59Payload,
-    pub tag: TryType59Tag,
+pub struct TryType51 {
+    pub payload: TryType51Payload,
+    pub tag: TryType51Tag,
 }
 
-impl TryType59 {
+impl TryType51 {
     #[cfg(target_pointer_width = "32")]
     pub fn payload_err(&self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
@@ -1812,17 +1710,17 @@ impl TryType59 {
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<TryType59>() == 32, "TryType59 size mismatch");
+const _: () = assert!(core::mem::size_of::<TryType51>() == 32, "TryType51 size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<TryType59>() == 8, "TryType59 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<TryType51>() == 8, "TryType51 alignment mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::offset_of!(TryType59, tag) == 24, "TryType59 tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(TryType51, tag) == 24, "TryType51 tag offset mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<TryType59>() == 16, "TryType59 size mismatch");
+const _: () = assert!(core::mem::size_of::<TryType51>() == 16, "TryType51 size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<TryType59>() == 4, "TryType59 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<TryType51>() == 4, "TryType51 alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::offset_of!(TryType59, tag) == 12, "TryType59 tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(TryType51, tag) == 12, "TryType51 tag offset mismatch");
 
 /// Payload struct for Must variant.
 #[cfg(target_pointer_width = "32")]
@@ -2532,39 +2430,6 @@ pub struct HostSqlStepArgs {
     pub arg0: u64,
 }
 
-/// Arguments for Host.sqlite_exec!
-/// Roc signature: { db : Str, params : List(Host.SqlValue), sql : Str } => Try({ columns : List(Str), rows : List(List(Host.SqlValue)) }, Str)
-/// Refcounted fields are owned by the hosted function.
-#[cfg(target_pointer_width = "32")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostSqliteExecArgs {
-    pub db: RocStr,
-    pub params: RocList<HostSqlValue>,
-    pub sql: RocStr,
-}
-
-/// Arguments for Host.sqlite_exec!
-/// Roc signature: { db : Str, params : List(Host.SqlValue), sql : Str } => Try({ columns : List(Str), rows : List(List(Host.SqlValue)) }, Str)
-/// Refcounted fields are owned by the hosted function.
-#[cfg(not(target_pointer_width = "32"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostSqliteExecArgs {
-    pub db: RocStr,
-    pub params: RocList<HostSqlValue>,
-    pub sql: RocStr,
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<HostSqliteExecArgs>() == 72, "HostSqliteExecArgs size mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<HostSqliteExecArgs>() == 8, "HostSqliteExecArgs alignment mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<HostSqliteExecArgs>() == 36, "HostSqliteExecArgs size mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<HostSqliteExecArgs>() == 4, "HostSqliteExecArgs alignment mismatch");
-
 // Platform Type Aliases
 
 pub type HostHttpSendArg0 = AnonStruct305711d6494b9bb2;
@@ -2575,14 +2440,6 @@ pub type HostSqlBeginArg0 = AnonStruct81f0667ceb55f2c1;
 pub type HostSqlBeginArg0Params = HostSqlValue;
 pub type HostSqlBeginArg0ParamsPayload = HostSqlValuePayload;
 pub type HostSqlBeginArg0ParamsTag = HostSqlValueTag;
-pub type HostSqliteExecArg0 = AnonStruct156b5cf265b1adab;
-pub type HostSqliteExecArg0Params = HostSqlValue;
-pub type HostSqliteExecArg0ParamsPayload = HostSqlValuePayload;
-pub type HostSqliteExecArg0ParamsTag = HostSqlValueTag;
-pub type HostSqliteExecOk = AnonStructF35fa2e5790aa7e2;
-pub type HostSqliteExecOkRows = HostSqlValue;
-pub type HostSqliteExecOkRowsPayload = HostSqlValuePayload;
-pub type HostSqliteExecOkRowsTag = HostSqlValueTag;
 pub type AppForHost = AnonStruct4dc83b5d9c0c77ea;
 pub type AppForHostRoutes = AnonStruct5c679ee432c3d89b;
 pub type AppForHostSettings = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs;
@@ -2760,178 +2617,6 @@ impl AnonStruct305711d6494b9bb2 {
     }
 }
 
-impl HostSqliteExecResult {
-    /// Recursively decrement Roc-owned payloads.
-    ///
-    /// # Safety
-    /// `self` must own one live Roc reference for each refcounted payload.
-    pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
-        let _ = roc_host;
-        match value.tag {
-            HostSqliteExecResultTag::Err => {
-                let payload = value.payload_err();
-                unsafe { payload.decref(roc_host); }
-            },
-            HostSqliteExecResultTag::Ok => {
-                let payload = value.payload_ok();
-                unsafe { payload.decref(roc_host); }
-            },
-        }
-    }
-
-    /// Increment Roc-owned payloads.
-    ///
-    /// # Safety
-    /// `self` must point at live Roc allocations. The retained references must
-    /// be balanced by later decrefs.
-    pub unsafe fn incref(self, amount: isize) {
-        let value = self;
-        let _ = amount;
-        match value.tag {
-            HostSqliteExecResultTag::Err => {
-                let payload = value.payload_err();
-                unsafe { payload.incref(amount); }
-            },
-            HostSqliteExecResultTag::Ok => {
-                let payload = value.payload_ok();
-                unsafe { payload.incref(amount); }
-            },
-        }
-    }
-}
-
-impl AnonStructF35fa2e5790aa7e2 {
-    /// Recursively decrement Roc-owned fields.
-    ///
-    /// # Safety
-    /// `self` must own one live Roc reference for each refcounted field.
-    pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
-        {
-            let list = value.columns;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        {
-            let list = value.rows;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        {
-                            let list = item;
-                            if list.has_one_ref() {
-                                for item_ref in list.allocation_items() {
-                                    let item = *item_ref;
-                                        unsafe { item.decref(roc_host); }
-                                }
-                            }
-                            unsafe { list.decref(roc_host); }
-                        }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-    }
-
-    /// Increment Roc-owned fields.
-    ///
-    /// # Safety
-    /// `self` must point at live Roc allocations. The retained references must
-    /// be balanced by later decrefs.
-    pub unsafe fn incref(self, amount: isize) {
-        let value = self;
-        unsafe { value.columns.incref(amount); }
-        unsafe { value.rows.incref(amount); }
-    }
-}
-
-impl HostSqlValue {
-    /// Recursively decrement Roc-owned payloads.
-    ///
-    /// # Safety
-    /// `self` must own one live Roc reference for each refcounted payload.
-    pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
-        let _ = roc_host;
-        match value.tag {
-            HostSqlValueTag::Blob => {
-                let payload = value.payload_blob();
-                unsafe { payload.decref(roc_host); }
-            },
-            HostSqlValueTag::Integer => {},
-            HostSqlValueTag::Null => {},
-            HostSqlValueTag::Real => {},
-            HostSqlValueTag::Text => {
-                let payload = value.payload_text();
-                unsafe { payload.decref(roc_host); }
-            },
-        }
-    }
-
-    /// Increment Roc-owned payloads.
-    ///
-    /// # Safety
-    /// `self` must point at live Roc allocations. The retained references must
-    /// be balanced by later decrefs.
-    pub unsafe fn incref(self, amount: isize) {
-        let value = self;
-        let _ = amount;
-        match value.tag {
-            HostSqlValueTag::Blob => {
-                let payload = value.payload_blob();
-                unsafe { payload.incref(amount); }
-            },
-            HostSqlValueTag::Integer => {},
-            HostSqlValueTag::Null => {},
-            HostSqlValueTag::Real => {},
-            HostSqlValueTag::Text => {
-                let payload = value.payload_text();
-                unsafe { payload.incref(amount); }
-            },
-        }
-    }
-}
-
-impl AnonStruct156b5cf265b1adab {
-    /// Recursively decrement Roc-owned fields.
-    ///
-    /// # Safety
-    /// `self` must own one live Roc reference for each refcounted field.
-    pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
-        unsafe { value.db.decref(roc_host); }
-        {
-            let list = value.params;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        unsafe { value.sql.decref(roc_host); }
-    }
-
-    /// Increment Roc-owned fields.
-    ///
-    /// # Safety
-    /// `self` must point at live Roc allocations. The retained references must
-    /// be balanced by later decrefs.
-    pub unsafe fn incref(self, amount: isize) {
-        let value = self;
-        unsafe { value.db.incref(amount); }
-        unsafe { value.params.incref(amount); }
-        unsafe { value.sql.incref(amount); }
-    }
-}
-
 impl HostSqlBeginResult {
     /// Recursively decrement Roc-owned payloads.
     ///
@@ -2998,6 +2683,53 @@ impl AnonStruct81f0667ceb55f2c1 {
         unsafe { value.db.incref(amount); }
         unsafe { value.params.incref(amount); }
         unsafe { value.sql.incref(amount); }
+    }
+}
+
+impl HostSqlValue {
+    /// Recursively decrement Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted payload.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = roc_host;
+        match value.tag {
+            HostSqlValueTag::Blob => {
+                let payload = value.payload_blob();
+                unsafe { payload.decref(roc_host); }
+            },
+            HostSqlValueTag::Integer => {},
+            HostSqlValueTag::Null => {},
+            HostSqlValueTag::Real => {},
+            HostSqlValueTag::Text => {
+                let payload = value.payload_text();
+                unsafe { payload.decref(roc_host); }
+            },
+        }
+    }
+
+    /// Increment Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = amount;
+        match value.tag {
+            HostSqlValueTag::Blob => {
+                let payload = value.payload_blob();
+                unsafe { payload.incref(amount); }
+            },
+            HostSqlValueTag::Integer => {},
+            HostSqlValueTag::Null => {},
+            HostSqlValueTag::Real => {},
+            HostSqlValueTag::Text => {
+                let payload = value.payload_text();
+                unsafe { payload.incref(amount); }
+            },
+        }
     }
 }
 
@@ -3133,7 +2865,7 @@ impl AnonStructC36e85b27c5677aa {
     }
 }
 
-impl TryType59 {
+impl TryType51 {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
@@ -3142,11 +2874,11 @@ impl TryType59 {
         let value = self;
         let _ = roc_host;
         match value.tag {
-            TryType59Tag::Err => {
+            TryType51Tag::Err => {
                 let payload = value.payload_err();
                 unsafe { payload.decref(roc_host); }
             },
-            TryType59Tag::Ok => {},
+            TryType51Tag::Ok => {},
         }
     }
 
@@ -3159,11 +2891,11 @@ impl TryType59 {
         let value = self;
         let _ = amount;
         match value.tag {
-            TryType59Tag::Err => {
+            TryType51Tag::Err => {
                 let payload = value.payload_err();
                 unsafe { payload.incref(amount); }
             },
-            TryType59Tag::Ok => {},
+            TryType51Tag::Ok => {},
         }
     }
 }
@@ -3376,6 +3108,40 @@ impl DbWriteOrHttpSendOrLog {
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+impl AnonStruct156b5cf265b1adab {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.db.decref(roc_host); }
+        {
+            let list = value.params;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+        unsafe { value.sql.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.db.incref(amount); }
+        unsafe { value.params.incref(amount); }
+        unsafe { value.sql.incref(amount); }
     }
 }
 
@@ -3769,10 +3535,6 @@ unsafe extern "C" {
     /// Hosted symbol for Host.sql_step!
     /// Roc signature: U64 => Try(Bool, Str)
     pub fn roc_sql_step(arg0: u64) -> HostSqlStepResult;
-
-    /// Hosted symbol for Host.sqlite_exec!
-    /// Roc signature: { db : Str, params : List(Host.SqlValue), sql : Str } => Try({ columns : List(Str), rows : List(List(Host.SqlValue)) }, Str)
-    pub fn roc_sqlite_exec(arg0: HostSqliteExecArgs) -> HostSqliteExecResult;
 
 }
 

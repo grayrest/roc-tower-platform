@@ -80,7 +80,6 @@ platform ""
         "password_hash": Host.password_hash!,
         "password_verify": Host.password_verify!,
         "roc_http_send": Host.http_send!,
-        "roc_sqlite_exec": Host.sqlite_exec!,
         "roc_sql_begin": Host.sql_begin!,
         "roc_sql_step": Host.sql_step!,
         "roc_sql_columns": Host.sql_columns!,

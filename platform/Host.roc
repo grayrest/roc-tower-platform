@@ -36,17 +36,6 @@ Host := [].{
         body : List(U8),
     }, Str)
 
-    ## Execute a SQL statement against a SQLite database file.
-    ## Returns result columns and rows (both empty for statements like INSERT).
-    sqlite_exec! : {
-        db : Str,
-        sql : Str,
-        params : List(SqlValue),
-    } => Try({
-        columns : List(Str),
-        rows : List(List(SqlValue)),
-    }, Str)
-
     ## The storage class of a live cursor cell (`sql_col_type!`). Mirrors
     ## SQLite's `sqlite3_column_type`; drives the by-name dynamic decode in
     ## `Sql.roc` and lets generated readers assert a NOT-NULL column isn't NULL.

@@ -14,7 +14,6 @@ pub type RocResponse = abi::AnonStructC56ced036812b588;
 pub type RocKeyValue = abi::AnonStruct82a96c5d55d63488;
 pub type RocSetting = abi::AppForHostSettings;
 pub type RocSettingTag = abi::AppForHostSettingsTag;
-pub type RocSqliteResultOk = abi::AnonStructF35fa2e5790aa7e2;
 
 /// `Host.http_send!` Ok payload: `{ status, headers, body }` (no effects).
 /// Content-hashes to the same struct as an `err_handler`'s `Reply`, but the

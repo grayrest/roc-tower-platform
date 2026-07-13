@@ -15,7 +15,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use crate::abi;
 use crate::roc_call::{roc_kv_list, roc_str};
 use crate::roc_host;
-use crate::types::{RocHttpOk, RocSqliteResultOk};
+use crate::types::RocHttpOk;
 
 /// Handle to the server's tokio runtime, used to drive async effects
 /// (outbound HTTP) from the blocking threads Roc handlers run on.
@@ -53,9 +53,10 @@ pub(crate) unsafe fn decref_list_with<T: Copy>(list: abi::RocList<T>, drop_item:
     unsafe { list.decref(roc_host()) };
 }
 
-/// Per-file connection pool (spike I3: "pool-for-everything"). Autocommit
-/// coeffect reads (`roc_sqlite_exec`) and the effect executor's
-/// `BEGIN IMMEDIATE` write transactions both check out from the same pool, so
+/// Per-file connection pool (spike I3: "pool-for-everything"). Cursor reads
+/// (`roc_sql_begin`, which pins a connection for the cursor's life) and the
+/// effect executor's `BEGIN IMMEDIATE` write transactions both check out from
+/// the same pool, so
 /// the process runs a single DB topology with explicit pragmas instead of the
 /// old shared-`Mutex<Connection>` cache (which corrupted concurrent
 /// transactions).
@@ -257,48 +258,6 @@ pub(crate) fn send_request(
 // SQLite.
 // ---------------------------------------------------------------------------
 
-enum SqlCell {
-    Null,
-    Integer(i64),
-    Real(f64),
-    Text(String),
-    Blob(Vec<u8>),
-}
-
-/// `Host.sqlite_exec!` — run one statement against a (cached) connection.
-#[unsafe(no_mangle)]
-pub extern "C" fn roc_sqlite_exec(args: abi::HostSqliteExecArgs) -> abi::HostSqliteExecResult {
-    let host = roc_host();
-    let db = String::from_utf8_lossy(args.db.as_slice()).into_owned();
-    let sql = String::from_utf8_lossy(args.sql.as_slice()).into_owned();
-    let params: Vec<rusqlite::types::Value> = args
-        .params
-        .as_slice()
-        .iter()
-        .map(sql_param_to_rusqlite)
-        .collect();
-    unsafe {
-        args.db.decref(host);
-        decref_list_with(args.params, |value| value.decref(host));
-        args.sql.decref(host);
-    }
-
-    match execute_statement(&db, &sql, params) {
-        Ok((columns, rows)) => abi::HostSqliteExecResult {
-            tag: abi::HostSqliteExecResultTag::Ok,
-            payload: abi::HostSqliteExecResultPayload {
-                ok: ManuallyDrop::new(build_sqlite_ok(&columns, rows)),
-            },
-        },
-        Err(message) => abi::HostSqliteExecResult {
-            tag: abi::HostSqliteExecResultTag::Err,
-            payload: abi::HostSqliteExecResultPayload {
-                err: ManuallyDrop::new(roc_str(&message)),
-            },
-        },
-    }
-}
-
 pub(crate) fn sql_param_to_rusqlite(value: &abi::HostSqlValue) -> rusqlite::types::Value {
     use rusqlite::types::Value;
     match value.tag {
@@ -362,78 +321,6 @@ pub(crate) fn checkout_sqlite(db: &str) -> Result<PooledSqlite, String> {
     sqlite_pool(db)?
         .get()
         .map_err(|err| format!("sqlite checkout for {db:?}: {err}"))
-}
-
-fn execute_statement(
-    db: &str,
-    sql: &str,
-    params: Vec<rusqlite::types::Value>,
-) -> Result<(Vec<String>, Vec<Vec<SqlCell>>), String> {
-    let connection = checkout_sqlite(db)?;
-    // Cached per connection: coeffect reads repeat a small set of (sometimes
-    // large) SQL strings every request, and re-parsing dominates cheap
-    // indexed queries.
-    let mut statement = connection.prepare_cached(sql).map_err(|err| err.to_string())?;
-    let column_count = statement.column_count();
-
-    if column_count == 0 {
-        statement
-            .execute(rusqlite::params_from_iter(params))
-            .map_err(|err| err.to_string())?;
-        return Ok((Vec::new(), Vec::new()));
-    }
-
-    let columns: Vec<String> = statement
-        .column_names()
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
-    let mut rows_out = Vec::new();
-    let mut rows = statement
-        .query(rusqlite::params_from_iter(params))
-        .map_err(|err| err.to_string())?;
-    while let Some(row) = rows.next().map_err(|err| err.to_string())? {
-        let mut cells = Vec::with_capacity(column_count);
-        for index in 0..column_count {
-            use rusqlite::types::ValueRef;
-            cells.push(match row.get_ref(index).map_err(|err| err.to_string())? {
-                ValueRef::Null => SqlCell::Null,
-                ValueRef::Integer(value) => SqlCell::Integer(value),
-                ValueRef::Real(value) => SqlCell::Real(value),
-                ValueRef::Text(bytes) => {
-                    SqlCell::Text(String::from_utf8_lossy(bytes).into_owned())
-                }
-                ValueRef::Blob(bytes) => SqlCell::Blob(bytes.to_vec()),
-            });
-        }
-        rows_out.push(cells);
-    }
-    Ok((columns, rows_out))
-}
-
-fn build_sqlite_ok(columns: &[String], rows: Vec<Vec<SqlCell>>) -> RocSqliteResultOk {
-    let host = roc_host();
-    unsafe {
-        let column_list = abi::RocList::<abi::RocStr>::allocate(columns.len(), host);
-        for (index, column) in columns.iter().enumerate() {
-            column_list.elements.add(index).write(roc_str(column));
-        }
-
-        let row_list =
-            abi::RocList::<abi::RocList<abi::HostSqlValue>>::allocate(rows.len(), host);
-        for (row_index, row) in rows.iter().enumerate() {
-            let cell_list = abi::RocList::<abi::HostSqlValue>::allocate(row.len(), host);
-            for (cell_index, cell) in row.iter().enumerate() {
-                cell_list.elements.add(cell_index).write(sql_cell_to_roc(cell));
-            }
-            row_list.elements.add(row_index).write(cell_list);
-        }
-
-        RocSqliteResultOk {
-            columns: column_list,
-            rows: row_list,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -646,39 +533,4 @@ pub extern "C" fn roc_memo_put(ctx: u64, key: abi::RocStr, boxed: abi::RocErased
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_memo_live_boxes() -> u64 {
     LIVE_MEMO_BOXES.load(Ordering::SeqCst)
-}
-
-fn sql_cell_to_roc(cell: &SqlCell) -> abi::HostSqlValue {
-    match cell {
-        SqlCell::Null => abi::HostSqlValue {
-            tag: abi::HostSqlValueTag::Null,
-            payload: abi::HostSqlValuePayload { null: [] },
-        },
-        SqlCell::Integer(value) => abi::HostSqlValue {
-            tag: abi::HostSqlValueTag::Integer,
-            payload: abi::HostSqlValuePayload {
-                integer: ManuallyDrop::new(*value),
-            },
-        },
-        SqlCell::Real(value) => abi::HostSqlValue {
-            tag: abi::HostSqlValueTag::Real,
-            payload: abi::HostSqlValuePayload {
-                real: ManuallyDrop::new(*value),
-            },
-        },
-        SqlCell::Text(value) => abi::HostSqlValue {
-            tag: abi::HostSqlValueTag::Text,
-            payload: abi::HostSqlValuePayload {
-                text: ManuallyDrop::new(roc_str(value)),
-            },
-        },
-        SqlCell::Blob(value) => abi::HostSqlValue {
-            tag: abi::HostSqlValueTag::Blob,
-            payload: abi::HostSqlValuePayload {
-                blob: ManuallyDrop::new(unsafe {
-                    abi::RocListWith::<u8, false>::from_slice(value, roc_host())
-                }),
-            },
-        },
-    }
 }
