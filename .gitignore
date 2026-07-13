@@ -1,7 +1,5 @@
 /target
 /platform/targets/*/libhost.a
 /main
-# Phase 1 spike: sqlgen is a standalone workspace root until folded into the
-# parent workspace in Phase 4, so it has its own target dir.
-/crates/sqlgen/target
-/crates/sqlgen/Cargo.lock
+# sqlgen check writes regenerated modules here to diff against the committed ones.
+/target/sqlgen-check

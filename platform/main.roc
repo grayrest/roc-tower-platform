@@ -66,7 +66,7 @@ platform ""
             }),
         }
     }
-    exposes [Host, Res, Req, Effect, Cofx, Sql, NullableStr, JsonBool]
+    exposes [Host, Res, Req, Effect, Cofx, Sql, NullableStr, NullableI64, JsonBool]
     packages {}
     provides {
         "roc_app": app_for_host,
@@ -110,6 +110,7 @@ import Effect
 import Cofx
 import Sql
 import NullableStr
+import NullableI64
 import JsonBool
 
 app_for_host = |{}| {

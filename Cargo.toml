@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/host", "crates/e2e-tests"]
+members = ["crates/host", "crates/e2e-tests", "crates/sqlgen"]
 
 [workspace.package]
 version = "0.1.0"

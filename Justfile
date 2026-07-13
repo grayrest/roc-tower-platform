@@ -102,8 +102,23 @@ test-host:
 test-e2e:
     ROC="{{ roc }}" cargo test -p tower-platform-e2e
 
+# sqlgen analyzer + scanner + emitter tests.
+test-sqlgen:
+    cargo test -p sqlgen
+
 # All test suites.
-test: test-roc test-host test-e2e
+test: test-roc test-host test-e2e test-sqlgen
+
+# Regenerate the typed-SQL modules (examples/realworld/*Gen.roc) from the
+# `## @sql` queries. Commit the output.
+sqlgen:
+    cargo build --release -p sqlgen
+    ./target/release/sqlgen gen examples/realworld
+
+# Fail if the committed *Gen.roc are stale vs a fresh regen (drift gate).
+sqlgen-check:
+    cargo build --release -p sqlgen
+    ./target/release/sqlgen check examples/realworld
 
 # Lint gate: clippy with warnings denied. (No rustfmt gate: the generated
 # roc_platform_abi.rs is rewritten unformatted by every `just glue`.)
@@ -111,4 +126,4 @@ lint:
     cargo clippy --workspace --all-targets -- -D warnings
 
 # Everything a commit must pass.
-check: lint check-examples test
+check: lint sqlgen-check check-examples test

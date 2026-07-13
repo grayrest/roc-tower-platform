@@ -2,6 +2,8 @@
 //! emitter) so both the binary and the integration-test battery share them.
 
 pub mod analyze;
+pub mod emit;
+pub mod scan;
 pub mod schema;
 
 use rusqlite::Connection;
