@@ -33,16 +33,12 @@ main = |{}| {
     ],
     init!: init!,
     routes: [
-        # Sanctioned style: pure `->` handlers, coeffects in, Response out.
-        # A coeffect is a resolver VALUE (`req => Try(a, resp)`); Cofx.withN
-        # binds them to the handler's positional args. Parameterizing one is
-        # partial application: `Req.param("id")` is a resolver for that
-        # specific path parameter.
-        { method: "GET", path: "/", handler: Box.box(Cofx.with1(Req.model, home)) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Cofx.with1(Req.param("id"), user)) },
-        { method: "POST", path: "/echo", handler: Box.box(Cofx.with1(Req.body, echo)) },
-        { method: "POST", path: "/greet", handler: Box.box(Cofx.with2(Req.json_body, Req.model, greet)) },
-        { method: "GET", path: "/visit", handler: Box.box(Cofx.with0(visit)) },
+        { method: "GET", path: "/", handler: home_h! },
+        { method: "GET", path: "/users/{id}", handler: user_h! },
+        { method: "POST", path: "/echo", handler: echo_h! },
+        { method: "POST", path: "/greet", handler: greet_h! },
+        # Cofx isn't required, it's just for populating handler args
+        { method: "GET", path: "/visit", handler: Box.box(visit) },
         # Escape hatch: raw effectful `Request => Response` handlers, for logic
         # that interleaves I/O with response-building. Still supported; not the
         # default. See examples/realworld for the fully pure style end to end.
@@ -66,16 +62,21 @@ init! = || {
 # --- Pure handlers (`->`: the compiler forbids any I/O in these bodies) ------
 # Handlers receive the RAW resolved values — no wrapper types to destructure.
 
+
+home_h! = Box.box(Cofx.with1(Req.model, home))
 home : Model -> Response
 home = |model| Res.text(200, "${model.greeting}, world!")
 
+user_h! = Box.box(Cofx.with1(Req.param("id"), user))
 ## The `{id}` path parameter, resolved by the `Req.param("id")` factory.
 user : Str -> Response
 user = |id| Res.text(200, "user ${id}")
 
+echo_h! = Box.box(Cofx.with1(Req.body, echo))
 echo : List(U8) -> Response
 echo = |bytes| Res.bytes(200, "application/octet-stream", bytes)
 
+greet_h! = Box.box(Cofx.with2(Req.json_body, Req.model, greet))
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
 greet : { name : Str }, Model -> Response
 greet = |body, model|

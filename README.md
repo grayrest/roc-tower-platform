@@ -8,11 +8,33 @@ Axum, but the application is written in Roc.
 **Status: experimental.** Targets the new (Zig-based) Roc compiler built from
 source, and tracks its moving platform ABI via generated glue.
 
-## What a Roc app looks like
+## This is an opinionated platform
 
-Handlers are **pure** functions (`->`, not `=>`): the compiler forbids I/O in
-their bodies. Inputs arrive as **coeffects** resolved before the handler; writes
-leave as **effects** the host runs after it returns.
+Handlers are **pure** functions (`->`, not `=>`) but this platform is also built with the very
+stateful SQLite as the persistence mechanism so interaction with non-pure code needs to be explained
+up front.
+
+Handlers produce a `Response` and part of that response is a list of **effects** that instruct
+the platform to make changes to world.  There are two kinds: `Must` (`.fx`, `.fx_err`) and `Opt`
+(`.opt`). Effects are run in-order by phase with the db `Must` calls running first phase within a
+transaction and rolling back if any fail, other `Must` effects are run second phase, the response
+gets sent, and the `Opt` effects are run afterwards.
+
+That still leaves the problem of effectful reads which are **coeffects**. The term is unusual but
+comes from [re-frame] and more convenient than "effectful read". The coeffect system
+does the database reading, input validation, retrieves the current time, etc. These are bound
+to the handler using `Cofx.resolve` (for record patterned input) or `Cofx.withN` for handlers
+taking multiple arguments. The coeffects are resolved with error paths being handled before
+the handler gets called. I use the convention of `<handler>_h!` for binding the coeffects
+just before the handler definition along with the boxing needed to cross the host boundary.
+
+[re-frame]: https://github.com/day8/re-frame
+
+For usage patterns that don't conveniently fit the coeffect->handler->effect pattern you can
+implement direct `Request => Response` handlers using the host bindings but I didn't bother
+implementing/exposing multi-part forms, asyncronity, or streams so the extra options are pretty
+basic.
+
 
 ```roc
 app [Model, main] { pf: platform "../../platform/main.roc" }
@@ -28,9 +50,8 @@ main = |{}| {
     settings: [Port(8000), Compression, CorsPermissive],
     init!: init!,
     routes: [
-        # Cofx.withN binds coeffect resolvers to the pure handler's arguments.
-        { method: "GET", path: "/", handler: Box.box(Cofx.with1(Req.model, home)) },
-        { method: "POST", path: "/greet", handler: Box.box(Cofx.with2(Req.json_body, Req.model, greet)) },
+        { method: "GET", path: "/", handler: home_h!  },
+        { method: "POST", path: "/greet", handler: greet_h! },
     ],
 }
 
@@ -43,19 +64,17 @@ init! = || {
     Ok({ greeting: greeting })
 }
 
-# Pure: `->` arrow. No Host.*! call can appear here — it would not compile.
+home_h! = Box.box(Cofx.with1(Req.model, home))
 home : Model -> Response
 home = |model| Res.text(200, "${model.greeting}, world!")
 
-# Coeffects resolve before the handler runs, and the handler receives the raw
-# values: a bad JSON body never reaches `greet` — the json_body resolver
-# rejects it with a 400.
+greet_h! = Box.box(Cofx.with2(Req.json_body, Req.model, greet))
 greet : { name : Str }, Model -> Response
 greet = |body, model| Res.json(200, { message: "${model.greeting}, ${body.name}" })
 ```
 
-See [examples/realworld](examples/realworld/main.roc) for the full model in
-anger — auth as memoized coeffects, reserved-id coeffects, multi-write
+See [examples/realworld](examples/realworld/main.roc) for a full example — auth as
+memoized coeffects, reserved-id coeffects, multi-write
 transactional effects with a `UniqueViolation -> 409` err_handler,
 validation-as-rejection — and
 [examples/hello/main.roc](examples/hello/main.roc) for a mix of pure handlers
@@ -263,9 +282,7 @@ parses to `Err(Missing)` instead of failing the body.
 - **realworld** — a complete [RealWorld/Conduit](https://realworld-docs.netlify.app)
   backend (19 endpoints: auth, profiles/follows, articles, feed, favorites,
   comments, tags) with every handler pure. Passes the official conformance
-  suite (`just realworld-conformance`, 154 requests). Auth is a memoized
-  coeffect over opaque tokens; authorization (author-only edits) is a
-  resolver; validation rejections ARE the error responses.
+  suite (`just realworld-conformance`, 154 requests).
 
 ## Building
 
@@ -274,14 +291,11 @@ Prerequisites:
 - Rust (stable) with cargo
 - [just](https://github.com/casey/just) (`brew install just`)
 - A `roc` binary built from the compiler's `main` branch
-  (`zig build roc` with Zig 0.16 in a roc-lang/roc checkout)
+  (`zig build roc -Doptimize=ReleaseFast` with Zig 0.16 in a roc-lang/roc checkout)
+- The Justfile is set up with my checkout location (sorry)
 
 ```sh
-just build              # examples/hello/main.roc by default
-./main                  # or: just run
-
-just build examples/e2e/main.roc
-ROC=/path/to/roc just build   # non-default roc checkout
+ROC=/path/to/roc just run examples/e2e/main.roc
 ```
 
 `just build` regenerates the Rust glue (`roc glue`), builds the host
