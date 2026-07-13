@@ -47,6 +47,50 @@ Host := [].{
         rows : List(List(SqlValue)),
     }, Str)
 
+    ## The storage class of a live cursor cell (`sql_col_type!`). Mirrors
+    ## SQLite's `sqlite3_column_type`; drives the by-name dynamic decode in
+    ## `Sql.roc` and lets generated readers assert a NOT-NULL column isn't NULL.
+    ColType := [Null, Integer, Real, Text, Blob]
+
+    ## Prepare a statement against a pooled connection and step to just before
+    ## the first row. `ctx` is the request's coeffect ctx (0 at init time); the
+    ## cursor is registered under it and swept if the request tears down without
+    ## `sql_finish!`. Returns an opaque cursor handle. Write statements are
+    ## accepted (the reserved-id coeffect runs `UPDATE ... RETURNING` here).
+    sql_begin! : {
+        ctx : U64,
+        db : Str,
+        sql : Str,
+        params : List(SqlValue),
+    } => Try(U64, Str)
+
+    ## Advance a cursor. `Ok(Bool.true)` when a row is available for the
+    ## `sql_col_*!` getters, `Ok(Bool.false)` at end of results.
+    sql_step! : U64 => Try(Bool, Str)
+
+    ## The column names of a cursor's result, in order (for by-name decode).
+    sql_columns! : U64 => List(Str)
+
+    ## The storage class of column `index` in the current row.
+    sql_col_type! : U64, U64 => Host.ColType
+
+    ## Column `index` of the current row as I64 (SQLite coerces per affinity;
+    ## NULL reads as 0 — check `sql_col_type!` first when it may be NULL).
+    sql_col_i64! : U64, U64 => I64
+
+    ## Column `index` of the current row as F64.
+    sql_col_f64! : U64, U64 => F64
+
+    ## Column `index` of the current row as Str (NULL and non-text coerce).
+    sql_col_str! : U64, U64 => Str
+
+    ## Column `index` of the current row as a byte blob.
+    sql_col_blob! : U64, U64 => List(U8)
+
+    ## Finalize a cursor and return its connection to the pool. Idempotent: a
+    ## second finish, or a finish of an unknown handle, is a no-op.
+    sql_finish! : U64 => {}
+
     ## A non-idempotent effect used by the coeffect layer's tests and the
     ## `ReservedId`-style coeffect: each call increments a process-global
     ## counter and returns the new value. Stands in for a "reserve an id" style

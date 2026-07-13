@@ -44,7 +44,7 @@ fn http_client() -> &'static reqwest::Client {
 
 /// Release a refcounted-element Roc list: tear down elements when this is the
 /// last reference, then release the list allocation itself.
-unsafe fn decref_list_with<T: Copy>(list: abi::RocList<T>, drop_item: impl Fn(T)) {
+pub(crate) unsafe fn decref_list_with<T: Copy>(list: abi::RocList<T>, drop_item: impl Fn(T)) {
     if list.has_one_ref() {
         for item in list.allocation_items() {
             drop_item(*item);
@@ -518,6 +518,11 @@ impl Drop for CtxGuard {
             }
             None => tracing::error!("ctx {}: registry entry vanished before teardown", self.id),
         }
+        // Backstop for cursors a handler left open on an error path (a `?`
+        // between sql_begin! and sql_finish!). The router's reaper defers this
+        // drop until the handler's blocking task has returned, so the sweep
+        // never races a live step.
+        crate::cursor::sweep_ctx_cursors(self.id);
     }
 }
 

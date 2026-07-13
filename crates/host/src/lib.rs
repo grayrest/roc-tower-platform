@@ -10,6 +10,7 @@ mod abi;
 
 mod body;
 mod config;
+mod cursor;
 mod effect;
 mod effects;
 mod middleware;

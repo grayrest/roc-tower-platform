@@ -189,18 +189,26 @@ impl RouterInner {
         };
 
         let model = self.model;
-        // Mint the per-request coeffect-memo ctx. The guard stays on THIS side
-        // of spawn_blocking: its Drop (normal completion, JoinError from a
-        // handler panic, or this future being cancelled) removes the registry
-        // entry and releases every memoized thunk. A guard inside the blocking
-        // closure would leak on panic — Rust cleanups below the Roc frames do
-        // not run when a panic unwinds out of a hosted fn.
+        // Mint the per-request coeffect ctx, then run the handler on the
+        // blocking pool. A detached reaper task owns the teardown guard and
+        // drops it — releasing memoized thunks AND sweeping any cursor the
+        // handler left open on an error path — ONLY after the blocking task has
+        // returned. Deferring teardown past the handler is what makes the ctx
+        // sweep unable to race a live cursor step, and it survives this
+        // dispatch future being cancelled (client disconnect, timeout) as well
+        // as a host panic unwinding out of a hosted fn (surfaced as a
+        // JoinError). See plan decision 6.
         let ctx_guard = crate::effects::mint_ctx();
         let ctx = ctx_guard.id();
-        let (roc_response, deferred) =
-            tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts, ctx))
-                .await?;
-        drop(ctx_guard);
+        let join =
+            tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts, ctx));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let outcome = join.await;
+            drop(ctx_guard);
+            let _ = tx.send(outcome);
+        });
+        let (roc_response, deferred) = rx.await.map_err(|_| "handler reaper vanished")??;
 
         let status = StatusCode::from_u16(roc_response.status).unwrap_or_else(|_| {
             tracing::error!("Roc handler returned invalid status {}", roc_response.status);
