@@ -54,13 +54,14 @@ build app="examples/hello/main.roc": host
 run app="examples/hello/main.roc": (build app)
     ./main
 
-# Type-check every example against the platform. The e2e/pure/ctxmemo suites
-# already build their apps; this also covers `hello`, which no test builds, so
-# a platform-API change that breaks an example is caught by `just check`.
+# Type-check every example against the platform. The e2e/ctxmemo/realworld
+# suites already build their apps; this also covers `hello`, which no test
+# builds, so a platform-API change that breaks an example is caught by
+# `just check`.
 check-examples: glue
     #!/usr/bin/env bash
     set -euo pipefail
-    for ex in hello e2e pure ctxmemo realworld; do
+    for ex in hello e2e ctxmemo realworld; do
         "{{ roc }}" check "examples/$ex/main.roc"
     done
 

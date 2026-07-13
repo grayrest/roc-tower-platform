@@ -54,9 +54,10 @@ greet : { name : Str }, Model -> Response
 greet = |body, model| Res.json(200, { message: "${model.greeting}, ${body.name}" })
 ```
 
-See [examples/pure/main.roc](examples/pure/main.roc) for the full model —
-reserved-id coeffects, a `Must(DbWrite)` effect that runs transactionally with a
-`UniqueViolation -> 409` handler, and an `Opt(Log)` — and
+See [examples/realworld](examples/realworld/main.roc) for the full model in
+anger — auth as memoized coeffects, reserved-id coeffects, multi-write
+transactional effects with a `UniqueViolation -> 409` err_handler,
+validation-as-rejection — and
 [examples/hello/main.roc](examples/hello/main.roc) for a mix of pure handlers
 and the effectful escape hatch.
 
@@ -172,8 +173,8 @@ The reuse story is functions plus a **pipelined** composition surface:
 | `Req.reserved_id!` | a fresh DB-reserved id (memoized per request) | 500 on DB error |
 
 An app-defined coeffect is just another function of the same shape; a
-dependent read pipelines from a factory (from `examples/pure` — the `{id}`
-param resolves, then the row it names loads, with a 404 on a miss):
+dependent read pipelines from a factory (the `{id}` param resolves, then
+the row it names loads, with a 404 on a miss):
 
 ```roc
 fetched_user! : Request => Try({ id : I64, name : Str }, Response)
@@ -258,8 +259,6 @@ parses to `Err(Missing)` instead of failing the body.
 ## Examples
 
 - **hello** — smallest app; also shows the raw-handler escape hatch.
-- **pure** — the coeffect/effect reference: reserved ids, pipelined read
-  coeffects, record-builder blocks, transactional writes with err_handlers.
 - **e2e**, **ctxmemo** — fixtures for the HTTP and memoization test suites.
 - **realworld** — a complete [RealWorld/Conduit](https://realworld-docs.netlify.app)
   backend (19 endpoints: auth, profiles/follows, articles, feed, favorites,

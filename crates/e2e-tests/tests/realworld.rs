@@ -134,8 +134,7 @@ async fn get(client: &reqwest::Client, url: String, token: Option<&str>) -> (u16
 }
 
 /// One sequential journey: the shared `./main` binary and fixed DB path mean
-/// steps must run in order, so they live in one `#[test]` (same shape as the
-/// pure example's suite).
+/// steps must run in order, so they live in one `#[test]`.
 #[tokio::test]
 async fn realworld_full_journey() {
     let server = start_server();

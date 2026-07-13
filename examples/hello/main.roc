@@ -45,7 +45,7 @@ main = |{}| {
         { method: "GET", path: "/visit", handler: Box.box(Cofx.with0(visit)) },
         # Escape hatch: raw effectful `Request => Response` handlers, for logic
         # that interleaves I/O with response-building. Still supported; not the
-        # default. See examples/pure for the fully pure style end to end.
+        # default. See examples/realworld for the fully pure style end to end.
         { method: "GET", path: "/random", handler: Box.box(random!) },
         { method: "GET", path: "/proxy", handler: Box.box(proxy!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },

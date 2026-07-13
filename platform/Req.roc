@@ -420,4 +420,4 @@ expect {
 # an expect freezes the factory's request row to the expect's (closed) record,
 # which then fails to unify with the full request record in downstream apps
 # (compiler quirk, observed 2026-07-12). Composition over a factory is covered
-# by the pure example's `fetched_user!` pipeline through the e2e gate.
+# by the realworld example's composed coeffects through the e2e gate.
