@@ -11,9 +11,9 @@ import Db
 ## 401 precedes 404.
 Profiles := [].{
     routes = |{}| [
-        { method: "GET", path: "/api/profiles/{username}", handler: Box.box(Cofx.with1(Profiles.profile!, Profiles.get)) },
-        { method: "POST", path: "/api/profiles/{username}/follow", handler: Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.follow)) },
-        { method: "DELETE", path: "/api/profiles/{username}/follow", handler: Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.unfollow)) },
+        { method: "GET", path: "/api/profiles/{username}", handler: Profiles.get_h! },
+        { method: "POST", path: "/api/profiles/{username}/follow", handler: Profiles.follow_h! },
+        { method: "DELETE", path: "/api/profiles/{username}/follow", handler: Profiles.unfollow_h! },
     ]
 
     ## Coeffect: the {username} profile with its user id (for follow
@@ -27,9 +27,17 @@ Profiles := [].{
     ## Coeffect: just the profile (GET's whole input).
     profile! = Profiles.target!->Cofx.map(|target| target.profile)
 
+    ## `get` bound to its coeffect.
+    get_h! = Box.box(Cofx.with1(Profiles.profile!, Profiles.get))
+
     ## PURE handler: the profile envelope.
     get : Db.Profile -> Res.Response
     get = |profile| Res.json(200, { profile: profile })
+
+    ## `follow` / `unfollow` bound to their coeffects.
+    follow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.follow))
+
+    unfollow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.unfollow))
 
     ## PURE handler: record the follow (idempotent), answer the profile
     ## with following flipped on.

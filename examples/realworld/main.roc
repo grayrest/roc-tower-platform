@@ -29,12 +29,15 @@ main = |{}| {
         .concat(Articles.routes({}))
         .concat(Comments.routes({}))
         .concat([
-            { method: "GET", path: "/api/tags", handler: Box.box(Cofx.with1(tags!, tags)) },
+            { method: "GET", path: "/api/tags", handler: tags_h! },
         ]),
 }
 
 ## Coeffect: every tag in use.
 tags! = |req| Db.all_tags!(Box.unbox(req.model).db)
+
+## `tags` bound to its coeffect.
+tags_h! = Box.box(Cofx.with1(tags!, tags))
 
 ## PURE handler: the RealWorld tags envelope.
 tags : List(Str) -> Res.Response

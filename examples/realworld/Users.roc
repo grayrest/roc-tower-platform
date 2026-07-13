@@ -32,10 +32,10 @@ Users := [].{
     }
 
     routes = |{}| [
-        { method: "POST", path: "/api/users", handler: Box.box(Cofx.with3(Users.registration!, Req.reserved_id!, Auth.fresh_token!, Users.register)) },
-        { method: "POST", path: "/api/users/login", handler: Box.box(Cofx.with1(Users.credentials!, Users.login)) },
-        { method: "GET", path: "/api/user", handler: Box.box(Cofx.with1(Auth.current_user!, Users.current)) },
-        { method: "PUT", path: "/api/user", handler: Box.box(Cofx.with2(Auth.current_user!, Users.user_patch!, Users.update)) },
+        { method: "POST", path: "/api/users", handler: Users.register_h! },
+        { method: "POST", path: "/api/users/login", handler: Users.login_h! },
+        { method: "GET", path: "/api/user", handler: Users.current_h! },
+        { method: "PUT", path: "/api/user", handler: Users.update_h! },
     ]
 
     ## The RealWorld user envelope every users endpoint responds with.
@@ -62,6 +62,9 @@ Users := [].{
             hash: Host.password_hash!(valid_password(body.user.password)?),
         })
     }
+
+    ## `register` bound to its coeffects (validated body, id, token).
+    register_h! = Box.box(Cofx.with3(Users.registration!, Req.reserved_id!, Auth.fresh_token!, Users.register))
 
     ## PURE handler: INSERT the user and their first token in one
     ## transaction; a duplicate email/username fails the Must and the
@@ -120,6 +123,9 @@ Users := [].{
         }
     }
 
+    ## `login` bound to the verified-credentials coeffect.
+    login_h! = Box.box(Cofx.with1(Users.credentials!, Users.login))
+
     ## PURE handler: store the fresh token, answer the user envelope.
     login : Auth.User -> Res.Response
     login = |user| {
@@ -130,6 +136,9 @@ Users := [].{
             }))
             .json(200, Users.user_body(user))
     }
+
+    ## `current` bound to the auth coeffect.
+    current_h! = Box.box(Cofx.with1(Auth.current_user!, Users.current))
 
     ## PURE handler: the current user, straight from the auth coeffect.
     current : Auth.User -> Res.Response
@@ -152,6 +161,9 @@ Users := [].{
             image: body.user.image,
         })
     }
+
+    ## `update` bound to its coeffects (auth, validated patch).
+    update_h! = Box.box(Cofx.with2(Auth.current_user!, Users.user_patch!, Users.update))
 
     ## PURE handler: merge the patch over the current user, UPDATE in one
     ## Must (duplicates answer 409 like registration), echo the merged user.

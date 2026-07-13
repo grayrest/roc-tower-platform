@@ -344,3 +344,34 @@ run_article_page! = |db, viewer, page_where, count_sql, where_params, limit, off
     count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
     Ok({ articles: articles, articlesCount: count })
 }
+
+## split_tags: NULL means no tags
+expect Db.split_tags(NullableStr.Null) == []
+
+## split_tags: GROUP_CONCAT output splits on commas
+expect Db.split_tags(NullableStr.Val("a,b")) == ["a", "b"]
+
+## decode_profile reads the shared profile columns incl. the following flag
+expect {
+    row = Sql.Row.{ columns: ["username", "bio", "image", "following"], cells: [Text("jake"), Null, Text("http://x/p.png"), Integer(1)] }
+    Db.decode_profile(row)
+    == Ok({ username: "jake", bio: NullableStr.Null, image: NullableStr.Val("http://x/p.png"), following: JsonBool.from(True) })
+}
+
+## decode_article turns one joined row into the JSON-shaped article object
+expect {
+    row = Sql.Row.{
+        columns: ["id", "author_id", "slug", "title", "description", "body", "created_at", "updated_at", "username", "bio", "image", "favorites_count", "favorited", "following", "tag_list"],
+        cells: [Integer(7), Integer(1), Text("how-to-7"), Text("How To"), Text("d"), Text("b"), Text("2026-07-12T00:00:00.000Z"), Text("2026-07-12T00:00:00.000Z"), Text("jake"), Null, Null, Integer(2), Integer(0), Integer(1), Text("dragons,training")],
+    }
+    match Db.decode_article(row) {
+        Ok(article) => article.slug == "how-to-7" and article.tagList == ["dragons", "training"] and article.favoritesCount == 2
+        Err(_) => False
+    }
+}
+
+## a profile row missing an expected column fails loudly, not silently
+expect {
+    row = Sql.Row.{ columns: ["username"], cells: [Text("jake")] }
+    Db.decode_profile(row) == Err(NoColumn("bio"))
+}

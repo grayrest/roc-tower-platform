@@ -12,9 +12,9 @@ import Articles
 ## spec's 401 → 404 → 422 precedence.
 Comments := [].{
     routes = |{}| [
-        { method: "POST", path: "/api/articles/{slug}/comments", handler: Box.box(Cofx.with5(Auth.current_user!, Comments.article_id!, Comments.comment_body, Req.reserved_id!, Req.now!, Comments.add)) },
-        { method: "GET", path: "/api/articles/{slug}/comments", handler: Box.box(Cofx.with1(Comments.article_comments!, Comments.list)) },
-        { method: "DELETE", path: "/api/articles/{slug}/comments/{id}", handler: Box.box(Cofx.with1(Comments.owned_comment_id!, Comments.delete)) },
+        { method: "POST", path: "/api/articles/{slug}/comments", handler: Comments.add_h! },
+        { method: "GET", path: "/api/articles/{slug}/comments", handler: Comments.list_h! },
+        { method: "DELETE", path: "/api/articles/{slug}/comments/{id}", handler: Comments.delete_h! },
     ]
 
     ## Coeffect: the target article's row id — the light existence check,
@@ -31,6 +31,9 @@ Comments := [].{
         body = Req.json_body(req) ? |_| Api.error(422, "invalid comment body")
         Api.nonblank("body", body.comment.body)
     }
+
+    ## `add` bound to its coeffects (auth, article, text, id, instant).
+    add_h! = Box.box(Cofx.with5(Auth.current_user!, Comments.article_id!, Comments.comment_body, Req.reserved_id!, Req.now!, Comments.add))
 
     ## PURE handler: INSERT the comment, answer the comment object as its
     ## author sees it.
@@ -68,6 +71,9 @@ Comments := [].{
             Db.load_comments!(Db.of(req), Auth.viewer_id(viewer), article_id)
         })
 
+    ## `list` bound to its coeffect.
+    list_h! = Box.box(Cofx.with1(Comments.article_comments!, Comments.list))
+
     ## PURE handler: the comments envelope.
     list : List(Db.Comment) -> Res.Response
     list = |comments| Res.json(200, { comments: comments })
@@ -87,6 +93,9 @@ Comments := [].{
             Err(Api.forbidden("comment"))
         }
     }
+
+    ## `delete` bound to the comment-ownership gate.
+    delete_h! = Box.box(Cofx.with1(Comments.owned_comment_id!, Comments.delete))
 
     ## PURE handler: delete the comment.
     delete : I64 -> Res.Response

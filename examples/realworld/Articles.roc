@@ -32,14 +32,14 @@ Articles := [].{
     }
 
     routes = |{}| [
-        { method: "POST", path: "/api/articles", handler: Box.box(Cofx.with4(Auth.current_user!, Articles.new_article, Req.reserved_id!, Req.now!, Articles.create)) },
-        { method: "GET", path: "/api/articles/feed", handler: Box.box(Cofx.with1(Articles.feed_page!, Articles.page)) },
-        { method: "GET", path: "/api/articles/{slug}", handler: Box.box(Cofx.with1(Articles.article!, Articles.get)) },
-        { method: "PUT", path: "/api/articles/{slug}", handler: Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch, Req.now!, Articles.update)) },
-        { method: "DELETE", path: "/api/articles/{slug}", handler: Box.box(Cofx.with1(Articles.owned_article_id!, Articles.delete)) },
-        { method: "GET", path: "/api/articles", handler: Box.box(Cofx.with1(Articles.list_page!, Articles.page)) },
-        { method: "POST", path: "/api/articles/{slug}/favorite", handler: Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite)) },
-        { method: "DELETE", path: "/api/articles/{slug}/favorite", handler: Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.unfavorite)) },
+        { method: "POST", path: "/api/articles", handler: Articles.create_h! },
+        { method: "GET", path: "/api/articles/feed", handler: Articles.feed_h! },
+        { method: "GET", path: "/api/articles/{slug}", handler: Articles.get_h! },
+        { method: "PUT", path: "/api/articles/{slug}", handler: Articles.update_h! },
+        { method: "DELETE", path: "/api/articles/{slug}", handler: Articles.delete_h! },
+        { method: "GET", path: "/api/articles", handler: Articles.list_h! },
+        { method: "POST", path: "/api/articles/{slug}/favorite", handler: Articles.favorite_h! },
+        { method: "DELETE", path: "/api/articles/{slug}/favorite", handler: Articles.unfavorite_h! },
     ]
 
     ## The author profile a brand-new article/comment shows its creator:
@@ -134,6 +134,9 @@ Articles := [].{
         })
     }
 
+    ## `create` bound to its coeffects, boxed for the route table.
+    create_h! = Box.box(Cofx.with4(Auth.current_user!, Articles.new_article, Req.reserved_id!, Req.now!, Articles.create))
+
     ## PURE handler: INSERT the article and its tags in ONE transaction
     ## (any failure rolls the whole group back), answer the article as the
     ## author sees it.
@@ -182,9 +185,15 @@ Articles := [].{
         })
     }
 
+    ## `get` bound to its coeffect.
+    get_h! = Box.box(Cofx.with1(Articles.article!, Articles.get))
+
     ## PURE handler: the article envelope.
     get : Db.Article -> Res.Response
     get = |article| Res.json(200, { article: article })
+
+    ## `update` bound to its coeffects (owner gate, patch, instant).
+    update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch, Req.now!, Articles.update))
 
     ## PURE handler: merge the patch, re-slug when the title changed (the
     ## id keeps it unique), UPDATE row and tags in one Must group, answer
@@ -232,6 +241,9 @@ Articles := [].{
         })
     }
 
+    ## `delete` bound to the light ownership gate.
+    delete_h! = Box.box(Cofx.with1(Articles.owned_article_id!, Articles.delete))
+
     ## PURE handler: delete the article and its dependents in ONE
     ## transaction (comments, favorites, tags, then the row).
     delete : I64 -> Res.Response
@@ -263,6 +275,12 @@ Articles := [].{
             Db.feed_articles!(Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
         })
 
+    ## `page` bound to each of its two sources: the filtered global list
+    ## and the viewer's feed.
+    list_h! = Box.box(Cofx.with1(Articles.list_page!, Articles.page))
+
+    feed_h! = Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
+
     ## PURE handler: a page of articles. The spec requires list items to
     ## OMIT the article body, so full rows shrink to summaries here.
     page : { articles : List(Db.Article), articlesCount : I64 } -> Res.Response
@@ -270,6 +288,9 @@ Articles := [].{
         articles: result.articles.map(|article| Db.to_summary(article)),
         articlesCount: result.articlesCount,
     })
+
+    ## `favorite` bound to its coeffects.
+    favorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite))
 
     ## PURE handler: record the favorite (idempotent), answer the article
     ## with the flag on and the count the write will produce.
@@ -285,6 +306,9 @@ Articles := [].{
             }))
             .json(200, { article: { ..loaded.article, favorited: JsonBool.from(True), favoritesCount: count } })
     }
+
+    ## `unfavorite` bound to its coeffects.
+    unfavorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.unfavorite))
 
     ## PURE handler: remove the favorite (idempotent), mirror of favorite.
     unfavorite : Auth.User, { id : I64, author_id : I64, article : Db.Article } -> Res.Response

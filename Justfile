@@ -86,9 +86,12 @@ realworld-conformance: (build "examples/realworld/main.roc")
         --variable "uid=$(date +%s)$$" \
         "$spec_dir"/hurl/*.hurl
 
-# Roc-side helper expects (platform Res/Req modules).
+# Roc-side helper expects: the platform modules AND the realworld example
+# (the only example with its own expects — `roc check` alone would let its
+# expect blocks silently vanish).
 test-roc:
     "{{ roc }}" test platform/main.roc
+    "{{ roc }}" test examples/realworld/main.roc
 
 # FFI round-trip tests under the counting allocator.
 test-host:
