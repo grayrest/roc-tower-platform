@@ -10,7 +10,6 @@ import Api
 Db := [].{
     ## One fixed database file for the whole app; the e2e suite and the
     ## conformance runner clear it before each run.
-    db_path : Str
     db_path = "/tmp/tower-platform-realworld.db"
 
     ## RealWorld profile object, JSON-shaped (camelCase, nullable bio/image,
@@ -76,57 +75,39 @@ Db := [].{
 
     ## The article SELECT shared by get/list/feed. The first two params are
     ## the viewer id (favorited flag, following flag); WHERE params follow.
-    article_select : Str
-    article_select = Str.join_with(
-        [
-            "SELECT a.id, a.author_id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,",
-            "u.username, u.bio, u.image,",
-            "(SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,",
-            "EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = ?) AS favorited,",
-            "EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = a.author_id) AS following,",
-            "(SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list",
-            "FROM articles a JOIN users u ON u.id = a.author_id",
-        ],
-        " ",
-    )
+    article_select =
+        \\SELECT a.id, a.author_id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
+        \\       u.username, u.bio, u.image,
+        \\       (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+        \\       EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = ?) AS favorited,
+        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = a.author_id) AS following,
+        \\       (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list
+        \\FROM articles a JOIN users u ON u.id = a.author_id
 
     ## Decode the profile columns present in every article/comment/profile
     ## query: username, bio, image, following.
     decode_profile : Sql.Row -> Try(Db.Profile, Sql.Err)
-    decode_profile = |row| {
-        username = row.str("username")?
-        bio = row.nullable_str("bio")?
-        image = row.nullable_str("image")?
-        following = row.bool("following")?
-        Ok({ username: username, bio: bio, image: image, following: JsonBool.from(following) })
-    }
+    decode_profile = |row| Ok({
+        username: row.str("username")?,
+        bio: row.nullable_str("bio")?,
+        image: row.nullable_str("image")?,
+        following: JsonBool.from(row.bool("following")?),
+    })
 
     ## Decode one `article_select` row into the JSON-shaped article.
     decode_article : Sql.Row -> Try(Db.Article, Sql.Err)
-    decode_article = |row| {
-        slug = row.str("slug")?
-        title = row.str("title")?
-        description = row.str("description")?
-        body = row.str("body")?
-        created_at = row.str("created_at")?
-        updated_at = row.str("updated_at")?
-        favorites_count = row.i64("favorites_count")?
-        favorited = row.bool("favorited")?
-        tag_list = row.nullable_str("tag_list")?
-        author = Db.decode_profile(row)?
-        Ok({
-            slug: slug,
-            title: title,
-            description: description,
-            body: body,
-            tagList: Db.split_tags(tag_list),
-            createdAt: created_at,
-            updatedAt: updated_at,
-            favorited: JsonBool.from(favorited),
-            favoritesCount: favorites_count,
-            author: author,
-        })
-    }
+    decode_article = |row| Ok({
+        slug: row.str("slug")?,
+        title: row.str("title")?,
+        description: row.str("description")?,
+        body: row.str("body")?,
+        tagList: Db.split_tags(row.nullable_str("tag_list")?),
+        createdAt: row.str("created_at")?,
+        updatedAt: row.str("updated_at")?,
+        favorited: JsonBool.from(row.bool("favorited")?),
+        favoritesCount: row.i64("favorites_count")?,
+        author: Db.decode_profile(row)?,
+    })
 
     ## GROUP_CONCAT output to a tag list: NULL (no tags) and "" become [].
     split_tags : NullableStr -> List(Str)
@@ -157,10 +138,11 @@ Db := [].{
         result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(viewer), Integer(viewer), Text(slug)] })
             ? |message| Api.error(500, "db error: ${message}")
         row = Sql.first(result) ? |_| Api.not_found("article")
-        id = row.i64("id") ? |_| Api.error(500, "corrupt article row")
-        author_id = row.i64("author_id") ? |_| Api.error(500, "corrupt article row")
-        article = Db.decode_article(row) ? |_| Api.error(500, "corrupt article row")
-        Ok({ id: id, author_id: author_id, article: article })
+        Ok({
+            id: row.i64("id") ? |_| Api.error(500, "corrupt article row"),
+            author_id: row.i64("author_id") ? |_| Api.error(500, "corrupt article row"),
+            article: Db.decode_article(row) ? |_| Api.error(500, "corrupt article row"),
+        })
     }
 
     ## The LIGHT article lookup for existence and ownership checks: just the
@@ -245,32 +227,25 @@ Db := [].{
     ## Load a profile by username with the viewer's following flag; rejects
     ## 404 on a miss. Returns the user id alongside for follow writes.
     load_profile! = |db, viewer, username| {
-        sql = Str.join_with(
-            [
-                "SELECT u.id, u.username, u.bio, u.image,",
-                "EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = u.id) AS following",
-                "FROM users u WHERE u.username = ?",
-            ],
-            " ",
-        )
+        sql =
+            \\SELECT u.id, u.username, u.bio, u.image,
+            \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = u.id) AS following
+            \\FROM users u WHERE u.username = ?
         result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(viewer), Text(username)] })
             ? |message| Api.error(500, "db error: ${message}")
         row = Sql.first(result) ? |_| Api.not_found("profile")
-        id = row.i64("id") ? |_| Api.error(500, "corrupt user row")
-        profile = Db.decode_profile(row) ? |_| Api.error(500, "corrupt user row")
-        Ok({ id: id, profile: profile })
+        Ok({
+            id: row.i64("id") ? |_| Api.error(500, "corrupt user row"),
+            profile: Db.decode_profile(row) ? |_| Api.error(500, "corrupt user row"),
+        })
     }
 
     ## All comments on an article, oldest first, with viewer following flags.
     load_comments! = |db, viewer, article_id| {
-        sql = Str.join_with(
-            [
-                "SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,",
-                "EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = c.author_id) AS following",
-                "FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = ? ORDER BY c.id",
-            ],
-            " ",
-        )
+        sql =
+            \\SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,
+            \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = c.author_id) AS following
+            \\FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = ? ORDER BY c.id
         result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(viewer), Integer(article_id)] })
             ? |message| Api.error(500, "db error: ${message}")
         Sql.rows(result).fold(Ok([]), |acc, row| {
@@ -286,14 +261,13 @@ Db := [].{
 
     ## Decode one comment row (columns per `load_comments!`).
     decode_comment : Sql.Row -> Try(Db.Comment, Sql.Err)
-    decode_comment = |row| {
-        id = row.i64("id")?
-        body = row.str("body")?
-        created_at = row.str("created_at")?
-        updated_at = row.str("updated_at")?
-        author = Db.decode_profile(row)?
-        Ok({ id: id, createdAt: created_at, updatedAt: updated_at, body: body, author: author })
-    }
+    decode_comment = |row| Ok({
+        id: row.i64("id")?,
+        createdAt: row.str("created_at")?,
+        updatedAt: row.str("updated_at")?,
+        body: row.str("body")?,
+        author: Db.decode_profile(row)?,
+    })
 
     ## One comment's id + author for the delete-comment authorization check;
     ## scoped to the article so a wrong-article id 404s.
