@@ -97,8 +97,8 @@ fetch! = |req| match try_fetch!(req) {
 try_fetch! = |req| {
     token = Auth.token_of(req)?
     sql = "SELECT u.id, u.email, u.username, u.bio, u.image FROM tokens t JOIN users u ON u.id = t.user_id WHERE t.token = ?"
-    result = Host.sqlite_exec!({ db: Db.of(req), sql: sql, params: [Text(token)] }) ? |_| NoToken
-    row = Sql.first(result) ? |_| NoToken
+    rows = Sql.query!(req.ctx, Db.of(req), sql, [Text(token)]) ? |_| NoToken
+    row = Sql.first(rows) ? |_| NoToken
     user = Auth.decode_user(row, token) ? |_| NoToken
     Ok(user)
 }

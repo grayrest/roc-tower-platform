@@ -4,6 +4,7 @@ import pf.Host
 import pf.Res
 import pf.Req
 import pf.Cofx
+import pf.Sql
 
 # E2E test fixture app. No Port setting so the PORT env var controls binding.
 Model : { prefix : Str, db_path : Str }
@@ -98,22 +99,10 @@ db! : Request => Response
 db! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY AUTOINCREMENT)", params: [] })
-    _ = Host.sqlite_exec!({ db: db_path, sql: "INSERT INTO hits DEFAULT VALUES", params: [] })
-    match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) FROM hits", params: [] }) {
-        Ok(result) => {
-            count = match result.rows.first() {
-                Ok(row) => match row.first() {
-                    Ok(cell) => match cell {
-                        Host.SqlValue.Integer(n) => n.to_str()
-                        _ => "?"
-                    }
-                    Err(_) => "?"
-                }
-                Err(_) => "?"
-            }
-            text(200, "hits=${count}")
-        }
+    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
+    _ = Sql.exec!(req.ctx, db_path, "INSERT INTO hits DEFAULT VALUES", [])
+    match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM hits", []) {
+        Ok(rows) => text(200, "hits=${count_of(rows)}")
         Err(message) => text(500, "db error: ${message}")
     }
 }
@@ -169,7 +158,7 @@ helper_combo = |id, query_pairs, model| {
 # --- Phase 3 effect fixtures ---
 #
 # These handlers return a Must/Opt effect list the host executes AFTER the
-# handler. DDL runs inline via Host.sqlite_exec! (autocommit, before the
+# handler. DDL runs inline via Sql.exec! (autocommit, before the
 # effect transaction); the actual write is the returned Must(DbWrite).
 
 ## Must(DbWrite) into a UNIQUE column. First insert of a tag succeeds and the
@@ -183,7 +172,7 @@ effects_insert! = |req| {
         Ok(value) => value
         Err(_) => "x"
     }
-    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", params: [] })
+    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", [])
     Res.fx_err(
             DbWrite({ db: db_path, sql: "INSERT INTO effect_users (email) VALUES (?)", params: [Host.SqlValue.Text(tag)] }),
             |err| match err {
@@ -209,9 +198,9 @@ effects_rollback! : Request => Response
 effects_rollback! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", params: [] })
-    _ = Host.sqlite_exec!({ db: db_path, sql: "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", params: [] })
-    _ = Host.sqlite_exec!({ db: db_path, sql: "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", params: [] })
+    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", [])
+    _ = Sql.exec!(req.ctx, db_path, "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", [])
+    _ = Sql.exec!(req.ctx, db_path, "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", [])
     on_dup = |err| match err {
         UniqueViolation(_) => {
             status: 409,
@@ -234,8 +223,8 @@ effects_rollback_check! : Request => Response
 effects_rollback_check! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) FROM effect_rollback WHERE val = 'rollback_fresh'", params: [] }) {
-        Ok(result) => text(200, "fresh_rows=${count_of(result)}")
+    match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM effect_rollback WHERE val = 'rollback_fresh'", []) {
+        Ok(rows) => text(200, "fresh_rows=${count_of(rows)}")
         Err(message) => text(500, "db error: ${message}")
     }
 }
@@ -246,7 +235,7 @@ effects_opt! : Request => Response
 effects_opt! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", params: [] })
+    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
     Res.fx_opt(Log("optional log fired"))
         .opt(DbWrite({ db: db_path, sql: "INSERT INTO effect_opt DEFAULT VALUES", params: [] }))
         .text(200, "opt ok")
@@ -257,21 +246,18 @@ effects_opt_check! : Request => Response
 effects_opt_check! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) FROM effect_opt", params: [] }) {
-        Ok(result) => text(200, "opt_rows=${count_of(result)}")
+    match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM effect_opt", []) {
+        Ok(rows) => text(200, "opt_rows=${count_of(rows)}")
         Err(message) => text(500, "db error: ${message}")
     }
 }
 
-## Read an integer COUNT(*) out of a single-cell result.
-count_of : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Str
-count_of = |result| {
-    match result.rows.first() {
-        Ok(row) => match row.first() {
-            Ok(cell) => match cell {
-                Host.SqlValue.Integer(n) => n.to_str()
-                _ => "?"
-            }
+## Read the integer `n` COUNT column out of a single-row result.
+count_of : List(Sql.Row) -> Str
+count_of = |rows| {
+    match Sql.first(rows) {
+        Ok(row) => match row.i64("n") {
+            Ok(n) => n.to_str()
             Err(_) => "?"
         }
         Err(_) => "?"

@@ -3,6 +3,7 @@ app [Model, main] { pf: platform "../../platform/main.roc" }
 import pf.Host
 import pf.Res
 import pf.Cofx
+import pf.Sql
 import Api
 import Db
 import Auth
@@ -34,7 +35,7 @@ main = |{}| {
 }
 
 ## Coeffect: every tag in use.
-tags! = |req| Db.all_tags!(Box.unbox(req.model).db)
+tags! = |req| Db.all_tags!(req.ctx, Box.unbox(req.model).db)
 
 ## `tags` bound to its coeffect.
 tags_h! = Box.box(Cofx.with1(tags!, tags))
@@ -45,7 +46,7 @@ tags = |names| Res.json(200, { tags: names })
 
 init! : () => Try(Model, Str)
 init! = || {
-    exec! = |sql| match Host.sqlite_exec!({ db: Db.db_path, sql: sql, params: [] }) {
+    exec! = |sql| match Sql.exec!(0, Db.db_path, sql, []) {
         Ok(_) => Ok({})
         Err(message) => Err("schema: ${message}")
     }

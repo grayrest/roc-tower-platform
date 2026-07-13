@@ -138,7 +138,7 @@ Req := [].{
 
     ## A freshly reserved, non-idempotent id — the canonical memoized
     ## coeffect. Bumps a per-name counter in a DB sequence table
-    ## (`UPDATE ... RETURNING`) via `Host.sqlite_exec!`, creating the table on
+    ## (`UPDATE ... RETURNING` via `Sql.query!`), creating the table on
     ## first use. Resolves THROUGH `Cofx.get!`, so several slots requesting it
     ## in one request share ONE reservation. The counter lives in the app's
     ## database, read from the model's `db : Str` field (any app using this
@@ -149,6 +149,7 @@ Req := [].{
 
 import Host
 import Cofx
+import Sql
 
 # --- module-private helpers ---
 #
@@ -159,43 +160,38 @@ import Cofx
 ## Internal: one un-memoized reservation (the `reserved_id!` cache miss).
 ## Fast path first: after the very first reservation the counter row always
 ## exists, so the increment is ONE statement; only a miss (fresh database)
-## pays the create-table/seed-row setup.
+## pays the create-table/seed-row setup. The `UPDATE ... RETURNING` runs on the
+## cursor path (a write that yields a row), keyed to the request ctx.
 reserve_fresh_id! = |req| {
+    ctx = req.ctx
     db = Box.unbox(req.model).db
-    match Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] }) {
-        Ok(result) => match read_reserved_id(result) {
+    match Sql.query!(ctx, db, "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", []) {
+        Ok(rows) => match read_reserved_id(rows) {
             Ok(reserved) => Ok(reserved)
-            Err(_) => reserve_first_id!(db)
+            Err(_) => reserve_first_id!(ctx, db)
         }
-        Err(_) => reserve_first_id!(db)
+        Err(_) => reserve_first_id!(ctx, db)
     }
 }
 
 ## Internal: the fresh-database path — create the sequence table and its
 ## row, then take the first reservation.
-reserve_first_id! = |db| {
-    _ = Host.sqlite_exec!({ db: db, sql: "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", params: [] })
-    _ = Host.sqlite_exec!({ db: db, sql: "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", params: [] })
-    result = Host.sqlite_exec!({ db: db, sql: "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", params: [] })
+reserve_first_id! = |ctx, db| {
+    _ = Sql.exec!(ctx, db, "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", [])
+    _ = Sql.exec!(ctx, db, "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", [])
+    rows = Sql.query!(ctx, db, "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", [])
         ? |message| reject(500, "reserved id: ${message}")
-    reserved = read_reserved_id(result) ? |_| reject(500, "reserved id: sequence returned no value")
+    reserved = read_reserved_id(rows) ? |_| reject(500, "reserved id: sequence returned no value")
     Ok(reserved)
 }
 
 ## Internal: read the single INTEGER cell an `UPDATE ... RETURNING v`
 ## produces.
-read_reserved_id : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try(I64, [NoValue])
-read_reserved_id = |result| {
-    match result.rows.first() {
-        Ok(row) => match row.first() {
-            Ok(cell) => match cell {
-                Host.SqlValue.Integer(n) => Ok(n)
-                _ => Err(NoValue)
-            }
-            Err(_) => Err(NoValue)
-        }
-        Err(_) => Err(NoValue)
-    }
+read_reserved_id : List(Sql.Row) -> Try(I64, [NoValue])
+read_reserved_id = |rows| {
+    row = Sql.first(rows) ? |_| NoValue
+    value = row.i64("v") ? |_| NoValue
+    Ok(value)
 }
 
 ## Internal: a plain-text rejection response for coeffect failures.

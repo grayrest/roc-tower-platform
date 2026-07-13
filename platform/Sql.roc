@@ -1,16 +1,20 @@
-## Decode helpers for `Host.sqlite_exec!` results. A result arrives as
-## `{ columns : List(Str), rows : List(List(Host.SqlValue)) }`; matching
-## positions by hand is verbose and breaks silently when a SELECT reorders.
-## `Sql.rows` / `Sql.first` pair each row with the column names, and the
-## `Row` methods decode cells BY NAME into typed values:
+## Typed access to SQLite results over the streaming cursor FFI.
 ##
-##     row = Sql.first(result) ? |_| NotFound
+## `Sql.query!` opens a cursor (`Host.sql_begin!`), steps every row into a
+## by-name-decodable `Sql.Row`, and ALWAYS finishes the cursor before
+## returning — the handle never escapes this call (plan decision 2), so a `?`
+## in a caller can't leak it. Reads decode cells BY NAME into typed values:
+##
+##     rows = Sql.query!(req.ctx, db, sql, params)?
+##     row = Sql.first(rows) ? |_| NotFound
 ##     id = row.i64("id")?
 ##     name = row.str("name")?
 ##     bio = row.nullable_str("bio")?
 ##
-## Every decode returns `Try` with the offending column name in the error,
-## so `?` / `? |_| ...` chains keep handlers flat.
+## The `Row` decoders are pure `->` functions (expect-testable); only the
+## acquisition (`query!`/`exec!`) is effectful. This is the dynamic/hand-written
+## layer — generated readers (sqlgen) skip the `Sql.Row` materialization and
+## read cells positionally straight into records.
 Sql := [].{
     ## Decode failure: the named column is absent from the result, or the
     ## cell doesn't hold the requested type.
@@ -81,27 +85,91 @@ Sql := [].{
         }
     }
 
-    ## Pair every result row with the column names for named-cell access.
-    rows : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> List(Sql.Row)
-    rows = |result| result.rows.map(|cells| Sql.Row.{ columns: result.columns, cells: cells })
+    ## Run a query and materialize every row for by-name decode. Opens a
+    ## cursor under `ctx` (the request coeffect ctx, 0 at init time) against
+    ## `db`, steps all rows, and finishes the cursor on every path.
+    query! : U64, Str, Str, List(Host.SqlValue) => Try(List(Sql.Row), Str)
+    query! = |ctx, db, sql, params| {
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: sql, params: params })?
+        columns = Host.sql_columns!(handle)
+        collected = collect_rows!(handle, columns, [])
+        Host.sql_finish!(handle)
+        collected
+    }
 
-    ## The first row of a result (the single-row-query case: lookups by key,
-    ## COUNT/EXISTS aggregates).
-    first : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try(Sql.Row, [NoRows])
-    first = |result| {
-        cells = result.rows.first() ? |_| NoRows
-        Ok(Sql.Row.{ columns: result.columns, cells: cells })
+    ## Run a statement for effect only (DDL, or a write with no rows worth
+    ## reading), draining any result rows. Finishes the cursor on every path.
+    exec! : U64, Str, Str, List(Host.SqlValue) => Try({}, Str)
+    exec! = |ctx, db, sql, params| {
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: sql, params: params })?
+        drained = drain_rows!(handle)
+        Host.sql_finish!(handle)
+        drained
+    }
+
+    ## The first row of a materialized result (the single-row-query case:
+    ## lookups by key, COUNT/EXISTS aggregates).
+    first : List(Sql.Row) -> Try(Sql.Row, [NoRows])
+    first = |rows| {
+        row = rows.first() ? |_| NoRows
+        Ok(row)
     }
 }
 
 import Host
 import NullableStr
 
-## rows pairs each row's cells with the result's column names
-expect {
-    result = { columns: ["id"], rows: [[Integer(1)], [Integer(2)]] }
-    paired = Sql.rows(result)
-    paired.len() == 2
+# --- module-private effectful cursor helpers ---
+#
+# Top-level defs outside the nominal block are unreachable from other modules,
+# so these stepping loops are the platform's real privacy boundary.
+
+## Step every remaining row into `acc`, decoding each cell by its live storage
+## class. Returns the accumulated rows, or the first step error. Does NOT
+## finish the cursor — `query!` owns that on every path.
+collect_rows! : U64, List(Str), List(Sql.Row) => Try(List(Sql.Row), Str)
+collect_rows! = |handle, columns, acc| {
+    match Host.sql_step!(handle) {
+        Err(message) => Err(message)
+        Ok(has_row) =>
+            if has_row {
+                row = Sql.Row.{ columns: columns, cells: read_cells!(handle, 0, List.len(columns), []) }
+                collect_rows!(handle, columns, acc.append(row))
+            } else {
+                Ok(acc)
+            }
+    }
+}
+
+## Read cells `[start, count)` of the current row into `acc`.
+read_cells! : U64, U64, U64, List(Host.SqlValue) => List(Host.SqlValue)
+read_cells! = |handle, index, count, acc| {
+    if index >= count {
+        acc
+    } else {
+        read_cells!(handle, index + 1, count, acc.append(read_cell!(handle, index)))
+    }
+}
+
+## One cell of the current row, tagged by its live storage class.
+read_cell! : U64, U64 => Host.SqlValue
+read_cell! = |handle, index| {
+    match Host.sql_col_type!(handle, index) {
+        Null => Null
+        Integer => Integer(Host.sql_col_i64!(handle, index))
+        Real => Real(Host.sql_col_f64!(handle, index))
+        Text => Text(Host.sql_col_str!(handle, index))
+        Blob => Blob(Host.sql_col_blob!(handle, index))
+    }
+}
+
+## Step to exhaustion, discarding rows (for statements run only for effect).
+drain_rows! : U64 => Try({}, Str)
+drain_rows! = |handle| {
+    match Host.sql_step!(handle) {
+        Err(message) => Err(message)
+        Ok(has_row) => if has_row { drain_rows!(handle) } else { Ok({}) }
+    }
 }
 
 ## str decodes a TEXT cell by column name
@@ -160,8 +228,8 @@ expect {
 
 ## first returns the first row of a non-empty result
 expect {
-    result = { columns: ["n"], rows: [[Integer(1)], [Integer(2)]] }
-    match Sql.first(result) {
+    rows = [Sql.Row.{ columns: ["n"], cells: [Integer(1)] }, Sql.Row.{ columns: ["n"], cells: [Integer(2)] }]
+    match Sql.first(rows) {
         Ok(row) => row.i64("n") == Ok(1)
         Err(_) => False
     }
@@ -169,7 +237,7 @@ expect {
 
 ## first on an empty result reports NoRows
 expect {
-    result : { columns : List(Str), rows : List(List(Host.SqlValue)) }
-    result = { columns: ["n"], rows: [] }
-    Sql.first(result) == Err(NoRows)
+    rows : List(Sql.Row)
+    rows = []
+    Sql.first(rows) == Err(NoRows)
 }

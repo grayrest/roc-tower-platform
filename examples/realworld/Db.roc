@@ -5,8 +5,8 @@ import pf.JsonBool
 import Api
 
 ## Schema, queries, and row decoders for the RealWorld data model. Reads run
-## inside coeffect resolvers (`Host.sqlite_exec!`); writes are built by pure
-## handlers as `DbWrite` effects against the same `db_path`.
+## inside coeffect resolvers (`Sql.query!` over the streaming cursor); writes
+## are built by pure handlers as `DbWrite` effects against the same `db_path`.
 Db := [].{
     ## One fixed database file for the whole app; the e2e suite and the
     ## conformance runner clear it before each run.
@@ -117,9 +117,9 @@ Db := [].{
     }
 
     ## Decode every row of an article query, first failure wins.
-    decode_articles : { columns : List(Str), rows : List(List(Host.SqlValue)) } -> Try(List(Db.Article), Sql.Err)
-    decode_articles = |result| {
-        Sql.rows(result).fold(Ok([]), |acc, row| {
+    decode_articles : List(Sql.Row) -> Try(List(Db.Article), Sql.Err)
+    decode_articles = |rows| {
+        rows.fold(Ok([]), |acc, row| {
             match acc {
                 Err(problem) => Err(problem)
                 Ok(articles) => match Db.decode_article(row) {
@@ -133,11 +133,11 @@ Db := [].{
     ## Load one article by slug with the viewer's flags; rejects 404 on a
     ## miss. Returns the row id alongside the JSON-shaped article for
     ## author checks, updates, and join-table writes.
-    load_article! = |db, viewer, slug| {
+    load_article! = |ctx, db, viewer, slug| {
         sql = "${Db.article_select} WHERE a.slug = ?"
-        result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(viewer), Integer(viewer), Text(slug)] })
+        rows = Sql.query!(ctx, db, sql, [Integer(viewer), Integer(viewer), Text(slug)])
             ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(result) ? |_| Api.not_found("article")
+        row = Sql.first(rows) ? |_| Api.not_found("article")
         Ok({
             id: row.i64("id") ? |_| Api.error(500, "corrupt article row"),
             author_id: row.i64("author_id") ? |_| Api.error(500, "corrupt article row"),
@@ -148,10 +148,10 @@ Db := [].{
     ## The LIGHT article lookup for existence and ownership checks: just the
     ## row id and author, no joins/aggregates. Use `load_article!` only when
     ## the response needs the full JSON-shaped article.
-    load_article_meta! = |db, slug| {
-        result = Host.sqlite_exec!({ db: db, sql: "SELECT id, author_id FROM articles WHERE slug = ?", params: [Text(slug)] })
+    load_article_meta! = |ctx, db, slug| {
+        rows = Sql.query!(ctx, db, "SELECT id, author_id FROM articles WHERE slug = ?", [Text(slug)])
             ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(result) ? |_| Api.not_found("article")
+        row = Sql.first(rows) ? |_| Api.not_found("article")
         Ok({
             id: row.i64("id") ? |_| Api.error(500, "corrupt article row"),
             author_id: row.i64("author_id") ? |_| Api.error(500, "corrupt article row"),
@@ -167,7 +167,7 @@ Db := [].{
     ## every match and pay the SELECT-clause subqueries for all of them);
     ## the COUNT query wants IN (materialize the id-list once instead of
     ## probing all rows).
-    list_articles! = |db, viewer, filters| {
+    list_articles! = |ctx, db, viewer, filters| {
         tag_part =
             if filters.tag.is_empty()
                 { page: [], count: [], params: [] }
@@ -213,27 +213,27 @@ Db := [].{
                 "SELECT COUNT(*) AS n FROM articles a JOIN users u ON u.id = a.author_id${count_where}"
             else
                 "SELECT COUNT(*) AS n FROM article_tags att JOIN articles a ON a.id = att.article_id JOIN users u ON u.id = a.author_id${count_where}"
-        run_article_page!(db, viewer, page_where, count_sql, where_params, filters.limit, filters.offset)
+        run_article_page!(ctx, db, viewer, page_where, count_sql, where_params, filters.limit, filters.offset)
     }
 
     ## The viewer's feed: articles by followed authors, most recent first.
     ## Same EXISTS-for-page / IN-for-count split as `list_articles!`.
-    feed_articles! = |db, viewer, limit, offset| {
+    feed_articles! = |ctx, db, viewer, limit, offset| {
         page_where = " WHERE EXISTS(SELECT 1 FROM follows fo2 WHERE fo2.follower_id = ? AND fo2.followed_id = a.author_id)"
         count_sql = "SELECT COUNT(*) AS n FROM articles a WHERE a.author_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
-        run_article_page!(db, viewer, page_where, count_sql, [Integer(viewer)], limit, offset)
+        run_article_page!(ctx, db, viewer, page_where, count_sql, [Integer(viewer)], limit, offset)
     }
 
     ## Load a profile by username with the viewer's following flag; rejects
     ## 404 on a miss. Returns the user id alongside for follow writes.
-    load_profile! = |db, viewer, username| {
+    load_profile! = |ctx, db, viewer, username| {
         sql =
             \\SELECT u.id, u.username, u.bio, u.image,
             \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = u.id) AS following
             \\FROM users u WHERE u.username = ?
-        result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(viewer), Text(username)] })
+        rows = Sql.query!(ctx, db, sql, [Integer(viewer), Text(username)])
             ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(result) ? |_| Api.not_found("profile")
+        row = Sql.first(rows) ? |_| Api.not_found("profile")
         Ok({
             id: row.i64("id") ? |_| Api.error(500, "corrupt user row"),
             profile: Db.decode_profile(row) ? |_| Api.error(500, "corrupt user row"),
@@ -241,14 +241,14 @@ Db := [].{
     }
 
     ## All comments on an article, oldest first, with viewer following flags.
-    load_comments! = |db, viewer, article_id| {
+    load_comments! = |ctx, db, viewer, article_id| {
         sql =
             \\SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,
             \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = c.author_id) AS following
             \\FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = ? ORDER BY c.id
-        result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(viewer), Integer(article_id)] })
+        rows = Sql.query!(ctx, db, sql, [Integer(viewer), Integer(article_id)])
             ? |message| Api.error(500, "db error: ${message}")
-        Sql.rows(result).fold(Ok([]), |acc, row| {
+        rows.fold(Ok([]), |acc, row| {
             match acc {
                 Err(response) => Err(response)
                 Ok(comments) => match Db.decode_comment(row) {
@@ -271,21 +271,21 @@ Db := [].{
 
     ## One comment's id + author for the delete-comment authorization check;
     ## scoped to the article so a wrong-article id 404s.
-    load_comment! = |db, comment_id, article_id| {
+    load_comment! = |ctx, db, comment_id, article_id| {
         sql = "SELECT c.id, c.author_id FROM comments c WHERE c.id = ? AND c.article_id = ?"
-        result = Host.sqlite_exec!({ db: db, sql: sql, params: [Integer(comment_id), Integer(article_id)] })
+        rows = Sql.query!(ctx, db, sql, [Integer(comment_id), Integer(article_id)])
             ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(result) ? |_| Api.not_found("comment")
+        row = Sql.first(rows) ? |_| Api.not_found("comment")
         id = row.i64("id") ? |_| Api.error(500, "corrupt comment row")
         author_id = row.i64("author_id") ? |_| Api.error(500, "corrupt comment row")
         Ok({ id: id, author_id: author_id })
     }
 
     ## Every tag in use, sorted.
-    all_tags! = |db| {
-        result = Host.sqlite_exec!({ db: db, sql: "SELECT DISTINCT tag FROM article_tags ORDER BY tag", params: [] })
+    all_tags! = |ctx, db| {
+        rows = Sql.query!(ctx, db, "SELECT DISTINCT tag FROM article_tags ORDER BY tag", [])
             ? |message| Api.error(500, "db error: ${message}")
-        Sql.rows(result).fold(Ok([]), |acc, row| {
+        rows.fold(Ok([]), |acc, row| {
             match acc {
                 Err(response) => Err(response)
                 Ok(tags) => match row.str("tag") {
@@ -302,19 +302,19 @@ Db := [].{
 ## Internal: run one article page query plus its unpaginated count. The
 ## caller supplies the COMPLETE count statement (its FROM clause varies by
 ## filter); both queries take `where_params` in the same order.
-run_article_page! = |db, viewer, page_where, count_sql, where_params, limit, offset| {
+run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit, offset| {
     list_sql = "${Db.article_select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
     list_params = [Integer(viewer), Integer(viewer)]
         .concat(where_params)
         .append(Integer(limit))
         .append(Integer(offset))
-    list_result = Host.sqlite_exec!({ db: db, sql: list_sql, params: list_params })
+    list_rows = Sql.query!(ctx, db, list_sql, list_params)
         ? |message| Api.error(500, "db error: ${message}")
-    articles = Db.decode_articles(list_result) ? |_| Api.error(500, "corrupt article row")
+    articles = Db.decode_articles(list_rows) ? |_| Api.error(500, "corrupt article row")
 
-    count_result = Host.sqlite_exec!({ db: db, sql: count_sql, params: where_params })
+    count_rows = Sql.query!(ctx, db, count_sql, where_params)
         ? |message| Api.error(500, "db error: ${message}")
-    count_row = Sql.first(count_result) ? |_| Api.error(500, "count returned no rows")
+    count_row = Sql.first(count_rows) ? |_| Api.error(500, "count returned no rows")
     count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
     Ok({ articles: articles, articlesCount: count })
 }

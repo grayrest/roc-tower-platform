@@ -21,7 +21,7 @@ Profiles := [].{
     target! = Req.param("username")
         ->Cofx.and_then(|username, req| {
             viewer = Auth.optional_user!(req)?
-            Db.load_profile!(Db.of(req), Auth.viewer_id(viewer), username)
+            Db.load_profile!(req.ctx, Db.of(req), Auth.viewer_id(viewer), username)
         })
 
     ## Coeffect: just the profile (GET's whole input).

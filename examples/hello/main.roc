@@ -4,6 +4,7 @@ import pf.Host
 import pf.Res
 import pf.Req
 import pf.Cofx
+import pf.Sql
 
 Model : { greeting : Str }
 
@@ -51,7 +52,7 @@ main = |{}| {
 init! : () => Try(Model, Str)
 init! = || {
     Host.log!("initializing hello app")
-    _ = Host.sqlite_exec!({ db: db_path, sql: "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", params: [] })
+    _ = Sql.exec!(0, db_path, "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", [])
     greeting = match Host.env_var!("GREETING") {
         Ok(value) => value
         Err(_) => "Hello"
@@ -113,16 +114,13 @@ proxy! = |_req| {
 
 ## Read-modify-read is naturally imperative — a good escape-hatch case.
 db! : Request => Response
-db! = |_req| {
-    _ = Host.sqlite_exec!({ db: db_path, sql: "INSERT INTO visits (at_ms) VALUES (?)", params: [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())] })
-    match Host.sqlite_exec!({ db: db_path, sql: "SELECT COUNT(*) AS n FROM visits", params: [] }) {
-        Ok(result) => {
-            count = match result.rows.first() {
-                Ok(row) => match row.first() {
-                    Ok(cell) => match cell {
-                        Host.SqlValue.Integer(n) => n.to_str()
-                        _ => "?"
-                    }
+db! = |req| {
+    _ = Sql.exec!(req.ctx, db_path, "INSERT INTO visits (at_ms) VALUES (?)", [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())])
+    match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM visits", []) {
+        Ok(rows) => {
+            count = match Sql.first(rows) {
+                Ok(row) => match row.i64("n") {
+                    Ok(n) => n.to_str()
                     Err(_) => "?"
                 }
                 Err(_) => "?"

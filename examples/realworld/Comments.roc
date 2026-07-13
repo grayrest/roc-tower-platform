@@ -21,7 +21,7 @@ Comments := [].{
     ## 404 when the slug is unknown.
     article_id! = Req.param("slug")
         ->Cofx.and_then(|slug, req| {
-            meta = Db.load_article_meta!(Db.of(req), slug)?
+            meta = Db.load_article_meta!(req.ctx, Db.of(req), slug)?
             Ok(meta.id)
         })
 
@@ -68,7 +68,7 @@ Comments := [].{
     article_comments! = Comments.article_id!
         ->Cofx.and_then(|article_id, req| {
             viewer = Auth.optional_user!(req)?
-            Db.load_comments!(Db.of(req), Auth.viewer_id(viewer), article_id)
+            Db.load_comments!(req.ctx, Db.of(req), Auth.viewer_id(viewer), article_id)
         })
 
     ## `list` bound to its coeffect.
@@ -86,7 +86,7 @@ Comments := [].{
         article_id = Comments.article_id!(req)?
         raw_id = Req.get_param(req, "id") ? |_| Api.error(400, "missing comment id")
         comment_id = I64.from_str(raw_id) ? |_| Api.not_found("comment")
-        comment = Db.load_comment!(Db.of(req), comment_id, article_id)?
+        comment = Db.load_comment!(req.ctx, Db.of(req), comment_id, article_id)?
         if comment.author_id == user.id {
             Ok(comment.id)
         } else {

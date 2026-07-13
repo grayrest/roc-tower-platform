@@ -76,7 +76,7 @@ Articles := [].{
     loaded_article! = Req.param("slug")
         ->Cofx.and_then(|slug, req| {
             viewer = Auth.optional_user!(req)?
-            Db.load_article!(Db.of(req), Auth.viewer_id(viewer), slug)
+            Db.load_article!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
         })
 
     ## Coeffect: just the JSON-shaped article (GET's whole input).
@@ -88,7 +88,7 @@ Articles := [].{
     owned_article! = Req.param("slug")
         ->Cofx.and_then(|slug, req| {
             user = Auth.current_user!(req)?
-            loaded = Db.load_article!(Db.of(req), user.id, slug)?
+            loaded = Db.load_article!(req.ctx, Db.of(req), user.id, slug)?
             if loaded.author_id == user.id {
                 Ok(loaded)
             } else {
@@ -101,7 +101,7 @@ Articles := [].{
     owned_article_id! = Req.param("slug")
         ->Cofx.and_then(|slug, req| {
             user = Auth.current_user!(req)?
-            meta = Db.load_article_meta!(Db.of(req), slug)?
+            meta = Db.load_article_meta!(req.ctx, Db.of(req), slug)?
             if meta.author_id == user.id {
                 Ok(meta.id)
             } else {
@@ -259,7 +259,7 @@ Articles := [].{
     list_page! = { filters: Articles.filters, bounds: Articles.bounds }.Cofx
         ->Cofx.and_then(|input, req| {
             viewer = Auth.optional_user!(req)?
-            Db.list_articles!(Db.of(req), Auth.viewer_id(viewer), {
+            Db.list_articles!(req.ctx, Db.of(req), Auth.viewer_id(viewer), {
                 tag: input.filters.tag,
                 author: input.filters.author,
                 favorited: input.filters.favorited,
@@ -272,7 +272,7 @@ Articles := [].{
     feed_page! = Articles.bounds
         ->Cofx.and_then(|page_bounds, req| {
             user = Auth.current_user!(req)?
-            Db.feed_articles!(Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
+            Db.feed_articles!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
         })
 
     ## `page` bound to each of its two sources: the filtered global list

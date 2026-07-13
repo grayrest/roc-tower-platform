@@ -107,12 +107,13 @@ Users := [].{
         body = Req.json_body(req) ? |_| Api.error(422, "invalid login body")
         email = Api.nonblank("email", body.user.email)?
         password = Api.nonblank("password", body.user.password)?
-        result = Host.sqlite_exec!({
-            db: Db.of(req),
-            sql: "SELECT id, email, username, bio, image, password_hash FROM users WHERE email = ?",
-            params: [Text(email)],
-        }) ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(result) ? |_| Api.invalid_credentials()
+        rows = Sql.query!(
+            req.ctx,
+            Db.of(req),
+            "SELECT id, email, username, bio, image, password_hash FROM users WHERE email = ?",
+            [Text(email)],
+        ) ? |message| Api.error(500, "db error: ${message}")
+        row = Sql.first(rows) ? |_| Api.invalid_credentials()
         stored = row.str("password_hash") ? |_| Api.error(500, "corrupt user row")
         if Host.password_verify!(password, stored) {
             token = Auth.fresh_token!(req)?
