@@ -31,11 +31,11 @@ Users := [].{
         image : Try(NullableStr, [Missing]),
     }
 
-    routes = |{}| [
-        { method: "POST", path: "/api/users", handler: Users.register_h! },
-        { method: "POST", path: "/api/users/login", handler: Users.login_h! },
-        { method: "GET", path: "/api/user", handler: Users.current_h! },
-        { method: "PUT", path: "/api/user", handler: Users.update_h! },
+    routes = |{ prefix }| [
+        { method: "POST", path: "${prefix}/users", handler: Users.register_h! },
+        { method: "POST", path: "${prefix}/users/login", handler: Users.login_h! },
+        { method: "GET", path: "${prefix}/user", handler: Users.current_h! },
+        { method: "PUT", path: "${prefix}/user", handler: Users.update_h! },
     ]
 
     ## The RealWorld user envelope every users endpoint responds with.

@@ -31,15 +31,15 @@ Articles := [].{
         tagList : Try(List(Str), [Missing]),
     }
 
-    routes = |{}| [
-        { method: "POST", path: "/api/articles", handler: Articles.create_h! },
-        { method: "GET", path: "/api/articles/feed", handler: Articles.feed_h! },
-        { method: "GET", path: "/api/articles/{slug}", handler: Articles.get_h! },
-        { method: "PUT", path: "/api/articles/{slug}", handler: Articles.update_h! },
-        { method: "DELETE", path: "/api/articles/{slug}", handler: Articles.delete_h! },
-        { method: "GET", path: "/api/articles", handler: Articles.list_h! },
-        { method: "POST", path: "/api/articles/{slug}/favorite", handler: Articles.favorite_h! },
-        { method: "DELETE", path: "/api/articles/{slug}/favorite", handler: Articles.unfavorite_h! },
+    routes = |{ prefix }| [
+        { method: "POST", path: prefix, handler: Articles.create_h! },
+        { method: "GET", path: "${prefix}/feed", handler: Articles.feed_h! },
+        { method: "GET", path: "${prefix}/{slug}", handler: Articles.get_h! },
+        { method: "PUT", path: "${prefix}/{slug}", handler: Articles.update_h! },
+        { method: "DELETE", path: "${prefix}/{slug}", handler: Articles.delete_h! },
+        { method: "GET", path: prefix, handler: Articles.list_h! },
+        { method: "POST", path: "${prefix}/{slug}/favorite", handler: Articles.favorite_h! },
+        { method: "DELETE", path: "${prefix}/{slug}/favorite", handler: Articles.unfavorite_h! },
     ]
 
     ## The author profile a brand-new article/comment shows its creator:

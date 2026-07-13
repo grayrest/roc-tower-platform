@@ -10,10 +10,10 @@ import Db
 ## coeffect (`target!`); follow/unfollow bind it after the auth slot, so
 ## 401 precedes 404.
 Profiles := [].{
-    routes = |{}| [
-        { method: "GET", path: "/api/profiles/{username}", handler: Profiles.get_h! },
-        { method: "POST", path: "/api/profiles/{username}/follow", handler: Profiles.follow_h! },
-        { method: "DELETE", path: "/api/profiles/{username}/follow", handler: Profiles.unfollow_h! },
+    routes = |{ prefix }| [
+        { method: "GET", path: "${prefix}/{username}", handler: Profiles.get_h! },
+        { method: "POST", path: "${prefix}/{username}/follow", handler: Profiles.follow_h! },
+        { method: "DELETE", path: "${prefix}/{username}/follow", handler: Profiles.unfollow_h! },
     ]
 
     ## Coeffect: the {username} profile with its user id (for follow

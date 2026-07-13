@@ -24,10 +24,10 @@ main = |{}| {
         MaxBodyBytes(65536),
     ],
     init!: init!,
-    routes: Users.routes({})
-        .concat(Profiles.routes({}))
-        .concat(Articles.routes({}))
-        .concat(Comments.routes({}))
+    routes: Users.routes({ prefix: "/api" })
+        .concat(Profiles.routes({ prefix: "/api/profiles" }))
+        .concat(Articles.routes({ prefix: "/api/articles" }))
+        .concat(Comments.routes({ prefix: "/api/articles" }))
         .concat([
             { method: "GET", path: "/api/tags", handler: tags_h! },
         ]),
