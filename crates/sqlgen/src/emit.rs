@@ -136,15 +136,17 @@ pub fn emit_module(module_name: &str, scanned: &Scanned) -> Result<String, Strin
         out.push('\n');
     }
     out.push_str("}\n\n");
-    out.push_str("import Host\n");
+    // Generated modules live in app code, which imports platform modules with
+    // the `pf.` package prefix.
+    out.push_str("import pf.Host\n");
     if needs_nullable_str {
-        out.push_str("import NullableStr\n");
+        out.push_str("import pf.NullableStr\n");
     }
     if needs_nullable_i64 {
-        out.push_str("import NullableI64\n");
+        out.push_str("import pf.NullableI64\n");
     }
     if needs_jsonbool {
-        out.push_str("import JsonBool\n");
+        out.push_str("import pf.JsonBool\n");
     }
     out.push('\n');
     // Shared nullable-cell helpers, emitted once if any query needs them.
@@ -254,9 +256,10 @@ fn emit_read(
         format!("{helper_name}!(handle, [])")
     };
 
+    let params_arg = if bindings.is_empty() { "_params" } else { "params" };
     let decl = format!(
         "    {name}! : U64, Str, {param_ty} => {ret_ty}\n\
-         \x20   {name}! = |ctx, db, params| {{\n\
+         \x20   {name}! = |ctx, db, {params_arg}| {{\n\
          \x20       handle = Host.sql_begin!({{ ctx: ctx, db: db, sql: {sql}, params: [{bindings}] }}) ? |message| DbErr(message)\n\
          \x20       result = {call}\n\
          \x20       Host.sql_finish!(handle)\n\
@@ -268,6 +271,7 @@ fn emit_read(
         sql = sql_literal,
         bindings = bindings,
         call = call,
+        params_arg = params_arg,
     );
 
     Ok(EmittedQuery {

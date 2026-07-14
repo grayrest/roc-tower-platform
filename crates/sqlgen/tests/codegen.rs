@@ -88,8 +88,8 @@ fn emits_one_reader_with_nullable_and_bool() {
     // finishes on every path.
     assert!(module.contains("Host.sql_finish!(handle)"));
     // imports pulled in on demand.
-    assert!(module.contains("import NullableStr"));
-    assert!(module.contains("import JsonBool"));
+    assert!(module.contains("import pf.NullableStr"));
+    assert!(module.contains("import pf.JsonBool"));
 }
 
 #[test]
