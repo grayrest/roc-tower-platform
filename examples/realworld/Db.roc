@@ -2,6 +2,7 @@ import pf.Host
 import pf.Sql
 import pf.NullableStr
 import pf.JsonBool
+import pf.RawJson
 import Api
 import DbGen
 
@@ -32,37 +33,6 @@ Db := [].{
         author : Db.Profile,
     }
 
-    ## RealWorld comment object, JSON-shaped.
-    Comment : { id : I64, createdAt : Str, updatedAt : Str, body : Str, author : Db.Profile }
-
-    ## An article as list/feed endpoints show it — the spec REQUIRES `body`
-    ## to be absent from multi-article responses.
-    Summary : {
-        slug : Str,
-        title : Str,
-        description : Str,
-        tagList : List(Str),
-        createdAt : Str,
-        updatedAt : Str,
-        favorited : JsonBool,
-        favoritesCount : I64,
-        author : Db.Profile,
-    }
-
-    ## Drop the body for a list response.
-    to_summary : Db.Article -> Db.Summary
-    to_summary = |article| {
-        slug: article.slug,
-        title: article.title,
-        description: article.description,
-        tagList: article.tagList,
-        createdAt: article.createdAt,
-        updatedAt: article.updatedAt,
-        favorited: article.favorited,
-        favoritesCount: article.favoritesCount,
-        author: article.author,
-    }
-
     ## The database file the request's model names — the standard first step
     ## of a coeffect that reads.
     of = |req| Box.unbox(req.model).db
@@ -91,50 +61,11 @@ Db := [].{
         \\       (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list
         \\FROM articles a JOIN users u ON u.id = a.author_id
 
-    ## Decode the profile columns present in every article/comment/profile
-    ## query: username, bio, image, following.
-    decode_profile : Sql.Row -> Try(Db.Profile, Sql.Err)
-    decode_profile = |row| Ok({
-        username: row.str("username")?,
-        bio: row.nullable_str("bio")?,
-        image: row.nullable_str("image")?,
-        following: JsonBool.from(row.bool("following")?),
-    })
-
-    ## Decode one `article_select` row into the JSON-shaped article.
-    decode_article : Sql.Row -> Try(Db.Article, Sql.Err)
-    decode_article = |row| Ok({
-        slug: row.str("slug")?,
-        title: row.str("title")?,
-        description: row.str("description")?,
-        body: row.str("body")?,
-        tagList: Db.split_tags(row.nullable_str("tag_list")?),
-        createdAt: row.str("created_at")?,
-        updatedAt: row.str("updated_at")?,
-        favorited: JsonBool.from(row.bool("favorited")?),
-        favoritesCount: row.i64("favorites_count")?,
-        author: Db.decode_profile(row)?,
-    })
-
     ## GROUP_CONCAT output to a tag list: NULL (no tags) and "" become [].
     split_tags : NullableStr -> List(Str)
     split_tags = |joined| match joined {
         Null => []
         Val(text) => if text.is_empty() [] else text.split_on(",")
-    }
-
-    ## Decode every row of an article query, first failure wins.
-    decode_articles : List(Sql.Row) -> Try(List(Db.Article), Sql.Err)
-    decode_articles = |rows| {
-        rows.fold(Ok([]), |acc, row| {
-            match acc {
-                Err(problem) => Err(problem)
-                Ok(articles) => match Db.decode_article(row) {
-                    Ok(article) => Ok(articles.append(article))
-                    Err(problem) => Err(problem)
-                }
-            }
-        })
     }
 
     ## Load one article by slug with the viewer's flags; rejects 404 on a
@@ -171,6 +102,40 @@ Db := [].{
             image: row.image,
             following: JsonBool.from(row.following != 0),
         },
+    }
+
+    ## The article JSON document, assembled in SQL and reused two ways: sqlgen
+    ## splices it into the `@sql json` by-slug reader (patched with `body` for
+    ## the full view), and the dynamic list/feed path interpolates the SAME
+    ## constant at runtime into a `json_group_array` (body-less summaries).
+    ## `:viewer` is one named param (SQLite reuses it for the favorited +
+    ## following flags); NULL bio/image become JSON `null`, the 0/1 flags become
+    ## real booleans via `json(iif(...))`, and the tags become a JSON array.
+    ## @fragment article_json_summary
+    article_json_summary =
+        \\json_object(
+        \\  'slug', a.slug, 'title', a.title, 'description', a.description,
+        \\  'tagList', (SELECT json_group_array(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)),
+        \\  'createdAt', a.created_at, 'updatedAt', a.updated_at,
+        \\  'favorited', json(iif(EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer), 'true', 'false')),
+        \\  'favoritesCount', (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id),
+        \\  'author', json_object('username', u.username, 'bio', u.bio, 'image', u.image,
+        \\    'following', json(iif(EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id), 'true', 'false'))))
+
+    ## GET /articles/{slug}: the full article envelope, `body` patched into the
+    ## shared summary, assembled entirely in SQL. Rejects 404 on a miss.
+    ## @params slug: Str, viewer: I64
+    ## @sql json one
+    article_json_q =
+        \\SELECT json_object('article', json_patch(${article_json_summary}, json_object('body', a.body)))
+        \\FROM articles a JOIN users u ON u.id = a.author_id WHERE a.slug = :slug
+
+    load_article_json! = |ctx, db, viewer, slug| {
+        doc = DbGen.article_json_q!(ctx, db, { slug: slug, viewer: viewer }) ? |err| match err {
+            NoRows => Api.not_found("article")
+            DbErr(message) => Api.error(500, "db error: ${message}")
+        }
+        Ok(doc)
     }
 
     ## The LIGHT article lookup for existence and ownership checks: just the
@@ -275,27 +240,39 @@ Db := [].{
         })
     }
 
-    ## All comments on an article, oldest first, with viewer following flags.
-    ## @params viewer: I64, article_id: I64
-    ## @sql
-    comments_by_article_q =
-        \\SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,
-        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id) AS "following: Bool"
-        \\FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id
+    ## GET /profiles/{username}: the profile envelope, assembled in SQL.
+    ## Rejects 404 on a miss.
+    ## @params username: Str, viewer: I64
+    ## @sql json one
+    profile_json_q =
+        \\SELECT json_object('profile', json_object('username', u.username, 'bio', u.bio, 'image', u.image,
+        \\  'following', json(iif(EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = u.id), 'true', 'false'))))
+        \\FROM users u WHERE u.username = :username
 
-    load_comments! = |ctx, db, viewer, article_id| {
-        rows = DbGen.comments_by_article_q!(ctx, db, { viewer: viewer, article_id: article_id })
-            ? |DbErr(message)| Api.error(500, "db error: ${message}")
-        Ok(rows.map(Db.comment_from_row))
+    load_profile_json! = |ctx, db, viewer, username| {
+        doc = DbGen.profile_json_q!(ctx, db, { username: username, viewer: viewer }) ? |err| match err {
+            NoRows => Api.not_found("profile")
+            DbErr(message) => Api.error(500, "db error: ${message}")
+        }
+        Ok(doc)
     }
 
-    ## Map a generated comment row to the JSON-shaped comment (nest the author).
-    comment_from_row = |row| {
-        id: row.id,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        body: row.body,
-        author: { username: row.username, bio: row.bio, image: row.image, following: row.following },
+    ## GET /articles/{slug}/comments: the comments envelope, assembled in SQL
+    ## (oldest first, with the viewer's following flags). Always one row —
+    ## `{"comments":[]}` when the article has none.
+    ## @params viewer: I64, article_id: I64
+    ## @sql json
+    comments_json_q =
+        \\SELECT json_object('comments', COALESCE((
+        \\    SELECT json_group_array(json_object('id', c.id, 'createdAt', c.created_at, 'updatedAt', c.updated_at, 'body', c.body,
+        \\        'author', json_object('username', u.username, 'bio', u.bio, 'image', u.image,
+        \\            'following', json(iif(EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id), 'true', 'false')))))
+        \\    FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id), json('[]')))
+
+    load_comments_json! = |ctx, db, viewer, article_id| {
+        doc = DbGen.comments_json_q!(ctx, db, { viewer: viewer, article_id: article_id })
+            ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        Ok(doc)
     }
 
     ## One comment's id + author for the delete-comment authorization check;
@@ -313,14 +290,15 @@ Db := [].{
         Ok(row)
     }
 
-    ## @sql
-    all_tags_q =
-        \\SELECT DISTINCT tag FROM article_tags ORDER BY tag
+    ## GET /tags: the tags envelope, assembled in SQL (every tag in use,
+    ## sorted). Always one row.
+    ## @sql json
+    tags_json_q =
+        \\SELECT json_object('tags', COALESCE((SELECT json_group_array(tag) FROM (SELECT DISTINCT tag FROM article_tags ORDER BY tag)), json('[]')))
 
-    ## Every tag in use, sorted.
-    all_tags! = |ctx, db| {
-        rows = DbGen.all_tags_q!(ctx, db, {}) ? |DbErr(message)| Api.error(500, "db error: ${message}")
-        Ok(rows.map(|row| row.tag))
+    all_tags_json! = |ctx, db| {
+        doc = DbGen.tags_json_q!(ctx, db, {}) ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        Ok(doc)
     }
 }
 
@@ -330,24 +308,27 @@ Db := [].{
 ## caller supplies the COMPLETE count statement (its FROM clause varies by
 ## filter); both queries take `where_params` in the same order.
 run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit, offset| {
-    # `article_select` now names its viewer parameter `:viewer` (SQLite reuses
-    # the one index for both the favorited and following flags), so the leading
-    # bind list carries a single viewer id; the positional `?` of `page_where`
-    # and LIMIT/OFFSET follow it in order.
-    list_sql = "${Db.article_select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
-    list_params = [Integer(viewer)]
+    # The paged summaries as ONE JSON array cell: interpolate the SAME
+    # `article_json_summary` the by-slug reader splices (`:viewer` is param 1 —
+    # SQLite reuses the one index for the favorited + following flags — so the
+    # positional `?` of `page_where` and LIMIT/OFFSET follow it in order), wrap
+    # the page in `json_group_array`, and COALESCE an empty page to `[]`.
+    array_sql = "SELECT COALESCE(json_group_array(json(summary)), json('[]')) FROM (SELECT ${Db.article_json_summary} AS summary FROM articles a JOIN users u ON u.id = a.author_id${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?)"
+    array_params = [Integer(viewer)]
         .concat(where_params)
         .append(Integer(limit))
         .append(Integer(offset))
-    list_rows = Sql.query!(ctx, db, list_sql, list_params)
+    articles = Sql.query_json!(ctx, db, array_sql, array_params)
         ? |message| Api.error(500, "db error: ${message}")
-    articles = Db.decode_articles(list_rows) ? |_| Api.error(500, "corrupt article row")
 
     count_rows = Sql.query!(ctx, db, count_sql, where_params)
         ? |message| Api.error(500, "db error: ${message}")
     count_row = Sql.first(count_rows) ? |_| Api.error(500, "count returned no rows")
     count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
-    Ok({ articles: articles, articlesCount: count })
+
+    # Envelope assembled in Roc: the big array is spliced once into the body,
+    # the count is tiny. Both are already JSON, so `RawJson`, not `Res.json`.
+    Ok(RawJson.from("{\"articles\":${RawJson.to_str(articles)},\"articlesCount\":${count.to_str()}}"))
 }
 
 ## split_tags: NULL means no tags
@@ -355,28 +336,3 @@ expect Db.split_tags(NullableStr.Null) == []
 
 ## split_tags: GROUP_CONCAT output splits on commas
 expect Db.split_tags(NullableStr.Val("a,b")) == ["a", "b"]
-
-## decode_profile reads the shared profile columns incl. the following flag
-expect {
-    row = Sql.Row.{ columns: ["username", "bio", "image", "following"], cells: [Text("jake"), Null, Text("http://x/p.png"), Integer(1)] }
-    Db.decode_profile(row)
-    == Ok({ username: "jake", bio: NullableStr.Null, image: NullableStr.Val("http://x/p.png"), following: JsonBool.from(True) })
-}
-
-## decode_article turns one joined row into the JSON-shaped article object
-expect {
-    row = Sql.Row.{
-        columns: ["id", "author_id", "slug", "title", "description", "body", "created_at", "updated_at", "username", "bio", "image", "favorites_count", "favorited", "following", "tag_list"],
-        cells: [Integer(7), Integer(1), Text("how-to-7"), Text("How To"), Text("d"), Text("b"), Text("2026-07-12T00:00:00.000Z"), Text("2026-07-12T00:00:00.000Z"), Text("jake"), Null, Null, Integer(2), Integer(0), Integer(1), Text("dragons,training")],
-    }
-    match Db.decode_article(row) {
-        Ok(article) => article.slug == "how-to-7" and article.tagList == ["dragons", "training"] and article.favoritesCount == 2
-        Err(_) => False
-    }
-}
-
-## a profile row missing an expected column fails loudly, not silently
-expect {
-    row = Sql.Row.{ columns: ["username"], cells: [Text("jake")] }
-    Db.decode_profile(row) == Err(NoColumn("bio"))
-}

@@ -2,6 +2,7 @@ import pf.Req
 import pf.Res
 import pf.Cofx
 import pf.JsonBool
+import pf.RawJson
 import Api
 import Auth
 import Db
@@ -79,8 +80,15 @@ Articles := [].{
             Db.load_article!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
         })
 
-    ## Coeffect: just the JSON-shaped article (GET's whole input).
-    article! = Articles.loaded_article!->Cofx.map(|loaded| loaded.article)
+    ## Coeffect: the article at {slug} as a preformed JSON document (GET's
+    ## whole input), assembled in SQL. 404 on a miss. The mutate flows
+    ## (favorite/unfavorite/update) still take the TYPED `loaded_article!` —
+    ## they compute the response from the article's fields.
+    article_json! = Req.param("slug")
+        ->Cofx.and_then(|slug, req| {
+            viewer = Auth.optional_user!(req)?
+            Db.load_article_json!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
+        })
 
     ## Coeffect: the article at {slug}, which the AUTHENTICATED viewer must
     ## own — 401 anonymous, 404 unknown, 403 not-your-article. Full read,
@@ -186,11 +194,11 @@ Articles := [].{
     }
 
     ## `get` bound to its coeffect.
-    get_h! = Box.box(Cofx.with1(Articles.article!, Articles.get))
+    get_h! = Box.box(Cofx.with1(Articles.article_json!, Articles.get))
 
-    ## PURE handler: the article envelope.
-    get : Db.Article -> Res.Response
-    get = |article| Res.json(200, { article: article })
+    ## PURE handler: the SQL-assembled article envelope, written verbatim.
+    get : RawJson -> Res.Response
+    get = |doc| Res.json_raw(200, doc)
 
     ## `update` bound to its coeffects (owner gate, patch, instant).
     update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch, Req.now!, Articles.update))
@@ -281,13 +289,11 @@ Articles := [].{
 
     feed_h! = Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
 
-    ## PURE handler: a page of articles. The spec requires list items to
-    ## OMIT the article body, so full rows shrink to summaries here.
-    page : { articles : List(Db.Article), articlesCount : I64 } -> Res.Response
-    page = |result| Res.json(200, {
-        articles: result.articles.map(|article| Db.to_summary(article)),
-        articlesCount: result.articlesCount,
-    })
+    ## PURE handler: a page of articles, the whole `{articles, articlesCount}`
+    ## envelope assembled in SQL (the summaries already OMIT the body the spec
+    ## forbids in list items), written verbatim.
+    page : RawJson -> Res.Response
+    page = |doc| Res.json_raw(200, doc)
 
     ## `favorite` bound to its coeffects.
     favorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite))

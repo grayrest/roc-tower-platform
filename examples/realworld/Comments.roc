@@ -1,6 +1,7 @@
 import pf.Req
 import pf.Res
 import pf.Cofx
+import pf.RawJson
 import Api
 import Auth
 import Db
@@ -68,15 +69,15 @@ Comments := [].{
     article_comments! = Comments.article_id!
         ->Cofx.and_then(|article_id, req| {
             viewer = Auth.optional_user!(req)?
-            Db.load_comments!(req.ctx, Db.of(req), Auth.viewer_id(viewer), article_id)
+            Db.load_comments_json!(req.ctx, Db.of(req), Auth.viewer_id(viewer), article_id)
         })
 
     ## `list` bound to its coeffect.
     list_h! = Box.box(Cofx.with1(Comments.article_comments!, Comments.list))
 
-    ## PURE handler: the comments envelope.
-    list : List(Db.Comment) -> Res.Response
-    list = |comments| Res.json(200, { comments: comments })
+    ## PURE handler: the SQL-assembled comments envelope, written verbatim.
+    list : RawJson -> Res.Response
+    list = |doc| Res.json_raw(200, doc)
 
     ## Coeffect: the comment at {slug}/{id}, which the authenticated viewer
     ## must have written — 401 anonymous, 404 unknown article/comment,

@@ -2,12 +2,20 @@
 import pf.Host
 import pf.NullableStr
 import pf.JsonBool
+import pf.RawJson
 
 DbGen := [].{
     article_by_slug_q! : U64, Str, { slug : Str, viewer : I64 } => Try({ id : I64, author_id : I64, slug : Str, title : Str, description : Str, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }, [NoRows, DbErr(Str)])
     article_by_slug_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT a.id, a.author_id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at, u.username, u.bio, u.image, (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count, EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer) AS favorited, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id) AS following, (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list FROM articles a JOIN users u ON u.id = a.author_id WHERE a.slug = :slug", params: [Integer(params.viewer), Text(params.slug)] }) ? |message| DbErr(message)
         result = read_article_by_slug_q!(handle)
+        Host.sql_finish!(handle)
+        result
+    }
+    article_json_q! : U64, Str, { slug : Str, viewer : I64 } => Try(RawJson, [NoRows, DbErr(Str)])
+    article_json_q! = |ctx, db, params| {
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT json_object('article', json_patch(json_object( 'slug', a.slug, 'title', a.title, 'description', a.description, 'tagList', (SELECT json_group_array(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)), 'createdAt', a.created_at, 'updatedAt', a.updated_at, 'favorited', json(iif(EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer), 'true', 'false')), 'favoritesCount', (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id), 'author', json_object('username', u.username, 'bio', u.bio, 'image', u.image, 'following', json(iif(EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id), 'true', 'false')))), json_object('body', a.body))) FROM articles a JOIN users u ON u.id = a.author_id WHERE a.slug = :slug", params: [Integer(params.viewer), Text(params.slug)] }) ? |message| DbErr(message)
+        result = read_article_json_q!(handle)
         Host.sql_finish!(handle)
         result
     }
@@ -25,10 +33,17 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
-    comments_by_article_q! : U64, Str, { article_id : I64, viewer : I64 } => Try(List({ id : I64, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str)])
-    comments_by_article_q! = |ctx, db, params| {
-        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id) AS \"following: Bool\" FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id", params: [Integer(params.viewer), Integer(params.article_id)] }) ? |message| DbErr(message)
-        result = read_comments_by_article_q!(handle, [])
+    profile_json_q! : U64, Str, { username : Str, viewer : I64 } => Try(RawJson, [NoRows, DbErr(Str)])
+    profile_json_q! = |ctx, db, params| {
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT json_object('profile', json_object('username', u.username, 'bio', u.bio, 'image', u.image, 'following', json(iif(EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = u.id), 'true', 'false')))) FROM users u WHERE u.username = :username", params: [Integer(params.viewer), Text(params.username)] }) ? |message| DbErr(message)
+        result = read_profile_json_q!(handle)
+        Host.sql_finish!(handle)
+        result
+    }
+    comments_json_q! : U64, Str, { article_id : I64, viewer : I64 } => Try(RawJson, [DbErr(Str)])
+    comments_json_q! = |ctx, db, params| {
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT json_object('comments', COALESCE(( SELECT json_group_array(json_object('id', c.id, 'createdAt', c.created_at, 'updatedAt', c.updated_at, 'body', c.body, 'author', json_object('username', u.username, 'bio', u.bio, 'image', u.image, 'following', json(iif(EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id), 'true', 'false'))))) FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id), json('[]')))", params: [Integer(params.viewer), Integer(params.article_id)] }) ? |message| DbErr(message)
+        result = read_comments_json_q!(handle)
         Host.sql_finish!(handle)
         result
     }
@@ -39,10 +54,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
-    all_tags_q! : U64, Str, {} => Try(List({ tag : Str }), [DbErr(Str)])
-    all_tags_q! = |ctx, db, _params| {
-        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT DISTINCT tag FROM article_tags ORDER BY tag", params: [] }) ? |message| DbErr(message)
-        result = read_all_tags_q!(handle, [])
+    tags_json_q! : U64, Str, {} => Try(RawJson, [DbErr(Str)])
+    tags_json_q! = |ctx, db, _params| {
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT json_object('tags', COALESCE((SELECT json_group_array(tag) FROM (SELECT DISTINCT tag FROM article_tags ORDER BY tag)), json('[]')))", params: [] }) ? |message| DbErr(message)
+        result = read_tags_json_q!(handle)
         Host.sql_finish!(handle)
         result
     }
@@ -63,6 +78,18 @@ read_article_by_slug_q! = |handle| {
         Ok(has_row) =>
             if has_row {
                 Ok({ id: Host.sql_col_i64!(handle, 0), author_id: Host.sql_col_i64!(handle, 1), slug: Host.sql_col_str!(handle, 2), title: Host.sql_col_str!(handle, 3), description: Host.sql_col_str!(handle, 4), body: Host.sql_col_str!(handle, 5), created_at: Host.sql_col_str!(handle, 6), updated_at: Host.sql_col_str!(handle, 7), username: Host.sql_col_str!(handle, 8), bio: col_nullable_str!(handle, 9), image: col_nullable_str!(handle, 10), favorites_count: Host.sql_col_i64!(handle, 11), favorited: Host.sql_col_i64!(handle, 12), following: Host.sql_col_i64!(handle, 13), tag_list: col_nullable_str!(handle, 14) })
+            } else {
+                Err(NoRows)
+            }
+    }
+}
+read_article_json_q! : U64 => Try(RawJson, [NoRows, DbErr(Str)])
+read_article_json_q! = |handle| {
+    match Host.sql_step!(handle) {
+        Err(message) => Err(DbErr(message))
+        Ok(has_row) =>
+            if has_row {
+                Ok(RawJson.from(Host.sql_col_str!(handle, 0)))
             } else {
                 Err(NoRows)
             }
@@ -92,15 +119,27 @@ read_profile_by_username_q! = |handle| {
             }
     }
 }
-read_comments_by_article_q! : U64, List({ id : I64, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }) => Try(List({ id : I64, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str)])
-read_comments_by_article_q! = |handle, acc| {
+read_profile_json_q! : U64 => Try(RawJson, [NoRows, DbErr(Str)])
+read_profile_json_q! = |handle| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
         Ok(has_row) =>
             if has_row {
-                read_comments_by_article_q!(handle, acc.append({ id: Host.sql_col_i64!(handle, 0), body: Host.sql_col_str!(handle, 1), created_at: Host.sql_col_str!(handle, 2), updated_at: Host.sql_col_str!(handle, 3), username: Host.sql_col_str!(handle, 4), bio: col_nullable_str!(handle, 5), image: col_nullable_str!(handle, 6), following: JsonBool.from(Host.sql_col_i64!(handle, 7) != 0) }))
+                Ok(RawJson.from(Host.sql_col_str!(handle, 0)))
             } else {
-                Ok(acc)
+                Err(NoRows)
+            }
+    }
+}
+read_comments_json_q! : U64 => Try(RawJson, [DbErr(Str)])
+read_comments_json_q! = |handle| {
+    match Host.sql_step!(handle) {
+        Err(message) => Err(DbErr(message))
+        Ok(has_row) =>
+            if has_row {
+                Ok(RawJson.from(Host.sql_col_str!(handle, 0)))
+            } else {
+                Err(DbErr("@sql json query returned no rows"))
             }
     }
 }
@@ -116,15 +155,15 @@ read_comment_meta_q! = |handle| {
             }
     }
 }
-read_all_tags_q! : U64, List({ tag : Str }) => Try(List({ tag : Str }), [DbErr(Str)])
-read_all_tags_q! = |handle, acc| {
+read_tags_json_q! : U64 => Try(RawJson, [DbErr(Str)])
+read_tags_json_q! = |handle| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
         Ok(has_row) =>
             if has_row {
-                read_all_tags_q!(handle, acc.append({ tag: Host.sql_col_str!(handle, 0) }))
+                Ok(RawJson.from(Host.sql_col_str!(handle, 0)))
             } else {
-                Ok(acc)
+                Err(DbErr("@sql json query returned no rows"))
             }
     }
 }

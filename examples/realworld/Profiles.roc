@@ -2,6 +2,7 @@ import pf.Req
 import pf.Res
 import pf.Cofx
 import pf.JsonBool
+import pf.RawJson
 import Api
 import Auth
 import Db
@@ -24,15 +25,21 @@ Profiles := [].{
             Db.load_profile!(req.ctx, Db.of(req), Auth.viewer_id(viewer), username)
         })
 
-    ## Coeffect: just the profile (GET's whole input).
-    profile! = Profiles.target!->Cofx.map(|target| target.profile)
+    ## Coeffect: the {username} profile as a preformed JSON document (GET's
+    ## whole input), assembled in SQL. 404 on a miss. follow/unfollow keep the
+    ## TYPED `target!` — they flip `following` in the response.
+    profile_json! = Req.param("username")
+        ->Cofx.and_then(|username, req| {
+            viewer = Auth.optional_user!(req)?
+            Db.load_profile_json!(req.ctx, Db.of(req), Auth.viewer_id(viewer), username)
+        })
 
     ## `get` bound to its coeffect.
-    get_h! = Box.box(Cofx.with1(Profiles.profile!, Profiles.get))
+    get_h! = Box.box(Cofx.with1(Profiles.profile_json!, Profiles.get))
 
-    ## PURE handler: the profile envelope.
-    get : Db.Profile -> Res.Response
-    get = |profile| Res.json(200, { profile: profile })
+    ## PURE handler: the SQL-assembled profile envelope, written verbatim.
+    get : RawJson -> Res.Response
+    get = |doc| Res.json_raw(200, doc)
 
     ## `follow` / `unfollow` bound to their coeffects.
     follow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.follow))

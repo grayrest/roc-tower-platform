@@ -4,6 +4,7 @@ import pf.Host
 import pf.Res
 import pf.Cofx
 import pf.Sql
+import pf.RawJson
 import Api
 import Db
 import Auth
@@ -34,15 +35,15 @@ main = |{}| {
         ]),
 }
 
-## Coeffect: every tag in use.
-tags! = |req| Db.all_tags!(req.ctx, Box.unbox(req.model).db)
+## Coeffect: the tags envelope, assembled in SQL.
+tags! = |req| Db.all_tags_json!(req.ctx, Box.unbox(req.model).db)
 
 ## `tags` bound to its coeffect.
 tags_h! = Box.box(Cofx.with1(tags!, tags))
 
-## PURE handler: the RealWorld tags envelope.
-tags : List(Str) -> Res.Response
-tags = |names| Res.json(200, { tags: names })
+## PURE handler: the SQL-assembled tags envelope, written verbatim.
+tags : RawJson -> Res.Response
+tags = |doc| Res.json_raw(200, doc)
 
 # --- Schema ------------------------------------------------------------------
 #
