@@ -9,6 +9,18 @@ rejections ARE the error responses, and all writes are host-run transactional
 effects. It passes the official RealWorld conformance suite, 154 requests:
 `just realworld-conformance` (needs `hurl`).
 
+## Typed SQL
+
+The fixed-shape reads are **generated** by `sqlgen` from inline `## @sql`
+queries typed against the `## @schema` DDL in [main.roc](main.roc) — see
+[Db.roc](Db.roc) for the queries and the committed [DbGen.roc](DbGen.roc) for
+the emitted typed readers (`just sqlgen` regenerates, `just sqlgen-check`
+gates drift). The shared article projection lives once as a `## @fragment`;
+the by-slug read splices it at codegen time while the dynamic article
+list/feed interpolate the same constant at request time. Runtime-shaped
+queries (the filtered/paginated list) stay on `Sql.query!`. See the platform
+[README](../../README.md#typed-sql-sqlgen) for the annotation reference.
+
 ## Running
 
 ```sh

@@ -1,15 +1,17 @@
 # Plan: Coeffect/effect pure handler model
 
-**Status:** 🟢 **READY FOR PHASE 1 (2026-07-11).** All gates passed: Phase-0
-mechanics spikes, two independent adversarial reviews, and the Phase-0.5
-integration re-spikes the second review demanded (I1 concurrent memo scoping,
-I2 the 4-field return through the real routes path, I3 DB topology) — each with
-evidence on the real request path, under concurrency, with leak checks. All
-design decisions closed: D1 = host runs effects (Arch B); D2 = ctx-id-scoped
-registry storing boxed thunks, author keys; DB = pool-for-everything. The
-implementation phases below are now substantially *productization of proven
-worktree code* (I2's worktree in particular already contains the 4-field
-`requires`/`Res.*`/host-executor shape; I1's contains the ctx registry + guard).
+**Status:** ✅ **SHIPPED (2026-07-13).** The coeffect/effect infrastructure is
+live: `effect.rs` executor, the ctx-scoped memo registry + guard, `Cofx`
+combinators, and the effects vocabulary in `platform/main.roc` are all in
+`main`, and the realworld example is written entirely in this model (154/154
+conformance). The original readiness note is preserved below for the design
+record. All gates passed: Phase-0 mechanics spikes, two independent adversarial
+reviews, and the Phase-0.5 integration re-spikes the second review demanded
+(I1 concurrent memo scoping, I2 the 4-field return through the real routes path,
+I3 DB topology) — each with evidence on the real request path, under
+concurrency, with leak checks. All design decisions closed: D1 = host runs
+effects (Arch B); D2 = ctx-id-scoped registry storing boxed thunks, author
+keys; DB = pool-for-everything.
 Design log: [`notes/2026-07-11-coeffect-effect-handlers-design-log.md`](../notes/2026-07-11-coeffect-effect-handlers-design-log.md).
 
 ## Second review (2026-07-11) — integration gaps; reopen before building

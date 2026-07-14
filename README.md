@@ -128,11 +128,25 @@ Rust host (staticlib linked by `roc build`)
 | `now_ms!` | `() => U64` |
 | `random_bytes!` | `U64 => List(U8)` (OS entropy, capped at 1 MiB) |
 | `http_send!` | request record `=> Try(response record, Str)` (reqwest, rustls) |
-| `sqlite_exec!` | `{ db, sql, params } => Try({ columns, rows }, Str)` |
 | `password_hash!` | `Str => Str` (argon2id, PHC string — store this, never the password) |
 | `password_verify!` | `Str, Str => Bool` (password, stored PHC string) |
 
-SQL parameters and cells use `Host.SqlValue`:
+SQL runs over a **cursor FFI** — no result materialization in the host. These
+are low-level primitives; apps use them through `Sql.query!`/`Sql.exec!` or the
+generated `sqlgen` readers (below), not directly:
+
+| Function | Signature |
+| --- | --- |
+| `sql_begin!` | `{ ctx, db, sql, params } => Try(U64, Str)` — prepares the statement, returns an opaque cursor handle (write-capable) |
+| `sql_step!` | `U64 => Try(Bool, Str)` — advance; `Ok(true)` = a row is available, `Ok(false)` = end |
+| `sql_columns!` | `U64 => List(Str)` — result column names |
+| `sql_col_type!` | `U64, U64 => ColType` — storage class of a live cell (`[Null, Integer, Real, Text, Blob]`) |
+| `sql_col_i64!` / `_f64!` / `_str!` / `_blob!` | `U64, U64 => <scalar>` — read cell `(handle, col_index)` (coercing; NULL reads as the zero value — probe with `sql_col_type!` first) |
+| `sql_finish!` | `U64 => {}` — release the cursor (idempotent; unknown handle is a no-op) |
+
+Handles never escape a function frame — `Sql.query!` and the generated readers
+finish the cursor on every arm, and a per-request reaper sweeps any handle a
+crashing handler leaks. SQL parameters use `Host.SqlValue`:
 `[Null, Integer(I64), Real(F64), Text(Str), Blob(List(U8))]`.
 
 ## Pure handlers: coeffects and effects (`Cofx.withN`, `Res.fx*`)
@@ -258,15 +272,20 @@ merge with `Res.from_try`.
 
 Three more platform modules round out real JSON APIs over SQL:
 
-- **Sql** — named-column decoding of `Host.sqlite_exec!` results.
-  `Sql.first(result)` / `Sql.rows(result)` pair rows with the column names;
-  `row.str("title")`, `row.i64("id")`, `row.f64`, `row.bool` (SQLite 0/1
-  flags), and `row.nullable_str("bio")` decode cells by NAME into `Try`,
-  with the offending column in the error.
-- **NullableStr** — a string that is really nullable in JSON. Encodes as
-  `null` / `"text"` (the derived encoder would stringify a tag union), and
-  decodes both; `Try(NullableStr, [Missing])` distinguishes all three PATCH
-  states: absent, explicit `null`, and a value.
+- **Sql** — the dynamic (hand-written) query layer over the cursor FFI.
+  `Sql.query!(ctx, db, sql, params)` opens a cursor, steps every row into a
+  by-name-decodable `Sql.Row`, and always finishes the cursor before returning
+  `Try(List(Sql.Row), Str)`; `Sql.exec!` runs a statement for effect only.
+  `Sql.first(rows)` takes the single-row case; `row.str("title")`,
+  `row.i64("id")`, `row.f64`, `row.bool` (SQLite 0/1 flags), and
+  `row.nullable_str("bio")` decode cells by NAME into `Try` (offending column
+  in the error). The `Row` decoders are pure `->` (expect-testable) — only the
+  acquisition is effectful. This is the layer for **runtime-shaped** SQL; for
+  fixed queries prefer the generated `sqlgen` readers below.
+- **NullableStr** / **NullableI64** — a string / integer that is really
+  nullable in JSON. Encode as `null` / value (the derived encoder would
+  stringify a tag union), and decode both; `Try(NullableStr, [Missing])`
+  distinguishes all three PATCH states: absent, explicit `null`, and a value.
 - **JsonBool** — a Bool that encodes as JSON `true`/`false`. Temporary: the
   derived encoder currently stringifies `Bool` ("True") even though decode
   works — see notes/2026-07-12-compiler-bool-encode-gap.md; delete once the
@@ -274,6 +293,69 @@ Three more platform modules round out real JSON APIs over SQL:
 
 Optional JSON *input* fields decode as `Try(a, [Missing])` — an absent field
 parses to `Err(Missing)` instead of failing the body.
+
+## Typed SQL (`sqlgen`)
+
+`crates/sqlgen` is a build-time codegen tool: it reads inline SQL marked with
+doc-comment annotations in an app module, **types it against your schema** by
+applying the DDL to an in-memory SQLite and analyzing the compiled bytecode
+(column types, nullability, and parameter types), and emits a twin module
+`XGen.roc` of statically-typed reader functions. A read whose column set or
+nullability drifts from the schema becomes a *compile error* in the generated
+code, not a runtime decode failure.
+
+Four annotations, all `##` doc-comments on a top-level `Str` constant:
+
+| Marker | On | Meaning |
+| --- | --- | --- |
+| `## @schema` | a DDL constant | source of truth for table shapes; applied to type the queries (and, in the app, by `init!`) |
+| `## @sql` / `## @sql one` | a query constant | generate a reader; `one` returns a single record with a `NoRows` error, plain returns `List` |
+| `## @fragment name` | a reusable SQL snippet | spliced into queries via `${name}` (same module, top-level) so a shared SELECT stays single-source |
+| `## @params name: Type` | a query constant | override inferred parameter types when the analyzer can't infer them |
+
+Queries use **named** `:params` (the tool rejects `?` placeholders); the
+generated reader takes a record of exactly those params. Nullable columns come
+back as `NullableStr`/`NullableI64`; a `Bool` alias annotation encodes as
+`JsonBool`. Records are **flat** — hand-written mappers turn a flat row into
+nested JSON shapes (splitting tag lists, nesting an author), and those mappers
+are pure and expect-testable.
+
+```roc
+## @fragment article_select
+article_select =
+    \\SELECT a.id, a.slug, a.title, ... , u.username, u.bio, u.image,
+    \\  (SELECT count(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count
+    \\FROM articles a JOIN users u ON u.id = a.author_id
+
+## @params slug: Str, viewer: I64
+## @sql one
+article_by_slug_q =
+    \\${article_select} WHERE a.slug = :slug
+```
+
+emits (in `DbGen.roc`, committed):
+
+```roc
+article_by_slug_q! : U64, Str, { slug : Str, viewer : I64 }
+    => Try({ id : I64, slug : Str, ..., favorites_count : I64,
+             bio : NullableStr, ... }, [NoRows, DbErr(Str)])
+```
+
+which the app calls directly:
+
+```roc
+row = DbGen.article_by_slug_q!(ctx, db, { slug, viewer }) ? |err| match err {
+    NoRows => Api.not_found("article")
+    DbErr(m) => Api.error(500, "db error: ${m}")
+}
+```
+
+Workflow: write/edit `@sql` queries → `just sqlgen` regenerates `*Gen.roc`
+(commit the output) → `just sqlgen-check` (wired into `just check`) fails CI if
+the committed generated code has drifted from a fresh regen. Runtime-shaped
+queries (dynamic `WHERE`/`LIMIT` built at request time) stay on `Sql.query!`,
+interpolating the same `@fragment` constant — one SQL source, two consumers.
+See [examples/realworld](examples/realworld/Db.roc) for the full set.
 
 ## Examples
 
