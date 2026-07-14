@@ -989,44 +989,44 @@ const _: () = assert!(core::mem::size_of::<AnonStruct5c679ee432c3d89b>() == 28, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct5c679ee432c3d89b>() == 4, "AnonStruct5c679ee432c3d89b alignment mismatch");
 
-/// Element type for __AnonStruct_6b43cf3aa793b1a0
+/// Element type for __AnonStruct_abbb89a8d6948757
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStruct6b43cf3aa793b1a0 {
+pub struct AnonStructAbbb89a8d6948757 {
     pub ctx: u64,
     pub body: RocListWith<u8, false>,
     pub headers: RocList<AnonStruct82a96c5d55d63488>,
     pub method: RocStr,
-    pub model: *mut (),
+    pub model: RocBox,
     pub params: RocList<AnonStruct82a96c5d55d63488>,
     pub path: RocStr,
     pub query: RocStr,
 }
 
-/// Element type for __AnonStruct_6b43cf3aa793b1a0
+/// Element type for __AnonStruct_abbb89a8d6948757
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStruct6b43cf3aa793b1a0 {
+pub struct AnonStructAbbb89a8d6948757 {
     pub ctx: u64,
     pub body: RocListWith<u8, false>,
     pub headers: RocList<AnonStruct82a96c5d55d63488>,
     pub method: RocStr,
-    pub model: *mut (),
+    pub model: RocBox,
     pub params: RocList<AnonStruct82a96c5d55d63488>,
     pub path: RocStr,
     pub query: RocStr,
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStruct6b43cf3aa793b1a0>() == 160, "AnonStruct6b43cf3aa793b1a0 size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStructAbbb89a8d6948757>() == 160, "AnonStructAbbb89a8d6948757 size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStruct6b43cf3aa793b1a0>() == 8, "AnonStruct6b43cf3aa793b1a0 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStructAbbb89a8d6948757>() == 8, "AnonStructAbbb89a8d6948757 alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStruct6b43cf3aa793b1a0>() == 88, "AnonStruct6b43cf3aa793b1a0 size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStructAbbb89a8d6948757>() == 88, "AnonStructAbbb89a8d6948757 size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStruct6b43cf3aa793b1a0>() == 8, "AnonStruct6b43cf3aa793b1a0 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStructAbbb89a8d6948757>() == 8, "AnonStructAbbb89a8d6948757 alignment mismatch");
 
 /// Element type for __AnonStruct_c56ced036812b588
 #[cfg(target_pointer_width = "32")]
@@ -1141,45 +1141,6 @@ const _: () = assert!(core::mem::align_of::<AnonStruct4dc83b5d9c0c77ea>() == 8, 
 const _: () = assert!(core::mem::size_of::<AnonStruct4dc83b5d9c0c77ea>() == 24, "AnonStruct4dc83b5d9c0c77ea size mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct4dc83b5d9c0c77ea>() == 4, "AnonStruct4dc83b5d9c0c77ea alignment mismatch");
-
-/// Element type for __AnonStruct_abbb89a8d6948757
-#[cfg(target_pointer_width = "32")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AnonStructAbbb89a8d6948757 {
-    pub ctx: u64,
-    pub body: RocListWith<u8, false>,
-    pub headers: RocList<AnonStruct82a96c5d55d63488>,
-    pub method: RocStr,
-    pub model: RocBox,
-    pub params: RocList<AnonStruct82a96c5d55d63488>,
-    pub path: RocStr,
-    pub query: RocStr,
-}
-
-/// Element type for __AnonStruct_abbb89a8d6948757
-#[cfg(not(target_pointer_width = "32"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AnonStructAbbb89a8d6948757 {
-    pub ctx: u64,
-    pub body: RocListWith<u8, false>,
-    pub headers: RocList<AnonStruct82a96c5d55d63488>,
-    pub method: RocStr,
-    pub model: RocBox,
-    pub params: RocList<AnonStruct82a96c5d55d63488>,
-    pub path: RocStr,
-    pub query: RocStr,
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStructAbbb89a8d6948757>() == 160, "AnonStructAbbb89a8d6948757 size mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStructAbbb89a8d6948757>() == 8, "AnonStructAbbb89a8d6948757 alignment mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStructAbbb89a8d6948757>() == 88, "AnonStructAbbb89a8d6948757 size mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStructAbbb89a8d6948757>() == 8, "AnonStructAbbb89a8d6948757 alignment mismatch");
 
 /// Tag discriminant for Try.
 #[repr(u8)]
@@ -1656,71 +1617,6 @@ const _: () = assert!(core::mem::size_of::<HostMemoGetResult>() == 8, "HostMemoG
 const _: () = assert!(core::mem::align_of::<HostMemoGetResult>() == 4, "HostMemoGetResult alignment mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(HostMemoGetResult, tag) == 4, "HostMemoGetResult tag offset mismatch");
-
-/// Tag discriminant for Try.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TryType51Tag {
-    Err = 0,
-    Ok = 1,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub union TryType51Payload {
-    pub err: core::mem::ManuallyDrop<RocStr>,
-    pub ok: [u8; 0],
-}
-
-#[cfg(target_pointer_width = "32")]
-#[repr(align(4))]
-#[derive(Clone, Copy)]
-pub struct TryType51PayloadAlignment;
-
-/// Tag union: Try
-#[cfg(target_pointer_width = "32")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TryType51 {
-    pub _payload_alignment: [TryType51PayloadAlignment; 0],
-    pub payload: [u8; 12],
-    pub tag: TryType51Tag,
-}
-
-/// Tag union: Try
-#[cfg(not(target_pointer_width = "32"))]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TryType51 {
-    pub payload: TryType51Payload,
-    pub tag: TryType51Tag,
-}
-
-impl TryType51 {
-    #[cfg(target_pointer_width = "32")]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
-    }
-
-    #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.err) }
-    }
-
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<TryType51>() == 32, "TryType51 size mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<TryType51>() == 8, "TryType51 alignment mismatch");
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::offset_of!(TryType51, tag) == 24, "TryType51 tag offset mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<TryType51>() == 16, "TryType51 size mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<TryType51>() == 4, "TryType51 alignment mismatch");
-#[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::offset_of!(TryType51, tag) == 12, "TryType51 tag offset mismatch");
 
 /// Payload struct for Must variant.
 #[cfg(target_pointer_width = "32")]
@@ -2865,41 +2761,6 @@ impl AnonStructC36e85b27c5677aa {
     }
 }
 
-impl TryType51 {
-    /// Recursively decrement Roc-owned payloads.
-    ///
-    /// # Safety
-    /// `self` must own one live Roc reference for each refcounted payload.
-    pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
-        let _ = roc_host;
-        match value.tag {
-            TryType51Tag::Err => {
-                let payload = value.payload_err();
-                unsafe { payload.decref(roc_host); }
-            },
-            TryType51Tag::Ok => {},
-        }
-    }
-
-    /// Increment Roc-owned payloads.
-    ///
-    /// # Safety
-    /// `self` must point at live Roc allocations. The retained references must
-    /// be balanced by later decrefs.
-    pub unsafe fn incref(self, amount: isize) {
-        let value = self;
-        let _ = amount;
-        match value.tag {
-            TryType51Tag::Err => {
-                let payload = value.payload_err();
-                unsafe { payload.incref(amount); }
-            },
-            TryType51Tag::Ok => {},
-        }
-    }
-}
-
 impl AnonStruct5c679ee432c3d89b {
     /// Recursively decrement Roc-owned fields.
     ///
@@ -2925,7 +2786,7 @@ impl AnonStruct5c679ee432c3d89b {
     }
 }
 
-impl AnonStruct6b43cf3aa793b1a0 {
+impl AnonStructAbbb89a8d6948757 {
     /// Recursively decrement Roc-owned fields.
     ///
     /// # Safety
@@ -2944,7 +2805,7 @@ impl AnonStruct6b43cf3aa793b1a0 {
             unsafe { list.decref(roc_host); }
         }
         unsafe { value.method.decref(roc_host); }
-        unsafe { decref_box_with(value.model as RocBox, core::mem::align_of::<()>(), false, None, roc_host); }
+        unsafe { decref_box(value.model as RocBox, roc_host); }
         {
             let list = value.params;
             if list.has_one_ref() {
@@ -3327,57 +3188,6 @@ impl AnonStruct4dc83b5d9c0c77ea {
         let value = self;
         unsafe { value.routes.incref(amount); }
         unsafe { value.settings.incref(amount); }
-    }
-}
-
-impl AnonStructAbbb89a8d6948757 {
-    /// Recursively decrement Roc-owned fields.
-    ///
-    /// # Safety
-    /// `self` must own one live Roc reference for each refcounted field.
-    pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
-        unsafe { value.body.decref(roc_host); }
-        {
-            let list = value.headers;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        unsafe { value.method.decref(roc_host); }
-        unsafe { decref_box(value.model as RocBox, roc_host); }
-        {
-            let list = value.params;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        unsafe { value.path.decref(roc_host); }
-        unsafe { value.query.decref(roc_host); }
-    }
-
-    /// Increment Roc-owned fields.
-    ///
-    /// # Safety
-    /// `self` must point at live Roc allocations. The retained references must
-    /// be balanced by later decrefs.
-    pub unsafe fn incref(self, amount: isize) {
-        let value = self;
-        unsafe { value.body.incref(amount); }
-        unsafe { value.headers.incref(amount); }
-        unsafe { value.method.incref(amount); }
-        unsafe { incref_box(value.model as RocBox, amount); }
-        unsafe { value.params.incref(amount); }
-        unsafe { value.path.incref(amount); }
-        unsafe { value.query.incref(amount); }
     }
 }
 
