@@ -127,3 +127,56 @@ throughput is now parity-or-better across the board, no batched row-getter
 needed. p99 is too noisy to compare (list p99 swings ~100ms from
 allocator/scheduler spikes on both binaries).
 
+## `@sql json` — SQL-assembled documents (2026-07-14, Phase 7)
+
+The profile above said response *construction* (row → record → nested record →
+`Json.to_str`) was the real cost — ~30% malloc + a chunk of compiled-Roc time —
+not the read. `@sql json` attacks exactly that: the query assembles the whole
+JSON document in SQLite (`json_object`/`json_group_array`/`json_patch`) and the
+generated reader hands column 0 back as raw bytes (`RawJson` → `Res.json_raw`),
+skipping the record/encode pipeline entirely.
+
+### Allocation: it works (list endpoint, sampled self-time)
+
+| bucket | typed cursor | `@sql json` |
+|--------|-------------:|------------:|
+| total active CPU (8s window) | 56,882 | 33,246 (**−42%**) |
+| malloc/free/memcpy | 31.7% (18.0k) | 15.8% (5.2k) |
+| roc_alloc (RocList/RocStr/record) | 4.3% (2.5k) | 0.4% (131) — **~19× less** |
+| SQLite exec | 26.4% | 48.2% (now dominant) |
+
+The Roc-side allocation for the response collapses; SQLite assembly becomes the
+dominant cost. That is the intended shape.
+
+### Throughput: a win for single-row reads, a LOSS for multi-row (main vs json, 2 passes)
+
+| endpoint | shape | main rps | json rps | Δ rps | main p50 | json p50 |
+|----------|-------|---------:|---------:|------:|---------:|---------:|
+| byslug   | 1×15 | 50613 | 60446 | **+19.4%** | 273µs | 234µs (−15%) |
+| profile  | 1×4  | 59648 | 63456 | **+6.4%**  | 240µs | 229µs (−4%) |
+| list     | 20×15 | 6828 | 6775 | −0.8% | 1.74ms | 1.94ms (**+11%**) |
+| comments | 9×8  | 25408 | 22015 | **−13.4%** | 542µs | 672µs (**+24%**) |
+
+**The trade is real and endpoint-dependent.** `@sql json` swaps Roc-side
+allocation for SQLite-side JSON assembly:
+
+- **Single-row / simple** (`byslug`, `profile`): marshalling dominated, so
+  collapsing it wins big — byslug **+19%**.
+- **Multi-row / nested** (`comments`, `list`): the SQLite work grows more than
+  the Roc side shrinks. `comments` builds a nested `json_object` (comment +
+  nested author) AND a per-row `EXISTS` following-flag inside a
+  `json_group_array` for every row; `list` re-parses each summary via
+  `json(summary)` under `json_group_array` over the paged subquery. That
+  per-row JSON construction in SQLite's C outweighs the marshalling it
+  replaced → `comments` **−13%**, `list` p50 **+11%**.
+
+### Takeaway
+
+`@sql json` is a **targeted** optimization, not a blanket one: reach for it on
+single-row or shallow reads where response construction dominates (article
+by-slug, profile), and keep the typed/`Sql.query!` path for multi-row reads
+whose per-row JSON assembly is expensive (comments, the article list). The
+allocation win is genuine and large; whether it nets out positive depends on how
+much JSON the query has to build per row. Numbers in
+`scratchpad/bench/results5.txt`; list allocation profile in `sample-*-list.txt`.
+

@@ -17,9 +17,17 @@ queries typed against the `## @schema` DDL in [main.roc](main.roc) — see
 the emitted typed readers (`just sqlgen` regenerates, `just sqlgen-check`
 gates drift). The shared article projection lives once as a `## @fragment`;
 the by-slug read splices it at codegen time while the dynamic article
-list/feed interpolate the same constant at request time. Runtime-shaped
-queries (the filtered/paginated list) stay on `Sql.query!`. See the platform
-[README](../../README.md#typed-sql-sqlgen) for the annotation reference.
+list/feed interpolate the same constant at request time.
+
+The read-only GET endpoints (article, list, feed, profile, comments, tags) go a
+step further with **`@sql json`**: the JSON document — envelope, camelCase keys,
+nested author, tag arrays, boolean flags — is assembled entirely in SQLite
+(`json_object`/`json_group_array`/`json_patch`) and returned as raw bytes via
+`Res.json_raw`, skipping the record → encode pipeline. The mutate-then-serialize
+handlers (`update`, `favorite`, `unfavorite`, `follow`, `unfollow`) keep the
+typed reads — they compute the response from the row's fields. See the platform
+[README](../../README.md#sql-json--assemble-the-document-in-sql-splice-it-once)
+for the annotation reference.
 
 ## Running
 

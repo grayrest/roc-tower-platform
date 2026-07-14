@@ -286,6 +286,9 @@ Three more platform modules round out real JSON APIs over SQL:
   nullable in JSON. Encode as `null` / value (the derived encoder would
   stringify a tag union), and decode both; `Try(NullableStr, [Missing])`
   distinguishes all three PATCH states: absent, explicit `null`, and a value.
+- **RawJson** — preformed JSON text (from an `@sql json` reader or
+  `Sql.query_json!`) that `Res.json_raw` writes verbatim, never re-encoded. See
+  the Typed SQL section.
 - **JsonBool** — a Bool that encodes as JSON `true`/`false`. Temporary: the
   derived encoder currently stringifies `Bool` ("True") even though decode
   works — see notes/2026-07-12-compiler-bool-encode-gap.md; delete once the
@@ -310,6 +313,7 @@ Four annotations, all `##` doc-comments on a top-level `Str` constant:
 | --- | --- | --- |
 | `## @schema` | a DDL constant | source of truth for table shapes; applied to type the queries (and, in the app, by `init!`) |
 | `## @sql` / `## @sql one` | a query constant | generate a reader; `one` returns a single record with a `NoRows` error, plain returns `List` |
+| `## @sql json` / `## @sql json one` | a query constant | the query assembles its own JSON document in SQL; the reader returns column 0 as a raw `RawJson` (see below) |
 | `## @fragment name` | a reusable SQL snippet | spliced into queries via `${name}` (same module, top-level) so a shared SELECT stays single-source |
 | `## @params name: Type` | a query constant | override inferred parameter types when the analyzer can't infer them |
 
@@ -356,6 +360,36 @@ the committed generated code has drifted from a fresh regen. Runtime-shaped
 queries (dynamic `WHERE`/`LIMIT` built at request time) stay on `Sql.query!`,
 interpolating the same `@fragment` constant — one SQL source, two consumers.
 See [examples/realworld](examples/realworld/Db.roc) for the full set.
+
+### `@sql json` — assemble the document in SQL, splice it once
+
+For read-only endpoints that only *serialize* their rows, `@sql json` skips the
+row → record → nested-record → `Json.to_str` pipeline entirely. The query builds
+its whole response document — envelope, camelCase keys, nested objects, arrays,
+booleans, nulls — with SQLite's JSON1 functions (`json_object`,
+`json_group_array`, `json_patch`, `json(iif(...))`), and the generated reader
+returns column 0 as a **`RawJson`**: preformed bytes that `Res.json_raw` writes
+verbatim. SQLite assembles the response in C; the host copies it once. (Profile:
+this drops the response-construction allocation — ~30% of the request — to near
+zero, leaving the SQL query itself as the dominant cost.)
+
+```roc
+## @params slug: Str, viewer: I64
+## @sql json one
+article_json_q =
+    \\SELECT json_object('article', ${article_json_summary})
+    \\FROM articles a JOIN users u ON u.id = a.author_id WHERE a.slug = :slug
+```
+
+`RawJson` (a `Str` newtype, never re-encoded) is the reader's return type;
+`json one` keeps the `NoRows` (404) miss, plain `json` is the always-one-row
+aggregate. For **dynamically-built** JSON queries (a filtered list assembled at
+request time), `Sql.query_json!(ctx, db, sql, params)` is the raw single-cell
+reader — the runtime twin of an `@sql json` reader. The trade: the reshaping now
+lives in SQL (more verbose, but SQLite handles escaping), and you give up the
+typed record — so `@sql json` is for serialization endpoints, while `@sql`
+(typed) stays for anything that computes over the values (realworld keeps the
+typed article read for `update`/`favorite`, which mutate it before responding).
 
 ## Examples
 
