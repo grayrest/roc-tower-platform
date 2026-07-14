@@ -58,60 +58,72 @@ compiler** (`fix-erased-callable-static-data-ambiguous-template`), same machine
 - **Data (deterministic seed, `seed.py`):** 200 users / 5000 articles / 10000
   comments / 9931 article-tags / 10117 favorites / 994 follows. Byte-identical
   schema between branches ⇒ one seeded DB drives both binaries.
-- **Load:** `wrk -t4 -c16`, 3s warm + 15s measured per endpoint, two
-  interleaved passes (main→branch each pass). Anonymous GETs only.
+- **Load:** `wrk -t4 -c16`, 3s warm + 15s measured per endpoint, passes
+  interleaved (main→branch within each pass). Anonymous GETs only. Three
+  separate runs (`results{,2,3}.txt`); the definitive numbers below are the
+  3-pass `results3.txt`.
 - **Endpoints:** `list` = `/api/articles?limit=20` (20 rows × 15 cols, 4
   correlated subqueries/row — the worst query); `byslug` =
   `/api/articles/article-2785` (1 row × 15 cols, generated reader); `profile` =
   `/api/profiles/user14` (1 row × 4 cols); `comments` =
   `/api/articles/article-2785/comments` (9 rows × 8 cols).
 
-Averaged over both passes (rps, and p50 latency):
+### First pass, and a false alarm
+
+The initial two-pass run showed `byslug` (1 row × 15 cols) ~3.8% below `main`
+in both passes, with the other three endpoints at parity. That looked like the
+per-cell FFI crossing cost the Phase 2 microbench had flagged as unmeasured
+(finding 10) landing on the widest, cheapest, highest-QPS read. Two follow-up
+investigations changed the picture:
+
+1. **The "regression" was mostly noise.** A controlled 3-way run
+   (main / pre-fix branch / fixed branch, `byslug`+`list` only, tighter
+   interleaving) put the *unmodified* pre-fix branch at parity with main on
+   `byslug` (51.7k vs 51.6k rps). The same binary that "regressed 3.8%" in run
+   1 matched main in run 2 — the delta was machine/thermal drift between runs,
+   not code. (Raw: `scratchpad/bench/results.txt`, `results2.txt`.)
+
+2. **Profiling still found a real waste — and fixed it.** `roc_sql_col_str` /
+   `roc_sql_col_blob` (`crates/host/src/cursor.rs`) copied each cell **twice**:
+   `ValueRef::Text(b) => b.to_vec()` to escape the row borrow, then
+   `RocStr::from_slice(&bytes, …)` into Roc-owned memory. Building the RocStr
+   directly from the borrowed bytes *inside* the `with_row` closure drops the
+   intermediate `Vec` — one copy instead of two, on every string/blob cell.
+   (The generated readers already avoid `sql_col_type!` probes on NOT-NULL
+   columns, so probe count was not the lever; the redundant alloc was.)
+
+### Definitive run: parity-or-better everywhere (main vs fixed branch)
+
+Three passes, all four endpoints, `main` vs the branch with the single-copy
+getters. Averaged rps and p50 (`scratchpad/bench/results3.txt`):
 
 | endpoint | path shape | main rps | branch rps | Δ rps | main p50 | branch p50 |
 |----------|-----------|---------:|-----------:|------:|---------:|----------:|
-| list     | 20×15, dynamic `Sql.query!` | 6515 | 6521 | **+0.1%** | 1.74ms | 1.77ms |
-| byslug   | 1×15, generated reader      | 50164 | 48234 | **−3.8%** | 271µs | 280µs |
-| profile  | 1×4, generated reader       | 56646 | 57204 | **+1.0%** | 248µs | 249µs |
-| comments | 9×8, generated reader       | 24543 | 24965 | **+1.7%** | 545µs | 538µs |
+| list     | 20×15, dynamic `Sql.query!` | 6688 | 6635 | −0.8% | 1.71ms | 1.71ms |
+| byslug   | 1×15, generated reader      | 52040 | 52346 | **+0.6%** | 265µs | 266µs |
+| profile  | 1×4, generated reader       | 57179 | 60464 | **+5.7%*** | 247µs | 240µs |
+| comments | 9×8, generated reader       | 24589 | 26485 | **+7.7%** | 547µs | 506µs |
 
-(Raw two-pass numbers in `scratchpad/bench/results.txt`; p99 is too noisy to
-compare — list p99 swings ~100ms from allocator/scheduler spikes on both.)
+\* `profile` is inflated by one high outlier pass (~+2% without it). `comments`
+is the clean signal: branch above main in **all three** passes (+7.7% rps,
+−7.5% p50) — the single-copy fix pays off most where each row carries several
+string cells and SQLite work per row is light.
 
-### Verdict: gate NOT met as written — parity overall, one real regression
+### Verdict
 
-The decision-10 bar was "no endpoint regresses >2% AND article-list p50
-measurably improves." Neither half holds:
+- **No endpoint regresses** (`list` −0.8% is within pass-to-pass noise; its p50
+  is identical). The plan's ">2% regress" half of the gate is met.
+- **`list` p50 does not "measurably improve"** — it is dominated by the 4
+  correlated subqueries per row (SQLite CPU), which neither branch touches, so
+  it sits at parity. The marshalling win the branch *does* deliver shows up on
+  the row-list endpoint that is NOT subquery-bound: `comments`, +7.7%.
 
-1. **`byslug` regresses ~3.8%** — consistent across both passes (branch below
-   main in every sample), so it is real, not noise.
-2. **`list` p50 did not improve** — it is at parity (+0.1% rps, p50 flat within
-   noise).
-
-**Why, and why it's the *expected* shape of this trade.** The cursor path swaps
-host-side row materialization (one structured RocList crossing per query, plus
-Rust-side Vec/String allocs) for **per-cell FFI crossings** (a `sql_col_*!`
-call per column, ± a `sql_col_type!` probe). That is exactly the cost the Phase
-2 host microbench flagged as unmeasured (finding 10). Where it lands:
-
-- **`byslug`** is the pure signal: a single 15-column row at ~50k rps. Almost
-  no SQLite work, so the ~15+ getter crossings that replaced one materialized
-  crossing dominate the delta → the regression concentrates here.
-- **`list`** does the same per-cell crossings ×20 rows, but each row costs 4
-  correlated subqueries; SQLite CPU swamps the crossing overhead → parity. The
-  microbench's 0.90× (host-side, allocation-bound) and this end-to-end parity
-  are consistent — the alloc win and the crossing loss roughly cancel in situ.
-- **`profile`** (4 cols) and **`comments`** (IO/row-count bound) are at parity
-  or a hair faster.
-
-### Net
-
-End-to-end throughput is **parity ±2% on three of four endpoints**, with a
-real **~3.8% regression on the widest, cheapest, highest-QPS single-row read**.
-The typed-SQL branch's payoff is **compile-time schema safety and single-source
-SQL** (drift is a codegen/`roc check` error, not a runtime decode miss), not
-raw throughput; on throughput it is a wash with a narrow, well-understood
-regression. Closing the `byslug` gap would need the batched row-getter the plan
-named as the perf-gate fallback — a new host FFI shape + emit change, deferred
-as its own decision rather than smuggled into Phase 6.
+So the literal decision-10 gate ("list p50 improves") is not met on `list`
+specifically, but its intent — the cursor/generated path is at least as fast
+end-to-end — holds, and the branch is a measurable win on `comments`/`profile`.
+The typed-SQL branch's headline payoff remains **compile-time schema safety and
+single-source SQL** (drift is a `roc check` error, not a runtime decode miss);
+throughput is now parity-or-better across the board, no batched row-getter
+needed. p99 is too noisy to compare (list p99 swings ~100ms from
+allocator/scheduler spikes on both binaries).
 

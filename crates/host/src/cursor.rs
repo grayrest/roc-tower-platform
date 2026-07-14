@@ -344,27 +344,31 @@ pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
 /// NULL); callers that must distinguish NULL check `sql_col_type!` first.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
-    let bytes = with_row(handle, |row| match row.get_ref(index as usize) {
-        Ok(ValueRef::Text(b)) => b.to_vec(),
-        Ok(ValueRef::Blob(b)) => b.to_vec(),
-        Ok(ValueRef::Integer(n)) => n.to_string().into_bytes(),
-        Ok(ValueRef::Real(f)) => f.to_string().into_bytes(),
-        _ => Vec::new(),
+    // Build the RocStr directly from the borrowed cell bytes inside the closure
+    // — the common Text/Blob path is then a single copy into Roc-owned memory,
+    // with no intermediate `Vec`. (Integer/Real coerce through a `to_string`.)
+    let host = roc_host();
+    with_row(handle, |row| match row.get_ref(index as usize) {
+        Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => abi::RocStr::from_slice(b, host),
+        Ok(ValueRef::Integer(n)) => abi::RocStr::from_slice(n.to_string().as_bytes(), host),
+        Ok(ValueRef::Real(f)) => abi::RocStr::from_slice(f.to_string().as_bytes(), host),
+        _ => abi::RocStr::from_slice(&[], host),
     })
-    .unwrap_or_default();
-    abi::RocStr::from_slice(&bytes, roc_host())
+    .unwrap_or_else(|| abi::RocStr::from_slice(&[], host))
 }
 
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {
-    let bytes = with_row(handle, |row| match row.get_ref(index as usize) {
-        Ok(ValueRef::Blob(b)) => b.to_vec(),
-        Ok(ValueRef::Text(b)) => b.to_vec(),
-        _ => Vec::new(),
+    let host = roc_host();
+    with_row(handle, |row| {
+        let bytes: &[u8] = match row.get_ref(index as usize) {
+            Ok(ValueRef::Blob(b)) | Ok(ValueRef::Text(b)) => b,
+            _ => &[],
+        };
+        unsafe { abi::RocListWith::<u8, false>::from_slice(bytes, host) }
     })
-    .unwrap_or_default();
-    unsafe { abi::RocListWith::<u8, false>::from_slice(&bytes, roc_host()) }
+    .unwrap_or_else(|| unsafe { abi::RocListWith::<u8, false>::from_slice(&[], host) })
 }
 
 /// `Host.sql_finish! : U64 => {}`. Idempotent: only a handle still in the
