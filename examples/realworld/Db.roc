@@ -3,6 +3,7 @@ import pf.Sql
 import pf.NullableStr
 import pf.JsonBool
 import Api
+import DbGen
 
 ## Schema, queries, and row decoders for the RealWorld data model. Reads run
 ## inside coeffect resolvers (`Sql.query!` over the streaming cursor); writes
@@ -73,14 +74,20 @@ Db := [].{
         Null => Null
     }
 
-    ## The article SELECT shared by get/list/feed. The first two params are
-    ## the viewer id (favorited flag, following flag); WHERE params follow.
+    ## The article SELECT shared three ways: sqlgen splices it into the checked
+    ## by-slug reader (`article_by_slug_q`, positional cell reads), and the
+    ## dynamic list/feed path interpolates the SAME constant at runtime
+    ## (`Sql.query!`, by-name reads). `:viewer` is one named parameter (SQLite
+    ## reuses it for the favorited + following flags). Aliases stay PLAIN so the
+    ## column names match the by-name decoders; the flag columns come back as
+    ## I64 (0/1) and become `JsonBool` in the row mappers.
+    ## @fragment article_select
     article_select =
         \\SELECT a.id, a.author_id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
         \\       u.username, u.bio, u.image,
         \\       (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
-        \\       EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = ?) AS favorited,
-        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = a.author_id) AS following,
+        \\       EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer) AS favorited,
+        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id) AS following,
         \\       (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list
         \\FROM articles a JOIN users u ON u.id = a.author_id
 
@@ -133,29 +140,53 @@ Db := [].{
     ## Load one article by slug with the viewer's flags; rejects 404 on a
     ## miss. Returns the row id alongside the JSON-shaped article for
     ## author checks, updates, and join-table writes.
+    ## @params slug: Str, viewer: I64
+    ## @sql one
+    article_by_slug_q =
+        \\${article_select} WHERE a.slug = :slug
+
     load_article! = |ctx, db, viewer, slug| {
-        sql = "${Db.article_select} WHERE a.slug = ?"
-        rows = Sql.query!(ctx, db, sql, [Integer(viewer), Integer(viewer), Text(slug)])
-            ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(rows) ? |_| Api.not_found("article")
-        Ok({
-            id: row.i64("id") ? |_| Api.error(500, "corrupt article row"),
-            author_id: row.i64("author_id") ? |_| Api.error(500, "corrupt article row"),
-            article: Db.decode_article(row) ? |_| Api.error(500, "corrupt article row"),
-        })
+        row = DbGen.article_by_slug_q!(ctx, db, { slug: slug, viewer: viewer }) ? |err| match err {
+            NoRows => Api.not_found("article")
+            DbErr(message) => Api.error(500, "db error: ${message}")
+        }
+        Ok({ id: row.id, author_id: row.author_id, article: Db.article_from_row(row) })
+    }
+
+    ## Map a generated article row (flat, flags as I64) to the JSON-shaped
+    ## article: split the tag list, nest the author, flags to JsonBool.
+    article_from_row = |row| {
+        slug: row.slug,
+        title: row.title,
+        description: row.description,
+        body: row.body,
+        tagList: Db.split_tags(row.tag_list),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        favorited: JsonBool.from(row.favorited != 0),
+        favoritesCount: row.favorites_count,
+        author: {
+            username: row.username,
+            bio: row.bio,
+            image: row.image,
+            following: JsonBool.from(row.following != 0),
+        },
     }
 
     ## The LIGHT article lookup for existence and ownership checks: just the
     ## row id and author, no joins/aggregates. Use `load_article!` only when
     ## the response needs the full JSON-shaped article.
+    ## @params slug: Str
+    ## @sql one
+    article_meta_q =
+        \\SELECT id, author_id FROM articles WHERE slug = :slug
+
     load_article_meta! = |ctx, db, slug| {
-        rows = Sql.query!(ctx, db, "SELECT id, author_id FROM articles WHERE slug = ?", [Text(slug)])
-            ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(rows) ? |_| Api.not_found("article")
-        Ok({
-            id: row.i64("id") ? |_| Api.error(500, "corrupt article row"),
-            author_id: row.i64("author_id") ? |_| Api.error(500, "corrupt article row"),
-        })
+        row = DbGen.article_meta_q!(ctx, db, { slug: slug }) ? |err| match err {
+            NoRows => Api.not_found("article")
+            DbErr(message) => Api.error(500, "db error: ${message}")
+        }
+        Ok(row)
     }
 
     ## List articles with optional tag/author/favorited filters, most recent
@@ -226,74 +257,70 @@ Db := [].{
 
     ## Load a profile by username with the viewer's following flag; rejects
     ## 404 on a miss. Returns the user id alongside for follow writes.
+    ## @params username: Str, viewer: I64
+    ## @sql one
+    profile_by_username_q =
+        \\SELECT u.id, u.username, u.bio, u.image,
+        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = u.id) AS "following: Bool"
+        \\FROM users u WHERE u.username = :username
+
     load_profile! = |ctx, db, viewer, username| {
-        sql =
-            \\SELECT u.id, u.username, u.bio, u.image,
-            \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = u.id) AS following
-            \\FROM users u WHERE u.username = ?
-        rows = Sql.query!(ctx, db, sql, [Integer(viewer), Text(username)])
-            ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(rows) ? |_| Api.not_found("profile")
+        row = DbGen.profile_by_username_q!(ctx, db, { username: username, viewer: viewer }) ? |err| match err {
+            NoRows => Api.not_found("profile")
+            DbErr(message) => Api.error(500, "db error: ${message}")
+        }
         Ok({
-            id: row.i64("id") ? |_| Api.error(500, "corrupt user row"),
-            profile: Db.decode_profile(row) ? |_| Api.error(500, "corrupt user row"),
+            id: row.id,
+            profile: { username: row.username, bio: row.bio, image: row.image, following: row.following },
         })
     }
 
     ## All comments on an article, oldest first, with viewer following flags.
+    ## @params viewer: I64, article_id: I64
+    ## @sql
+    comments_by_article_q =
+        \\SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,
+        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id) AS "following: Bool"
+        \\FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id
+
     load_comments! = |ctx, db, viewer, article_id| {
-        sql =
-            \\SELECT c.id, c.body, c.created_at, c.updated_at, u.username, u.bio, u.image,
-            \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = ? AND fo.followed_id = c.author_id) AS following
-            \\FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = ? ORDER BY c.id
-        rows = Sql.query!(ctx, db, sql, [Integer(viewer), Integer(article_id)])
-            ? |message| Api.error(500, "db error: ${message}")
-        rows.fold(Ok([]), |acc, row| {
-            match acc {
-                Err(response) => Err(response)
-                Ok(comments) => match Db.decode_comment(row) {
-                    Ok(comment) => Ok(comments.append(comment))
-                    Err(_) => Err(Api.error(500, "corrupt comment row"))
-                }
-            }
-        })
+        rows = DbGen.comments_by_article_q!(ctx, db, { viewer: viewer, article_id: article_id })
+            ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        Ok(rows.map(Db.comment_from_row))
     }
 
-    ## Decode one comment row (columns per `load_comments!`).
-    decode_comment : Sql.Row -> Try(Db.Comment, Sql.Err)
-    decode_comment = |row| Ok({
-        id: row.i64("id")?,
-        createdAt: row.str("created_at")?,
-        updatedAt: row.str("updated_at")?,
-        body: row.str("body")?,
-        author: Db.decode_profile(row)?,
-    })
+    ## Map a generated comment row to the JSON-shaped comment (nest the author).
+    comment_from_row = |row| {
+        id: row.id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        body: row.body,
+        author: { username: row.username, bio: row.bio, image: row.image, following: row.following },
+    }
 
     ## One comment's id + author for the delete-comment authorization check;
     ## scoped to the article so a wrong-article id 404s.
+    ## @params comment_id: I64, article_id: I64
+    ## @sql one
+    comment_meta_q =
+        \\SELECT c.id, c.author_id FROM comments c WHERE c.id = :comment_id AND c.article_id = :article_id
+
     load_comment! = |ctx, db, comment_id, article_id| {
-        sql = "SELECT c.id, c.author_id FROM comments c WHERE c.id = ? AND c.article_id = ?"
-        rows = Sql.query!(ctx, db, sql, [Integer(comment_id), Integer(article_id)])
-            ? |message| Api.error(500, "db error: ${message}")
-        row = Sql.first(rows) ? |_| Api.not_found("comment")
-        id = row.i64("id") ? |_| Api.error(500, "corrupt comment row")
-        author_id = row.i64("author_id") ? |_| Api.error(500, "corrupt comment row")
-        Ok({ id: id, author_id: author_id })
+        row = DbGen.comment_meta_q!(ctx, db, { comment_id: comment_id, article_id: article_id }) ? |err| match err {
+            NoRows => Api.not_found("comment")
+            DbErr(message) => Api.error(500, "db error: ${message}")
+        }
+        Ok(row)
     }
+
+    ## @sql
+    all_tags_q =
+        \\SELECT DISTINCT tag FROM article_tags ORDER BY tag
 
     ## Every tag in use, sorted.
     all_tags! = |ctx, db| {
-        rows = Sql.query!(ctx, db, "SELECT DISTINCT tag FROM article_tags ORDER BY tag", [])
-            ? |message| Api.error(500, "db error: ${message}")
-        rows.fold(Ok([]), |acc, row| {
-            match acc {
-                Err(response) => Err(response)
-                Ok(tags) => match row.str("tag") {
-                    Ok(tag) => Ok(tags.append(tag))
-                    Err(_) => Err(Api.error(500, "corrupt tag row"))
-                }
-            }
-        })
+        rows = DbGen.all_tags_q!(ctx, db, {}) ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        Ok(rows.map(|row| row.tag))
     }
 }
 
@@ -303,8 +330,12 @@ Db := [].{
 ## caller supplies the COMPLETE count statement (its FROM clause varies by
 ## filter); both queries take `where_params` in the same order.
 run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit, offset| {
+    # `article_select` now names its viewer parameter `:viewer` (SQLite reuses
+    # the one index for both the favorited and following flags), so the leading
+    # bind list carries a single viewer id; the positional `?` of `page_where`
+    # and LIMIT/OFFSET follow it in order.
     list_sql = "${Db.article_select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
-    list_params = [Integer(viewer), Integer(viewer)]
+    list_params = [Integer(viewer)]
         .concat(where_params)
         .append(Integer(limit))
         .append(Integer(offset))
