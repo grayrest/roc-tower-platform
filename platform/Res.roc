@@ -75,6 +75,17 @@ Res := [].{
         effects: [],
     }
 
+    ## A response whose body is a preformed JSON document (from an `@sql json`
+    ## reader or `Sql.query_json!`), written verbatim — no `Json.to_str`
+    ## re-encoding. The document already carries its full shape/envelope.
+    json_raw : U16, RawJson -> Res.Response
+    json_raw = |status, doc| {
+        status: status,
+        headers: [{ name: "content-type", value: "application/json" }],
+        body: RawJson.to_utf8(doc),
+        effects: [],
+    }
+
     ## A response with an explicit content type and raw body bytes.
     bytes : U16, Str, List(U8) -> Res.Response
     bytes = |status, content_type, body| {
@@ -210,6 +221,7 @@ Res := [].{
 }
 
 import Host
+import RawJson
 
 expect {
     response = Res.text(200, "hi")
@@ -229,6 +241,16 @@ expect {
     value = { id: 7, name: "x" }
     response = Res.json(201, value)
     Str.from_utf8_lossy(response.body) == "{\"id\":7,\"name\":\"x\"}"
+}
+
+## json_raw writes the preformed document verbatim as an application/json body
+expect {
+    response = Res.json_raw(200, RawJson.from("{\"tags\":[\"x\"]}"))
+    Str.from_utf8_lossy(response.body) == "{\"tags\":[\"x\"]}"
+        and (match response.headers.first() {
+            Ok(header) => header.value == "application/json"
+            Err(_) => False
+        })
 }
 
 expect {

@@ -34,6 +34,15 @@ all_profiles =
 ## @sql
 insert_user =
     \\INSERT INTO users (id, username) VALUES (:id, :username)
+
+## @params username: Str
+## @sql json one
+profile_doc =
+    \\SELECT json_object('username', u.username, 'bio', u.bio) FROM users u WHERE u.username = :username
+
+## @sql json
+all_usernames_doc =
+    \\SELECT json_object('usernames', COALESCE((SELECT json_group_array(username) FROM (SELECT username FROM users ORDER BY username)), json('[]')))
 "#;
 
 fn scan_ok() -> Scanned {
@@ -90,6 +99,25 @@ fn emits_one_reader_with_nullable_and_bool() {
     // imports pulled in on demand.
     assert!(module.contains("import pf.NullableStr"));
     assert!(module.contains("import pf.JsonBool"));
+}
+
+#[test]
+fn emits_json_readers_as_rawjson_passthrough() {
+    let module = emit_module("Db", &scan_ok()).expect("emit");
+    // `json one`: RawJson return with a NoRows miss, reads column 0 verbatim.
+    assert!(module
+        .contains("profile_doc! : U64, Str, { username : Str } => Try(RawJson, [NoRows, DbErr(Str)])"));
+    assert!(module.contains("Ok(RawJson.from(Host.sql_col_str!(handle, 0)))"));
+    assert!(module.contains("read_profile_doc! : U64 => Try(RawJson, [NoRows, DbErr(Str)])"));
+    // plain `json` aggregate: RawJson, no NoRows, no `_params` when param-free.
+    assert!(module.contains("all_usernames_doc! : U64, Str, {} => Try(RawJson, [DbErr(Str)])"));
+    assert!(module.contains("all_usernames_doc! = |ctx, db, _params|"));
+    // the doc is opaque: no per-column typed record/reader was emitted for it
+    // (only the SQL string carries `json_object`, inside sql_begin!).
+    assert!(!module.contains("usernames : "));
+    // finishes on every path; imports RawJson on demand.
+    assert!(module.contains("Host.sql_finish!(handle)"));
+    assert!(module.contains("import pf.RawJson"));
 }
 
 #[test]
