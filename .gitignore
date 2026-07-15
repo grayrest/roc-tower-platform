@@ -3,3 +3,7 @@
 /main
 # sqlgen check writes regenerated modules here to diff against the committed ones.
 /target/sqlgen-check
+# Benchmark artifacts (regenerated locally; see bench/README.md).
+/bench/seeded.db
+/bench/seeded.db-*
+/bench/srv-*

@@ -217,6 +217,54 @@ mod tests {
         drop(bytes); // frees the global block once; no abort => no double free
         crate::arena::uninstall();
     }
+
+    /// Whichever of {ctx guard, response body owner} drops last is the one that
+    /// frees the arena region. Both orderings must free it exactly once with no
+    /// chunk left behind.
+    fn arena_freed_after_last_holder(reaper_first: bool) {
+        use crate::arena::{CHUNK_ALLOCS, CHUNK_FREES};
+        let _g = test_serial();
+        let a0 = CHUNK_ALLOCS.load(Ordering::Relaxed);
+        let f0 = CHUNK_FREES.load(Ordering::Relaxed);
+
+        let arena = RequestArena::new();
+        crate::arena::install(arena.clone());
+        let (list, _) = arena_body(32 * 1024);
+        let body = unsafe { ResponseBody::from_roc(list, arena.clone()) };
+        assert!(matches!(body, ResponseBody::Roc(_)), "test needs the borrow path");
+        let ctx = crate::effects::mint_ctx(arena.clone());
+        crate::arena::uninstall();
+
+        // Drop the dispatch-local reference; now only the ctx guard and the body
+        // owner keep the region alive.
+        let weak = Arc::downgrade(&arena);
+        drop(arena);
+
+        let (first_holder_alive, second): (Box<dyn FnOnce()>, Box<dyn FnOnce()>) = if reaper_first {
+            (Box::new(move || drop(ctx)), Box::new(move || drop(body)))
+        } else {
+            (Box::new(move || drop(body)), Box::new(move || drop(ctx)))
+        };
+        first_holder_alive();
+        assert!(weak.upgrade().is_some(), "region freed before the last holder dropped");
+        second();
+        assert!(weak.upgrade().is_none(), "region not freed after the last holder dropped");
+
+        let allocs = CHUNK_ALLOCS.load(Ordering::Relaxed) - a0;
+        let frees = CHUNK_FREES.load(Ordering::Relaxed) - f0;
+        assert!(allocs >= 1);
+        assert_eq!(allocs, frees, "arena leaked chunks");
+    }
+
+    #[test]
+    fn arena_freed_when_ctx_guard_drops_before_body_owner() {
+        arena_freed_after_last_holder(true);
+    }
+
+    #[test]
+    fn arena_freed_when_body_owner_drops_before_ctx_guard() {
+        arena_freed_after_last_holder(false);
+    }
 }
 
 pub struct AppBody(UnsyncBoxBody<Bytes, BoxError>);
