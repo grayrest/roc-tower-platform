@@ -32,15 +32,22 @@
 //!     global allocator turns into loud crashes.
 //!
 //! # Concurrency
-//! An `Arc<RequestArena>` is genuinely shared across threads (the blocking
-//! handler thread allocates; the ctx-guard reaper and the response body owner
-//! hold references and race to perform the final drop). Interior state is
-//! therefore behind a `Mutex` so the type is honestly `Sync`; allocation only
-//! ever happens on the single installing thread, so the lock is uncontended.
+//! An `Arc<RequestArena>` is shared across threads (the blocking handler thread
+//! allocates; the ctx-guard reaper and the response body owner hold references
+//! and race to perform the final drop), so the type must be `Sync`. But the
+//! mutable bump state is only ever *touched* on the single thread that installed
+//! the arena in TLS: allocation is TLS-gated, and `reserved_bytes` runs on that
+//! same thread during the response handoff. The other `Arc` holders keep the
+//! arena alive and read raw chunk bytes (never the bump state). The only
+//! off-thread access is the final `Drop`, exclusive by construction (the last
+//! `Arc` reference, ordered by the refcount's release/acquire). So the state
+//! lives in an `UnsafeCell` with no lock — there is no concurrent access to
+//! synchronize. A debug-only `ThreadId` check turns any future off-thread
+//! allocation into a loud test failure instead of silent UB.
 
 use core::ffi::c_void;
 use std::alloc::Layout;
-use std::cell::RefCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::abi;
@@ -185,6 +192,10 @@ struct ArenaState {
     last_user: *mut u8,
     /// Bump offset immediately after `last_user`'s user data.
     last_end: usize,
+    /// Debug guard: the thread that first touched the bump state. Every live
+    /// access must be on it; the off-thread, exclusive `Drop` is exempt.
+    #[cfg(debug_assertions)]
+    owner: Option<std::thread::ThreadId>,
 }
 
 impl ArenaState {
@@ -224,20 +235,24 @@ impl ArenaState {
 /// A request-scoped bump arena. Shared via `Arc`; released in bulk when the last
 /// reference drops.
 pub struct RequestArena {
-    state: Mutex<ArenaState>,
+    state: UnsafeCell<ArenaState>,
 }
 
-// SAFETY: all interior mutation goes through the `Mutex`, and the raw chunk
-// pointers are owned solely by this arena (allocated in `grow`, freed once in
-// `Drop`). No chunk pointer escapes except as user pointers into arena memory,
-// whose lifetime is bounded by the arena's own.
+// SAFETY: `Send` — the raw chunk pointers are owned solely by this arena
+// (allocated in `grow`, recycled/freed once in `Drop`); none escapes except as
+// a user pointer into arena memory whose lifetime is bounded by the arena's.
+// `Sync` — the `UnsafeCell` bump state is only ever accessed on the single
+// install thread (allocation + `reserved_bytes`); the sole off-thread access is
+// the exclusive final `Drop`. There is no concurrent access, so no lock is
+// needed (see the module `# Concurrency` note; a debug `ThreadId` check enforces
+// the single-thread invariant in tests).
 unsafe impl Send for RequestArena {}
 unsafe impl Sync for RequestArena {}
 
 impl RequestArena {
     pub fn new() -> Arc<Self> {
         Arc::new(RequestArena {
-            state: Mutex::new(ArenaState {
+            state: UnsafeCell::new(ArenaState {
                 chunks: Vec::new(),
                 cur: core::ptr::null_mut(),
                 cur_cap: 0,
@@ -245,8 +260,34 @@ impl RequestArena {
                 total: 0,
                 last_user: core::ptr::null_mut(),
                 last_end: 0,
+                #[cfg(debug_assertions)]
+                owner: None,
             }),
         })
+    }
+
+    /// Exclusive access to the bump state, without a lock. Sound because the
+    /// state is only ever touched on the single install thread (see the type's
+    /// `Send`/`Sync` note); `Drop` — the only off-thread access — is exclusive
+    /// and uses `UnsafeCell::get_mut` directly rather than this.
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn state_mut(&self) -> &mut ArenaState {
+        // SAFETY: single-thread-mutation invariant; no returned `&mut` is
+        // aliased (each call's borrow ends before the next).
+        let s = unsafe { &mut *self.state.get() };
+        #[cfg(debug_assertions)]
+        {
+            let me = std::thread::current().id();
+            match s.owner {
+                None => s.owner = Some(me),
+                Some(owner) => debug_assert_eq!(
+                    owner, me,
+                    "RequestArena touched off its install thread — single-thread invariant violated",
+                ),
+            }
+        }
+        s
     }
 
     /// Bump-allocate `length` bytes at `alignment`, writing a tagged header.
@@ -255,12 +296,13 @@ impl RequestArena {
     fn try_alloc(&self, length: usize, alignment: usize) -> Option<*mut c_void> {
         let hs = header_size(alignment);
         let total = length.checked_add(hs)?;
-        let mut s = self.state.lock().expect("arena mutex poisoned");
+        // SAFETY: single-thread invariant (see `state_mut`).
+        let s = unsafe { self.state_mut() };
         if s.total >= ARENA_CAP {
             return None;
         }
         // Try the current chunk; grow if the aligned user block doesn't fit.
-        let user_ptr = self.carve(&mut s, total, hs, alignment)?;
+        let user_ptr = Self::carve(s, total, hs, alignment)?;
         // SAFETY: `user_ptr` points `hs` bytes into freshly reserved chunk
         // space; the header word sits at `user_ptr - WORD`, inside the reservation.
         unsafe { write_size_word(user_ptr, total | TAG_ARENA) };
@@ -271,7 +313,6 @@ impl RequestArena {
     /// pointer is `alignment`-aligned, updating bump bookkeeping. `hs` is the
     /// header size. Returns the user pointer.
     fn carve(
-        &self,
         s: &mut ArenaState,
         total: usize,
         hs: usize,
@@ -313,7 +354,8 @@ impl RequestArena {
     ) -> Option<*mut c_void> {
         let hs = header_size(alignment);
         let total = new_length.checked_add(hs)?;
-        let mut s = self.state.lock().expect("arena mutex poisoned");
+        // SAFETY: single-thread invariant (see `state_mut`).
+        let s = unsafe { self.state_mut() };
         if ptr != s.last_user || s.cur.is_null() {
             return None;
         }
@@ -337,13 +379,17 @@ impl RequestArena {
     /// Total chunk bytes this arena has reserved — an upper bound on the memory
     /// a zero-copy response body pins by borrowing from it.
     pub fn reserved_bytes(&self) -> usize {
-        self.state.lock().expect("arena mutex poisoned").total
+        // SAFETY: called on the install thread during the response handoff (see
+        // the type's concurrency note).
+        unsafe { self.state_mut().total }
     }
 }
 
 impl Drop for RequestArena {
     fn drop(&mut self) {
-        let s = self.state.get_mut().expect("arena mutex poisoned");
+        // `&mut self` is exclusive — the last `Arc` reference is dropping — so
+        // `UnsafeCell::get_mut` needs no lock and races nothing.
+        let s = self.state.get_mut();
         for chunk in s.chunks.drain(..) {
             // The last `Arc` drop runs this, so no user pointer into the chunk
             // is live: a standard chunk can go back to the warm pool for the

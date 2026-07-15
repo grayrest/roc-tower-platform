@@ -64,10 +64,21 @@ Roc *compute* is only ~11%. SQLite is ~a quarter.
    now seeds its accumulator with `List.with_capacity(List.len(rows))`, so the
    per-row `append` never reallocates. (Folded into the same A/B as #2.)
 
-Both #2 and #3 are strictly-less-work and mechanism-confirmed; the throughput
-gain is real but small (the response bytes were never the bottleneck — memory
-churn and the DB were). The `Json.to_utf8` builtin benefits every Roc program
-that serializes a JSON response.
+4. **Arena state `Mutex` — REMOVED.** After #1–#3, a re-profile put the frontier
+   at SQLite (~39%) with a residual ~6% in mutex/TLS — the arena locked its state
+   on *every* `roc_alloc`. Audit: the state is only ever touched on the single
+   install thread (allocation + `reserved_bytes`); `Drop` is the sole off-thread
+   access and exclusive by construction (last `Arc` ref). Replaced
+   `Mutex<ArenaState>` with `UnsafeCell<ArenaState>` + a debug `ThreadId` guard
+   (off-thread allocation → loud test failure, zero release cost). Sample:
+   `pthread_mutex` self-time **4.9% → 2.7%** on list (residual = cursor-registry /
+   chunk-pool / SQLite-pool locks). 154/154 in release AND against a debug host
+   (guard live, never fired across 154 requests). Throughput within the ±5% noise.
+
+Both #2 and #3 are strictly-less-work and mechanism-confirmed; #4 removes a lock
+from the hottest path. Throughput gains are real but small (the response bytes
+and per-alloc lock were never the bottleneck — memory churn and the DB are). The
+`Json.to_utf8` builtin benefits every Roc program that serializes a JSON response.
 
 ## Reproducing
 
