@@ -76,13 +76,34 @@ measure here, and what the design was also chosen for:
   `@sql json` passthrough) is where the bump would earn its keep — not
   exercised by the current RealWorld reads.
 
-Isolating and shrinking the fixed scaffolding (e.g. reusing a per-blocking-
-thread arena across requests instead of minting one each time, so `Arc`/`Mutex`
-setup amortizes) is the obvious follow-up if the arena is kept. That is a
-design change the plan did not name, so it is a decision to raise, not to make
-unilaterally.
-
 Leak/soundness is settled independently of throughput: 25 host unit tests
 (arena tag/no-op-dealloc/bulk-free, align-16 realloc, foreign-thread teardown,
 double-free canary, both guard-drop orderings) plus 154/154 RealWorld
 conformance under the live arena.
+
+## Postscript: the amortization experiment (and why it was dropped)
+
+The "fixed per-request scaffolding" hypothesis above was **tested and did not
+hold.** A per-worker reuse variant was built — cache one arena per async
+worker, rewind its bump state (keeping a warm backing chunk) instead of minting
+a fresh `Arc<RequestArena>` + chunk each request, with `Arc::get_mut` proving
+the arena is unreferenced (no in-flight body borrow) before the rewind. It was
+correct and 154/154 conformant.
+
+A direct A/B of amortized vs non-amortized arena (order-balanced, median of 6)
+showed **no measurable difference**:
+
+| endpoint | non-amort rps | amortized rps | Δ |
+|----------|--------------:|--------------:|--:|
+| byslug   | 57315 | 57188 | −0.2% |
+| profile  | 67132 | 67535 | +0.6% |
+| list     |  6197 |  6396 | +3.2% |
+| comments | 19733 | 19979 | +1.2% |
+
+— and the per-pass distributions overlapped almost completely (on `list` the
+*non-amortized* build held both the slowest and fastest samples). So the
+scaffolding was never the lever; the endpoints are simply SQLite-bound and no
+allocator change is resolvable against that at this precision. The amortization
+was reverted (commit history stops at A4): it added a per-worker reuse cache and
+`Arc::get_mut` reasoning for zero measurable benefit. The mint-per-request arena
+stands as B4's substrate; the throughput question is settled as *neutral*.

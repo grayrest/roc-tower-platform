@@ -251,10 +251,12 @@ the materialized-views builder flag is real.
 - [x] A1 arena core (arena.rs + lib.rs; 9 unit tests) — 6f56e18
 - [x] A2 lifecycle wiring (router install/catch_unwind, CtxGuard owns arena) — d8f3c46
 - [x] A3 zero-copy response handoff (ResponseBody borrow via Bytes::from_owner) — 154/154 green
-- [x] A4 gates + committed bench harness + docs — bench: **~2.5% end-to-end
-  regression** on the SQLite-bound RealWorld reads (per-alloc mutex not offset
-  by malloc savings on these paths); see notes/2026-07-15-arena-bench.md. Open
-  question surfaced to user before B.
+- [x] A4 gates + committed bench harness + docs — bench: arena is **perf-neutral**
+  on the SQLite-bound RealWorld reads (session medians wander ±few %, distributions
+  overlap). A per-worker amortization variant was built + A/B-tested and showed
+  **no measurable gain** (SQLite-bound, not allocation-bound), so it was reverted;
+  the mint-per-request arena stands as B4's substrate. See
+  notes/2026-07-15-arena-bench.md. User decision: keep simple arena, proceed to B0.
 - [ ] B0 turso spike (GATE)
 - [ ] B1 pool + write effects (incl. effect.rs)
 - [ ] B2 cursor FFI
