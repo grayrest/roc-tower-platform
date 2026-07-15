@@ -27,7 +27,12 @@ So Phase 1 (prune spurious deps) is a clean, do-it-now correctness/efficiency
 win. Phase 2 (entity tokens) is specced but **gated** — build only if a
 write-heavy single-entity workload justifies the write-side surface.
 
-## Phase 1 — prune the spurious `follows` dependency (do now)
+## Phase 1 — prune the spurious `follows` dependency (DONE 2026-07-15)
+
+> Shipped: `Db.roc` `*_read_tables` hand-declared without `follows`; committed a
+> durable regression test `bench/cache-check.sh` covering ETag/304, tag_list /
+> users-bio / favorites+trigger-cascade invalidation, and follows-pruning
+> soundness. 154/154 both engines; cache-check PASS both engines.
 
 **Why it's spurious.** The cache only stores **anonymous** responses (authed
 requests carry `authorization` and bypass it). For an anonymous viewer the

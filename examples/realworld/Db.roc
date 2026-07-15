@@ -51,28 +51,32 @@ Db := [].{
     of = |req| Box.unbox(req.model).db
 
     # --- response-cache dependency sets (see `Res.cacheable`) ---------------
-    # Each is the set of tables whose mutation must purge the cached response.
-    # sqlgen fills these in for generated readers (`DbGen.*_tables`, subqueries
-    # included); the dynamic list/feed reads (no generated query) declare theirs
-    # by hand. NOTE: the article reads splice the MATERIALIZED `tag_list` column,
-    # so sqlgen sees only the physical `articles` read — `article_tags` (the
-    # trigger source that feeds `tag_list`) is added explicitly so a tag edit
-    # invalidates the article.
+    # The set of tables whose mutation must purge the cached response. These are
+    # HAND-DECLARED rather than taken straight from `DbGen.*_tables` because the
+    # cache only stores ANONYMOUS responses (authed requests carry `authorization`
+    # and bypass it), and for an anonymous viewer the `favorited`/`following`
+    # flags are constant-false: the reads touch `follows` (and the viewer's
+    # `favorites` rows) but the RESULT never varies with those tables, so `follows`
+    # can't change a cached body. Dropping it stops every follow/unfollow from
+    # needlessly purging most of the cache. `favorites`/`article_tags` STAY — they
+    # feed the materialized `favorites_count`/`tag_list` columns the anon response
+    # DOES show, maintained by triggers, so a favorite or tag write must invalidate.
+    # (If authed caching is ever added, `follows` becomes a real dep again.)
 
-    ## Tables an article read (by-slug) depends on, incl. the materialized-tag source.
-    article_read_tables = DbGen.article_by_slug_q_tables.concat(["article_tags"])
+    ## Tables a by-slug article read depends on (drops `follows`; keeps the
+    ## materialized-column sources `favorites` + `article_tags`).
+    article_read_tables = ["articles", "users", "favorites", "article_tags"]
 
-    ## Tables the list/feed page depends on — the dynamic `Sql.query!` path, so
-    ## declared by hand (over-declared is safe: it only over-purges).
-    list_read_tables = ["articles", "users", "favorites", "follows", "article_tags"]
+    ## Tables the list/feed page depends on — the dynamic `Sql.query!` path.
+    list_read_tables = ["articles", "users", "favorites", "article_tags"]
 
-    ## Tables a profile read depends on (generated).
-    profile_read_tables = DbGen.profile_by_username_q_tables
+    ## Tables a profile read depends on (only `users`; anon `following` is false).
+    profile_read_tables = ["users"]
 
-    ## Tables a comments read depends on (generated).
-    comment_read_tables = DbGen.comments_q_tables
+    ## Tables a comments read depends on (drops `follows`).
+    comment_read_tables = ["comments", "users"]
 
-    ## Tables the tag list depends on (generated).
+    ## Tables the tag list depends on.
     tags_read_tables = DbGen.tags_q_tables
 
     ## A NullableStr as a SQL parameter (Val -> TEXT, Null -> NULL).
