@@ -2,7 +2,6 @@ import pf.Req
 import pf.Res
 import pf.Cofx
 import pf.JsonBool
-import pf.RawJson
 import Api
 import Auth
 import Db
@@ -78,16 +77,6 @@ Articles := [].{
         ->Cofx.and_then(|slug, req| {
             viewer = Auth.optional_user!(req)?
             Db.load_article!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
-        })
-
-    ## Coeffect: the article at {slug} as a preformed JSON document (GET's
-    ## whole input), assembled in SQL. 404 on a miss. The mutate flows
-    ## (favorite/unfavorite/update) still take the TYPED `loaded_article!` —
-    ## they compute the response from the article's fields.
-    article_json! = Req.param("slug")
-        ->Cofx.and_then(|slug, req| {
-            viewer = Auth.optional_user!(req)?
-            Db.load_article_json!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
         })
 
     ## Coeffect: the article at {slug}, which the AUTHENTICATED viewer must
@@ -193,21 +182,12 @@ Articles := [].{
         })
     }
 
-    ## `get` bound to its coeffect. `Typed` reads a typed row and serializes
-    ## `{article}` in Roc; `Json` streams the SQL-assembled document verbatim.
-    get_h! =
-        if Api.read_mode == Typed
-            Box.box(Cofx.with1(Articles.loaded_article!, Articles.get_typed))
-        else
-            Box.box(Cofx.with1(Articles.article_json!, Articles.get))
+    ## `get` bound to the typed `loaded_article!` read.
+    get_h! = Box.box(Cofx.with1(Articles.loaded_article!, Articles.get))
 
-    ## PURE handler (Json mode): the SQL-assembled article envelope, verbatim.
-    get : RawJson -> Res.Response
-    get = |doc| Res.json_raw(200, doc)
-
-    ## PURE handler (Typed mode): serialize the typed article in Roc.
-    get_typed : { id : I64, author_id : I64, article : Db.Article } -> Res.Response
-    get_typed = |loaded| Res.json(200, { article: loaded.article })
+    ## PURE handler: serialize the typed article as `{article}` in Roc.
+    get : { id : I64, author_id : I64, article : Db.Article } -> Res.Response
+    get = |loaded| Res.json(200, { article: loaded.article })
 
     ## `update` bound to its coeffects (owner gate, patch, instant).
     update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch, Req.now!, Articles.update))
@@ -282,12 +262,6 @@ Articles := [].{
             Db.list_articles!(req.ctx, Db.of(req), Auth.viewer_id(viewer), Articles.list_args(input))
         })
 
-    list_page_typed! = Articles.list_filters
-        ->Cofx.and_then(|input, req| {
-            viewer = Auth.optional_user!(req)?
-            Db.list_articles_typed!(req.ctx, Db.of(req), Auth.viewer_id(viewer), Articles.list_args(input))
-        })
-
     ## PURE: the filters+bounds coeffect value to the Db list-args record.
     list_args = |input| {
         tag: input.filters.tag,
@@ -304,35 +278,15 @@ Articles := [].{
             Db.feed_articles!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
         })
 
-    feed_page_typed! = Articles.bounds
-        ->Cofx.and_then(|page_bounds, req| {
-            user = Auth.current_user!(req)?
-            Db.feed_articles_typed!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
-        })
-
     ## `page` bound to each of its two sources (global list, viewer's feed).
-    ## `Typed` serializes the `{articles, articlesCount}` envelope in Roc;
-    ## `Json` streams the SQL-assembled document verbatim.
-    list_h! =
-        if Api.read_mode == Typed
-            Box.box(Cofx.with1(Articles.list_page_typed!, Articles.page_typed))
-        else
-            Box.box(Cofx.with1(Articles.list_page!, Articles.page))
+    list_h! = Box.box(Cofx.with1(Articles.list_page!, Articles.page))
 
-    feed_h! =
-        if Api.read_mode == Typed
-            Box.box(Cofx.with1(Articles.feed_page_typed!, Articles.page_typed))
-        else
-            Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
+    feed_h! = Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
 
-    ## PURE handler (Json mode): the SQL-assembled page envelope (summaries
-    ## already OMIT the body the spec forbids in list items), verbatim.
-    page : RawJson -> Res.Response
-    page = |doc| Res.json_raw(200, doc)
-
-    ## PURE handler (Typed mode): serialize the typed page envelope in Roc.
-    page_typed : { articles : List(Db.ArticleSummary), articlesCount : I64 } -> Res.Response
-    page_typed = |data| Res.json(200, data)
+    ## PURE handler: serialize the typed page envelope (summaries OMIT the body
+    ## the spec forbids in list items) as `{articles, articlesCount}` in Roc.
+    page : { articles : List(Db.ArticleSummary), articlesCount : I64 } -> Res.Response
+    page = |data| Res.json(200, data)
 
     ## `favorite` bound to its coeffects.
     favorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite))

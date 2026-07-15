@@ -1,7 +1,6 @@
 import pf.Req
 import pf.Res
 import pf.Cofx
-import pf.RawJson
 import Api
 import Auth
 import Db
@@ -64,36 +63,20 @@ Comments := [].{
             })
     }
 
-    ## Coeffect: the target article's comments as the (possibly anonymous)
-    ## viewer sees them (following flags) — SQL-assembled JSON document.
+    ## Coeffect: the target article's comments as TYPED rows, as the (possibly
+    ## anonymous) viewer sees them (following flags); Roc shapes the envelope.
     article_comments! = Comments.article_id!
-        ->Cofx.and_then(|article_id, req| {
-            viewer = Auth.optional_user!(req)?
-            Db.load_comments_json!(req.ctx, Db.of(req), Auth.viewer_id(viewer), article_id)
-        })
-
-    ## Coeffect: the same comments as TYPED rows (Roc shapes the envelope).
-    article_comments_typed! = Comments.article_id!
         ->Cofx.and_then(|article_id, req| {
             viewer = Auth.optional_user!(req)?
             Db.load_comments!(req.ctx, Db.of(req), Auth.viewer_id(viewer), article_id)
         })
 
-    ## `list` bound to its coeffect. `Typed` serializes `{comments}` in Roc;
-    ## `Json` streams the SQL-assembled document verbatim.
-    list_h! =
-        if Api.read_mode == Typed
-            Box.box(Cofx.with1(Comments.article_comments_typed!, Comments.list_typed))
-        else
-            Box.box(Cofx.with1(Comments.article_comments!, Comments.list))
+    ## `list` bound to its coeffect.
+    list_h! = Box.box(Cofx.with1(Comments.article_comments!, Comments.list))
 
-    ## PURE handler (Json mode): the SQL-assembled comments envelope, verbatim.
-    list : RawJson -> Res.Response
-    list = |doc| Res.json_raw(200, doc)
-
-    ## PURE handler (Typed mode): serialize the typed comment list in Roc.
-    list_typed : List(Db.Comment) -> Res.Response
-    list_typed = |comments| Res.json(200, { comments: comments })
+    ## PURE handler: serialize the typed comment list as `{comments}` in Roc.
+    list : List(Db.Comment) -> Res.Response
+    list = |comments| Res.json(200, { comments: comments })
 
     ## Coeffect: the comment at {slug}/{id}, which the authenticated viewer
     ## must have written — 401 anonymous, 404 unknown article/comment,
