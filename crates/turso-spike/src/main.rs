@@ -625,6 +625,142 @@ fn measure_b4_copy_cost() {
     );
 }
 
+/// Isolate the rsapi wrapper cost from the engine: run article-by-slug via
+/// turso_core DIRECTLY (no per-op Mutex, no rsapi indirection) and compare to
+/// the rsapi path and rusqlite. rusqlite is itself a thin wrapper over SQLite C,
+/// so turso_core-direct-vs-rusqlite is the fairest engine-to-engine number.
+fn measure_engine_vs_wrapper() {
+    use std::num::NonZero;
+    use turso_core::{StepResult, Value as CValue};
+
+    let db = open(":memory:").expect("open");
+    let conn = db.connect().expect("connect");
+    seed(&conn).expect("seed");
+    let sql = article_json_by_slug();
+
+    // rsapi path (what the host backend uses), prepared+reused.
+    let rsapi_ns = {
+        let mut stmt = conn.prepare_single(&sql).expect("prepare");
+        let mut run = || {
+            stmt.reset().expect("reset");
+            let p = stmt.named_position(":slug").unwrap();
+            stmt.bind_positional(p, Value::build_text("article-a")).unwrap();
+            let p = stmt.named_position(":viewer").unwrap();
+            stmt.bind_positional(p, Value::from_i64(-1)).unwrap();
+            if let TursoStatusCode::Row = stmt.step(None).unwrap() {
+                std::hint::black_box(stmt.row_value(0).unwrap().to_text().map(|s| s.len()));
+            }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..2000 { run(); }
+        t.elapsed().as_nanos() as f64 / 2000.0
+    };
+
+    // turso_core direct (no rsapi Mutex), prepared+reused.
+    let core_db = db.db_core().expect("db_core");
+    let core_conn = turso_core::Database::connect(&core_db).expect("core connect");
+    let core_ns = {
+        let mut stmt = turso_core::Connection::prepare(&core_conn, &sql).expect("prepare");
+        let mut run = || {
+            stmt.reset().unwrap();
+            stmt.bind_at(NonZero::new(1).unwrap(), CValue::from_i64(-1)).unwrap();
+            stmt.bind_at(NonZero::new(2).unwrap(), CValue::build_text("article-a")).unwrap();
+            loop {
+                match stmt.step().unwrap() {
+                    StepResult::Row => {
+                        std::hint::black_box(stmt.row().unwrap().get_value(0).to_text().map(|s| s.len()));
+                        break;
+                    }
+                    StepResult::IO => core_db.io.step().unwrap(),
+                    StepResult::Done => break,
+                    other => panic!("unexpected {other:?}"),
+                }
+            }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..2000 { run(); }
+        t.elapsed().as_nanos() as f64 / 2000.0
+    };
+
+    let rusqlite_ns = bench_rusqlite(2000);
+    println!("  --   rusqlite (C):          {:.2} µs/q", rusqlite_ns / 1000.0);
+    println!("  --   turso via rsapi:       {:.2} µs/q  ({:.2}x rusqlite)", rsapi_ns / 1000.0, rsapi_ns / rusqlite_ns);
+    println!("  --   turso_core direct:     {:.2} µs/q  ({:.2}x rusqlite)", core_ns / 1000.0, core_ns / rusqlite_ns);
+    println!("  --   rsapi wrapper tax:     {:.2} µs/q ({:.0}% of the rsapi path)", (rsapi_ns - core_ns) / 1000.0, (rsapi_ns - core_ns) / rsapi_ns * 100.0);
+}
+
+/// Engine gap on the REALISTIC 5000-row seeded DB (bench/seeded.db), turso_core
+/// direct vs rusqlite, for a simple typed indexed read and the heavy @sql json
+/// read — to see whether the gap is query-shape/data-scale specific.
+fn measure_realistic() {
+    use std::num::NonZero;
+    use turso_core::{StepResult, Value as CValue};
+
+    let path = "bench/seeded.db";
+    if !std::path::Path::new(path).exists() {
+        println!("  --   SKIPPED: {path} missing (run: python3 bench/seed.py bench/seeded.db)");
+        return;
+    }
+    let simple = "SELECT title, description, body, author_id, created_at FROM articles WHERE slug = :slug";
+    let slug = "article-2785";
+
+    let db = open(path).expect("open");
+    let core_db = db.db_core().expect("db_core");
+    let core_conn = turso_core::Database::connect(&core_db).expect("core connect");
+
+    let bench_core = |sql: &str, ncols: usize| -> f64 {
+        let mut stmt = turso_core::Connection::prepare(&core_conn, sql).expect("prepare");
+        let mut run = || {
+            stmt.reset().unwrap();
+            stmt.bind_at(NonZero::new(1).unwrap(), CValue::from_i64(-1)).ok();
+            let slugpos = if sql.contains(":slug") && !sql.contains(":viewer") { 1 } else { 2 };
+            stmt.bind_at(NonZero::new(slugpos).unwrap(), CValue::build_text(slug)).unwrap();
+            loop {
+                match stmt.step().unwrap() {
+                    StepResult::Row => {
+                        for c in 0..ncols { std::hint::black_box(stmt.row().unwrap().get_value(c)); }
+                        break;
+                    }
+                    StepResult::IO => core_db.io.step().unwrap(),
+                    StepResult::Done => break,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..2000 { run(); }
+        t.elapsed().as_nanos() as f64 / 2000.0
+    };
+
+    let rconn = rusqlite::Connection::open(path).expect("rusqlite open");
+    let bench_rusq = |sql: &str, ncols: usize| -> f64 {
+        let mut stmt = rconn.prepare(sql).expect("prepare");
+        let run = |stmt: &mut rusqlite::Statement| {
+            let mut rows = stmt.query(rusqlite::named_params! { ":slug": slug, ":viewer": -1i64 }).expect("q");
+            if let Some(row) = rows.next().expect("row") {
+                for c in 0..ncols { std::hint::black_box(row.get_ref(c).ok()); }
+            }
+        };
+        for _ in 0..200 { run(&mut stmt); }
+        let t = Instant::now();
+        for _ in 0..2000 { run(&mut stmt); }
+        t.elapsed().as_nanos() as f64 / 2000.0
+    };
+
+    // rusqlite named_params errors if a named param is absent from the SQL, so
+    // give the simple query a harmless :viewer no-op for the shared binder.
+    let simple_rusq = "SELECT title, description, body, author_id, created_at FROM articles WHERE slug = :slug AND :viewer = :viewer";
+    let sc = bench_core(simple, 5);
+    let sr = bench_rusq(simple_rusq, 5);
+    let jc = bench_core(&article_json_by_slug(), 1);
+    let jr = bench_rusq(&article_json_by_slug(), 1);
+    println!("  --   simple typed read (5 cols, indexed): turso {:.2}µs  rusqlite {:.2}µs  ({:.2}x)", sc/1000.0, sr/1000.0, sc/sr);
+    println!("  --   @sql json read (heavy):              turso {:.2}µs  rusqlite {:.2}µs  ({:.2}x)", jc/1000.0, jr/1000.0, jc/jr);
+}
+
 fn main() {
     println!("turso {} — B0 coverage + perf spike\n", TursoDatabase::version());
     let mut r = Report { failures: Vec::new() };
@@ -656,6 +792,12 @@ fn main() {
     check_constraint_errors(&mut r);
     println!("\n[microbench vs rusqlite]");
     check_microbench(&mut r);
+
+    println!("\n[engine vs rsapi wrapper: article-by-slug]");
+    measure_engine_vs_wrapper();
+
+    println!("\n[realistic data (5000 rows): simple typed vs @sql json]");
+    measure_realistic();
 
     println!("\n[B4: redundant-copy cost (borrowed vs owned cell read)]");
     measure_b4_copy_cost();

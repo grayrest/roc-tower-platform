@@ -10,12 +10,16 @@ throughput artifact for the API-direction discussion.
 
 ## End-to-end throughput (wrk, order-pooled median of 4 passes)
 
+**All four benchmarked GET endpoints run on `@sql json`** (Phase 7c migrated them
+all), which the B0 note now identifies as turso's *one* weak spot — so these
+numbers reflect turso's worst case, not the typed path.
+
 | endpoint | shape | rusqlite rps | turso rps | slowdown | rusqlite p50 | turso p50 |
 |----------|-------|-------------:|----------:|---------:|-------------:|----------:|
 | byslug   | 1-row `@sql json`   | 58790 | 14428 | **4.07×** | 242µs | 950µs |
-| profile  | 1-row **typed**     | 70499 | 25878 | **2.72×** | 204µs | 584µs |
+| profile  | 1-row `@sql json`   | 70499 | 25878 | **2.72×** | 204µs | 584µs |
 | list     | 20-row `@sql json`  |  6095 |  2935 | **2.08×** | 2065µs | 3930µs |
-| comments | multi-row json      | 19349 | 11079 | **1.75×** | 694µs | 1350µs |
+| comments | multi-row `@sql json` | 19349 | 11079 | **1.75×** | 694µs | 1350µs |
 
 ## Reading
 
@@ -29,13 +33,19 @@ the engine gap:
 
 - **`byslug`** (single `@sql json` query, most DB-dominated) shows the widest
   gap, 4.07× — closest to the raw engine ratio.
-- **`profile`** — the **typed** endpoint, the one that actually exercises the
-  cursor-getter + Roc-record path this experiment is about — is **2.72×**. That
-  is the headline number for "the typed API on Turso": correct, and ~2.7× the
-  cost end-to-end.
+- **`profile`** (also `@sql json`, despite an earlier mislabel here) is 2.72×.
 - **`comments`** (multi-row, most work per request outside the DB) is only
   1.75× — here the HTTP/marshalling fixed cost is the largest share, so the
   engine matters least.
+
+**Caveat that changes the headline:** these are *all* `@sql json` endpoints, and
+the SQL-level measurement (B0 note) shows turso is **at parity with rusqlite on
+simple typed reads** and only ~3.75× on `@sql json`. So the end-to-end gap here
+is turso's json weakness, not the typed cursor path. A **pure-typed** version of
+these endpoints on turso would land far closer to parity — the typed API on
+turso is the *good* case, not the 2.72× one. This is the strongest argument yet
+for the "eliminate the `@sql json` variant" direction: it removes turso's only
+weak spot and would make typed-on-turso ≈ typed-on-rusqlite.
 
 ## For the Roc-devs discussion
 

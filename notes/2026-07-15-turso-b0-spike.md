@@ -13,15 +13,34 @@ stepping mode · macOS aarch64.
 > microbench now refuses to report in a debug build. Everything below is updated
 > to the release figures.
 
-## Verdict
+## Verdict — the gap is `@sql json`-specific, not the engine
 
-**NO-GO on a *wholesale* rusqlite → Turso runtime swap on current perf**, but
-"NO-GO" here means "measurably slower," not "hopeless." Release Turso 0.7.0 is
-**~4.5–5.6× slower than bundled SQLite at the SQL microbench** (fixed per-query
-overhead on tiny data) and **1.75–4× end-to-end** on the realworld app — over
-the pre-committed 1.5× gate, but well within an order of magnitude. Everything
-else Turso does well; the gap is young-engine execution speed, and it is
-narrowing release-over-release.
+The headline correction: on **realistic data (5000 rows), a simple typed indexed
+read is at parity with SQLite (0.97–1.04×)**. Turso is *not* broadly slower. The
+entire gap is the **`@sql json`** query — `json_object`/`json_group_array`/
+`json_patch` + correlated subqueries — where turso's young JSON/subquery
+execution runs **~3.75×** rusqlite.
+
+| release, 5000-row seed, turso_core-direct vs rusqlite | turso | rusqlite | ratio |
+|---|--:|--:|--:|
+| simple typed read (5 indexed columns) | 1.8 µs | 1.8 µs | **1.0× (parity)** |
+| `@sql json` document read | 17.3 µs | 4.6 µs | **3.75×** |
+
+So the earlier "~5×" was a *worst case on both axes*: the heavy JSON query on a
+2-row table (pure fixed overhead). It is real for `@sql json`, but it does **not
+generalize** — the typed path, which is what the platform's query API is really
+about, is competitive today.
+
+**Consequence:** a *wholesale* swap is still not justified while the realworld
+GET endpoints all run on `@sql json` (that's the 1.75–4× end-to-end). But a
+**typed-first** platform on turso would be at parity — which is exactly the
+direction the "eliminate the json variant" question points. Turso is viable; the
+one thing to keep off it is heavy SQL-side JSON assembly.
+
+Ruled out as causes of the gap: debug build (was inflating ~3×, now release);
+MVCC (experimental, off by default); the rsapi wrapper's per-op `Mutex` (~1% —
+`turso_core`-direct is within noise of rsapi); LTO (~8%); encryption feature
+(nil).
 
 ## What passed (Turso 0.7.0 is genuinely capable)
 

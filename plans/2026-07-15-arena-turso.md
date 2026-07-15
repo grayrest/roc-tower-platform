@@ -257,14 +257,16 @@ the materialized-views builder flag is real.
   **no measurable gain** (SQLite-bound, not allocation-bound), so it was reverted;
   the mint-per-request arena stands as B4's substrate. See
   notes/2026-07-15-arena-bench.md. User decision: keep simple arena, proceed to B0.
-- [x] B0 turso spike (GATE) — **NO-GO on a wholesale swap** (not "hopeless").
+- [x] B0 turso spike (GATE) — **the gap is `@sql json`-specific, not the engine.**
   Turso 0.7.0 coverage/correctness/contention/durability/pragmas/constraints all
-  ✅. **Perf, corrected:** the original 8–18× was a **debug-build artifact**
-  (rusqlite's bundled SQLite is -O2 regardless of Rust profile). Release is
-  **~4.5–5.6× at the SQL microbench** (tiny-data fixed overhead) and **1.75–4×
-  end-to-end** — over the 1.5× gate but well within an order of magnitude. LTO
-  ~8%, encryption-off nil. See notes/2026-07-15-turso-b0-spike.md; reproducer at
-  crates/turso-spike (run `--release`).
+  ✅. **Perf, fully corrected:** on realistic 5000-row data (release,
+  turso_core-direct) a **simple typed indexed read is at parity (0.97–1.04×)**;
+  only `@sql json` (json_object/group_array/patch + subqueries) is **~3.75×**.
+  The earlier "8–18×" was a debug artifact (rusqlite bundled SQLite is -O2
+  regardless of profile); the "4.5–5.6×" was the heavy JSON query on a 2-row
+  seed (worst case both axes). Ruled out: MVCC (off), rsapi mutex (~1%), LTO
+  (~8%), encryption (nil). So a **typed-first** platform on turso is viable;
+  only heavy SQL-side JSON assembly is slow. See notes/2026-07-15-turso-b0-spike.md.
 - [x] B1+B2 **implemented anyway** (user chose to press on, as a typed-API-on-Turso
   artifact for the Roc devs). Turso DB backend (turso_db.rs) behind
   `--features turso`, rusqlite still the default. The whole realworld app runs on
