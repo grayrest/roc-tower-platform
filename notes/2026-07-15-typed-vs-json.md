@@ -61,6 +61,49 @@ list through sqlgen) would very likely flip `list` to a win too.
 - Net: the typed path is viable as the single API surface today, with one known
   optimization (positional dynamic reads) standing between it and a clean sweep.
 
+## Turso (same A/B, `--features turso`)
+
+Same seeded DB, same 2-pass order-balanced method, turso backend:
+
+| endpoint | shape | typed rps | json rps | Δ rps | typed p50 | json p50 |
+|----------|-------|----------:|---------:|------:|----------:|---------:|
+| byslug   | 1-row single object | 15285 | 14281 | **+7.0%** | 0.91ms | 0.95ms |
+| profile  | 1-row single object | 26857 | 25780 | **+4.2%** | 557µs | 580µs |
+| comments | multi-row aggregate, positional | 11786 | 10704 | **+10.1%** | 1.26ms | 1.38ms |
+| tags     | flat aggregate array | 3186 | 3054 | **+4.3%** | 3.52ms | 3.61ms |
+| list     | 20-row aggregate, by-name | 2496 | 2689 | **−7.2%** | 4.66ms | 4.30ms |
+
+### Reading — typed is a *modest, uniform* win on turso, not a dramatic one
+
+Two things differ from rusqlite:
+
+1. **Typed wins even the single-object endpoints (+4–7%).** rusqlite was at
+   parity there; turso is not. This is turso's known `@sql json`-specific
+   weakness (the B0 spike: ~3.75× at the SQL level) showing through even on a
+   one-object `json_object` — Roc's encoder beats turso's JSON builder.
+2. **The `comments` mega-win collapses from +51% to +10%.** Counterintuitive if
+   turso's JSON engine is *the* weak spot — but the typed path reads every cell
+   through turso's **cursor FFI** (`row_value` → owned `Value` → RocStr), and
+   turso's per-cell extraction is itself costly at volume. So on turso, moving a
+   multi-row aggregate from JSON-assembly to typed-read trades one slow turso
+   path (JSON) for another (per-cell cursor reads) — still a net win, but a small
+   one. On rusqlite the typed read is nearly free, so the full aggregate saving
+   lands.
+
+`list` still loses (−7%, same by-name `Sql.query!` overhead as on rusqlite,
+here compounded by turso's per-cell cost).
+
+### Both engines, one sentence
+
+- **rusqlite:** typed is a *big* win on the heavy fast-read aggregate
+  (comments +51%), parity on single objects/tags, −17% on the by-name list.
+- **turso:** typed is a *small* win almost everywhere (+4–10%), −7% on the
+  by-name list.
+- The **only** endpoint that regresses on *either* engine is `list`, and its
+  cause is the platform's by-name dynamic read — not Roc serialization. Fixing
+  that (positional `Sql.Row` reads) is the one thing between the typed path and
+  an unconditional win on both engines.
+
 ## Reproducing
 
 ```sh
