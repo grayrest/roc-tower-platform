@@ -52,10 +52,22 @@ Roc *compute* is only ~11%. SQLite is ~a quarter.
    **list throughput +30%** (byslug +1.7%, comments flat, 154/154). This reverses
    the earlier "amortization = no gain" verdict, which was measured on the
    DB-bound `@sql json` workload. Now **default-on**.
-2. **~5% lossy UTF-8 re-validation** on DB text that is already valid UTF-8 —
-   the RocStr build / Json encode re-scans it. Skippable. (Not yet done.)
-3. **`RocList.reallocate` from the fold-append** building the 20-item list —
-   `List.with_capacity` would cut regrow/copy. (Not yet done.)
+2. **~5% lossy UTF-8 re-validation** — **FIXED.** `Json.to_str` built the
+   encoder's `List(U8)` then `Str.from_utf8_lossy(output)`, and `Res.json` did
+   `.to_utf8()` to get bytes back — re-scanning already-valid UTF-8 and
+   round-tripping. Added a `Json.to_utf8` builtin (roc compiler) that returns the
+   encoder bytes directly; `Res.json` / `Res.Fx.json` use it. Re-sampled: lossy
+   UTF-8 self-time **~5% → ~0.2%**. Throughput translation is modest and noisy
+   (server not fully CPU-bound under load): comments **+7%**, list/tags +3–5%,
+   single-object bodies neutral (in the ±6–11% run-to-run band).
+3. **`RocList.reallocate` from the fold-append** — **FIXED.** The list-page fold
+   now seeds its accumulator with `List.with_capacity(List.len(rows))`, so the
+   per-row `append` never reallocates. (Folded into the same A/B as #2.)
+
+Both #2 and #3 are strictly-less-work and mechanism-confirmed; the throughput
+gain is real but small (the response bytes were never the bottleneck — memory
+churn and the DB were). The `Json.to_utf8` builtin benefits every Roc program
+that serializes a JSON response.
 
 ## Reproducing
 

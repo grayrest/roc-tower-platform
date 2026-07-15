@@ -68,10 +68,12 @@ Res := [].{
     }
 
     ## A JSON response; the value is encoded with the builtin Json module.
+    ## `Json.to_utf8` returns the encoder's bytes directly — no `from_utf8_lossy`
+    ## re-validation of already-valid UTF-8, and no Str→bytes round-trip.
     json = |status, value| {
         status: status,
         headers: [{ name: "content-type", value: "application/json" }],
-        body: Json.to_str(value).to_utf8(),
+        body: Json.to_utf8(value),
         effects: [],
     }
 
@@ -170,7 +172,7 @@ Res := [].{
         json = |builder, status, value| {
             status: status,
             headers: [{ name: "content-type", value: "application/json" }],
-            body: Json.to_str(value).to_utf8(),
+            body: Json.to_utf8(value),
             effects: builder.effects,
         }
 
