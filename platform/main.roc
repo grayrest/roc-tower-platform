@@ -10,6 +10,7 @@ platform ""
                 Compression,
                 ConcurrencyLimit(U64),
                 ServeFiles({ url_prefix : Str, dir : Str }),
+                ResponseCache({ ttl_ms : U64, max_entries : U64, methods : List(Str), bypass_headers : List(Str) }),
             ]),
             init! : () => Try(model, Str),
             routes : List({

@@ -28,6 +28,20 @@ pub struct HostConfig {
     pub compression: bool,
     pub concurrency_limit: Option<usize>,
     pub serve_files: Option<ServeFilesConfig>,
+    pub response_cache: Option<ResponseCacheConfig>,
+}
+
+/// The in-memory response cache policy, opted into by the app. `methods` and
+/// `bypass_headers` make the cache scope EXPLICIT: only the listed methods are
+/// cached, and a request carrying any `bypass_headers` header (e.g.
+/// `authorization`) skips the cache entirely — so a personalized response never
+/// enters a shared entry.
+#[derive(Clone, Debug)]
+pub struct ResponseCacheConfig {
+    pub ttl: Duration,
+    pub max_entries: usize,
+    pub methods: Vec<http::Method>,
+    pub bypass_headers: Vec<http::HeaderName>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +79,7 @@ pub fn load_app() -> Result<LoadedApp, String> {
         compression: false,
         concurrency_limit: None,
         serve_files: None,
+        response_cache: None,
     };
 
     for setting in app.settings.as_slice() {
@@ -134,6 +149,44 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
                 ));
             }
             config.serve_files = Some(ServeFilesConfig { url_prefix, dir });
+        }
+        RocSettingTag::ResponseCache => {
+            let payload = setting.payload_response_cache();
+            if payload.ttl_ms == 0 {
+                return Err("ResponseCache ttl_ms must be greater than zero".to_string());
+            }
+            let max_entries = usize::try_from(payload.max_entries)
+                .map_err(|_| "ResponseCache max_entries does not fit in usize".to_string())?;
+            if max_entries == 0 {
+                return Err("ResponseCache max_entries must be greater than zero".to_string());
+            }
+            let methods = payload
+                .methods
+                .as_slice()
+                .iter()
+                .map(|m| {
+                    let raw = String::from_utf8_lossy(m.as_slice()).into_owned();
+                    raw.to_ascii_uppercase()
+                        .parse::<http::Method>()
+                        .map_err(|_| format!("ResponseCache: invalid method {raw:?}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let bypass_headers = payload
+                .bypass_headers
+                .as_slice()
+                .iter()
+                .map(|h| {
+                    let raw = String::from_utf8_lossy(h.as_slice()).into_owned();
+                    http::HeaderName::from_bytes(raw.to_ascii_lowercase().as_bytes())
+                        .map_err(|_| format!("ResponseCache: invalid header name {raw:?}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            config.response_cache = Some(ResponseCacheConfig {
+                ttl: Duration::from_millis(payload.ttl_ms),
+                max_entries,
+                methods,
+                bypass_headers,
+            });
         }
     }
     Ok(())

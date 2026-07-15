@@ -10,6 +10,7 @@ mod abi;
 
 mod arena;
 mod body;
+mod cache;
 mod db;
 mod config;
 // The DB backend: rusqlite by default, turso under `--features turso`. The

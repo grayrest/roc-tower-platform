@@ -207,7 +207,10 @@ fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, Eff
         .collect();
 
     match crate::cursor::run_write_txn(&db, &writes) {
-        Ok(()) => None,
+        Ok(()) => {
+            purge_written_tables(writes.iter().map(|(sql, _)| sql.as_str()));
+            None
+        }
         Err((index, err)) => {
             let classified = EffectErr::from_db(err);
             tracing::warn!("effect: DbWrite failed ({classified:?}); rolled back transaction");
@@ -240,9 +243,68 @@ fn run_action(action: &Action) -> Result<(), EffectErr> {
         }
         // A DbWrite only reaches here as an `Opt`: run it autocommit.
         Action::Db { db, sql, params } => {
-            crate::cursor::run_autocommit(db, sql, params).map_err(EffectErr::from_db)
+            crate::cursor::run_autocommit(db, sql, params).map_err(EffectErr::from_db)?;
+            purge_written_tables(std::iter::once(sql.as_str()));
+            Ok(())
         }
     }
+}
+
+/// After writes commit, purge every response-cache entry that read a mutated
+/// table (no-op unless the app enabled the cache). This is the platform's
+/// invalidation hook: every mutation is a declarative `DbWrite` through this one
+/// executor, so the cache stays coherent without handlers knowing it exists.
+fn purge_written_tables<'a>(sqls: impl Iterator<Item = &'a str>) {
+    if crate::cache::global().is_none() {
+        return;
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for sql in sqls {
+        if let Some(table) = write_target_table(sql)
+            && !seen.contains(&table)
+        {
+            seen.push(table);
+            crate::cache::purge_table_global(table);
+        }
+    }
+}
+
+/// Best-effort extraction of the table a write mutates: `INSERT [OR ..] INTO t`,
+/// `REPLACE INTO t`, `UPDATE [OR ..] t`, `DELETE FROM t`. An unrecognized shape
+/// yields `None` — the TTL still bounds staleness in that case.
+fn write_target_table(sql: &str) -> Option<&str> {
+    let mut tokens = sql.split_whitespace();
+    match tokens.next()?.to_ascii_uppercase().as_str() {
+        "INSERT" | "REPLACE" => {
+            // Skip any `OR IGNORE`/`OR REPLACE` up to `INTO`.
+            tokens.by_ref().find(|t| t.eq_ignore_ascii_case("INTO"))?;
+            tokens.next().map(strip_table_ident)
+        }
+        "UPDATE" => {
+            let next = tokens.next()?;
+            if next.eq_ignore_ascii_case("OR") {
+                tokens.next(); // conflict action
+                tokens.next().map(strip_table_ident)
+            } else {
+                Some(strip_table_ident(next))
+            }
+        }
+        "DELETE" => {
+            tokens.by_ref().find(|t| t.eq_ignore_ascii_case("FROM"))?;
+            tokens.next().map(strip_table_ident)
+        }
+        _ => None,
+    }
+}
+
+/// Trim quoting and cut a table token at the first non-identifier char (so
+/// `articles(id,...)` or `"users"` resolve to the bare name).
+fn strip_table_ident(tok: &str) -> &str {
+    let tok = tok.trim_matches(|c| matches!(c, '"' | '`' | '\'' | '[' | ']'));
+    let end = tok
+        .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .unwrap_or(tok.len());
+    &tok[..end]
 }
 
 /// Run `Opt` effects best-effort; failures are logged only (B3).
@@ -338,5 +400,33 @@ fn build_err_arg(err: &EffectErr) -> RocEffectErr {
             tag: RocEffectErrTag::Busy,
             payload: RocEffectErrPayload { busy: [] },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_target_table;
+
+    #[test]
+    fn extracts_the_mutated_table_from_each_write_shape() {
+        let cases = [
+            ("INSERT INTO articles (id, slug) VALUES (?, ?)", Some("articles")),
+            ("INSERT OR IGNORE INTO article_tags (article_id, tag) VALUES (?, ?)", Some("article_tags")),
+            ("REPLACE INTO favorites VALUES (?, ?)", Some("favorites")),
+            ("UPDATE articles SET slug = ? WHERE id = ?", Some("articles")),
+            ("UPDATE OR IGNORE follows SET x = 1", Some("follows")),
+            ("DELETE FROM comments WHERE article_id = ?", Some("comments")),
+            ("DELETE FROM favorites WHERE user_id = ? AND article_id = ?", Some("favorites")),
+            ("SELECT * FROM articles", None),
+        ];
+        for (sql, want) in cases {
+            assert_eq!(write_target_table(sql), want, "sql: {sql}");
+        }
+    }
+
+    #[test]
+    fn strips_quoting_and_column_paren() {
+        assert_eq!(write_target_table("INSERT INTO \"users\" VALUES (1)"), Some("users"));
+        assert_eq!(write_target_table("INSERT INTO articles(id) VALUES (1)"), Some("articles"));
     }
 }

@@ -931,34 +931,34 @@ const _: () = assert!(core::mem::size_of::<AnonStruct81f0667ceb55f2c1>() == 48, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct81f0667ceb55f2c1>() == 8, "AnonStruct81f0667ceb55f2c1 alignment mismatch");
 
-/// Element type for __AnonStruct_c36e85b27c5677aa
+/// Element type for __AnonStruct_4bc38282ead38c10
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStructC36e85b27c5677aa {
+pub struct AnonStruct4bc38282ead38c10 {
     pub init_bang: *mut c_void,
     pub routes: RocList<AnonStruct5c679ee432c3d89b>,
-    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>,
+    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>,
 }
 
-/// Element type for __AnonStruct_c36e85b27c5677aa
+/// Element type for __AnonStruct_4bc38282ead38c10
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStructC36e85b27c5677aa {
+pub struct AnonStruct4bc38282ead38c10 {
     pub init_bang: *mut c_void,
     pub routes: RocList<AnonStruct5c679ee432c3d89b>,
-    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>,
+    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>,
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStructC36e85b27c5677aa>() == 56, "AnonStructC36e85b27c5677aa size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStruct4bc38282ead38c10>() == 56, "AnonStruct4bc38282ead38c10 size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStructC36e85b27c5677aa>() == 8, "AnonStructC36e85b27c5677aa alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStruct4bc38282ead38c10>() == 8, "AnonStruct4bc38282ead38c10 alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStructC36e85b27c5677aa>() == 28, "AnonStructC36e85b27c5677aa size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStruct4bc38282ead38c10>() == 28, "AnonStruct4bc38282ead38c10 size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStructC36e85b27c5677aa>() == 4, "AnonStructC36e85b27c5677aa alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStruct4bc38282ead38c10>() == 4, "AnonStruct4bc38282ead38c10 alignment mismatch");
 
 /// Element type for __AnonStruct_5c679ee432c3d89b
 #[cfg(target_pointer_width = "32")]
@@ -1088,6 +1088,37 @@ const _: () = assert!(core::mem::size_of::<AnonStruct156b5cf265b1adab>() == 36, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct156b5cf265b1adab>() == 4, "AnonStruct156b5cf265b1adab alignment mismatch");
 
+/// Element type for __AnonStruct_b6f3372b0a228dcf
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructB6f3372b0a228dcf {
+    pub max_entries: u64,
+    pub ttl_ms: u64,
+    pub bypass_headers: RocList<RocStr>,
+    pub methods: RocList<RocStr>,
+}
+
+/// Element type for __AnonStruct_b6f3372b0a228dcf
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStructB6f3372b0a228dcf {
+    pub max_entries: u64,
+    pub ttl_ms: u64,
+    pub bypass_headers: RocList<RocStr>,
+    pub methods: RocList<RocStr>,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStructB6f3372b0a228dcf>() == 64, "AnonStructB6f3372b0a228dcf size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStructB6f3372b0a228dcf>() == 8, "AnonStructB6f3372b0a228dcf alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStructB6f3372b0a228dcf>() == 40, "AnonStructB6f3372b0a228dcf size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStructB6f3372b0a228dcf>() == 8, "AnonStructB6f3372b0a228dcf alignment mismatch");
+
 /// Element type for __AnonStruct_a965a4c67b4c5d53
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -1115,32 +1146,32 @@ const _: () = assert!(core::mem::size_of::<AnonStructA965a4c67b4c5d53>() == 24, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStructA965a4c67b4c5d53>() == 4, "AnonStructA965a4c67b4c5d53 alignment mismatch");
 
-/// Element type for __AnonStruct_4dc83b5d9c0c77ea
+/// Element type for __AnonStruct_cb9f69505fcdcfaf
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStruct4dc83b5d9c0c77ea {
+pub struct AnonStructCb9f69505fcdcfaf {
     pub routes: RocList<AnonStruct5c679ee432c3d89b>,
-    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>,
+    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>,
 }
 
-/// Element type for __AnonStruct_4dc83b5d9c0c77ea
+/// Element type for __AnonStruct_cb9f69505fcdcfaf
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStruct4dc83b5d9c0c77ea {
+pub struct AnonStructCb9f69505fcdcfaf {
     pub routes: RocList<AnonStruct5c679ee432c3d89b>,
-    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>,
+    pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>,
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStruct4dc83b5d9c0c77ea>() == 48, "AnonStruct4dc83b5d9c0c77ea size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStructCb9f69505fcdcfaf>() == 48, "AnonStructCb9f69505fcdcfaf size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStruct4dc83b5d9c0c77ea>() == 8, "AnonStruct4dc83b5d9c0c77ea alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStructCb9f69505fcdcfaf>() == 8, "AnonStructCb9f69505fcdcfaf alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStruct4dc83b5d9c0c77ea>() == 24, "AnonStruct4dc83b5d9c0c77ea size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStructCb9f69505fcdcfaf>() == 24, "AnonStructCb9f69505fcdcfaf size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStruct4dc83b5d9c0c77ea>() == 4, "AnonStruct4dc83b5d9c0c77ea alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStructCb9f69505fcdcfaf>() == 4, "AnonStructCb9f69505fcdcfaf alignment mismatch");
 
 /// Tag discriminant for Try.
 #[repr(u8)]
@@ -1908,29 +1939,31 @@ const _: () = assert!(core::mem::align_of::<BusyOrForeignKeyViolationOrHttpFaile
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation, tag) == 12, "BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation tag offset mismatch");
 
-/// Tag discriminant for CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs.
+/// Tag discriminant for CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag {
+pub enum CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag {
     Compression = 0,
     ConcurrencyLimit = 1,
     CorsAllowOrigins = 2,
     CorsPermissive = 3,
     MaxBodyBytes = 4,
     Port = 5,
-    ServeFiles = 6,
-    TimeoutMs = 7,
+    ResponseCache = 6,
+    ServeFiles = 7,
+    TimeoutMs = 8,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub union CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayload {
+pub union CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsPayload {
     pub compression: [u8; 0],
     pub concurrency_limit: core::mem::ManuallyDrop<u64>,
     pub cors_allow_origins: core::mem::ManuallyDrop<RocList<RocStr>>,
     pub cors_permissive: [u8; 0],
     pub max_body_bytes: core::mem::ManuallyDrop<u64>,
     pub port: core::mem::ManuallyDrop<u16>,
+    pub response_cache: core::mem::ManuallyDrop<AnonStructB6f3372b0a228dcf>,
     pub serve_files: core::mem::ManuallyDrop<AnonStructA965a4c67b4c5d53>,
     pub timeout_ms: core::mem::ManuallyDrop<u64>,
 }
@@ -1938,28 +1971,28 @@ pub union CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBo
 #[cfg(target_pointer_width = "32")]
 #[repr(align(8))]
 #[derive(Clone, Copy)]
-pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayloadAlignment;
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsPayloadAlignment;
 
-/// Tag union: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs
+/// Tag union: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
-    pub _payload_alignment: [CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayloadAlignment; 0],
-    pub payload: [u8; 24],
-    pub tag: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag,
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs {
+    pub _payload_alignment: [CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsPayloadAlignment; 0],
+    pub payload: [u8; 40],
+    pub tag: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag,
 }
 
-/// Tag union: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs
+/// Tag union: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
-    pub payload: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayload,
-    pub tag: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag,
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs {
+    pub payload: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsPayload,
+    pub tag: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag,
 }
 
-impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
+impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs {
     #[cfg(target_pointer_width = "32")]
     pub fn payload_concurrency_limit(&self) -> u64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
@@ -2001,6 +2034,16 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
     }
 
     #[cfg(target_pointer_width = "32")]
+    pub fn payload_response_cache(&self) -> AnonStructB6f3372b0a228dcf {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructB6f3372b0a228dcf) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_response_cache(&self) -> AnonStructB6f3372b0a228dcf {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.response_cache) }
+    }
+
+    #[cfg(target_pointer_width = "32")]
     pub fn payload_serve_files(&self) -> AnonStructA965a4c67b4c5d53 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructA965a4c67b4c5d53) }
     }
@@ -2023,17 +2066,17 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 56, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs size mismatch");
+const _: () = assert!(core::mem::size_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>() == 72, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 8, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs alignment mismatch");
+const _: () = assert!(core::mem::align_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>() == 8, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs alignment mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::offset_of!(CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs, tag) == 48, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs, tag) == 64, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs tag offset mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 32, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs size mismatch");
+const _: () = assert!(core::mem::size_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>() == 48, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs>() == 8, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs alignment mismatch");
+const _: () = assert!(core::mem::align_of::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>() == 8, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::offset_of!(CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs, tag) == 24, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs tag offset mismatch");
+const _: () = assert!(core::mem::offset_of!(CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs, tag) == 40, "CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs tag offset mismatch");
 
 /// Tag discriminant for Try.
 #[repr(u8)]
@@ -2336,13 +2379,15 @@ pub type HostSqlBeginArg0 = AnonStruct81f0667ceb55f2c1;
 pub type HostSqlBeginArg0Params = HostSqlValue;
 pub type HostSqlBeginArg0ParamsPayload = HostSqlValuePayload;
 pub type HostSqlBeginArg0ParamsTag = HostSqlValueTag;
-pub type AppForHost = AnonStruct4dc83b5d9c0c77ea;
+pub type AppForHost = AnonStructCb9f69505fcdcfaf;
 pub type AppForHostRoutes = AnonStruct5c679ee432c3d89b;
-pub type AppForHostSettings = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs;
-pub type AppForHostSettingsPayload = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsPayload;
-pub type AppForHostSettingsTag = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag;
+pub type AppForHostSettings = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs;
+pub type AppForHostSettingsPayload = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsPayload;
+pub type AppForHostSettingsTag = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag;
+pub type AppForHostSettingsResponseCache = AnonStructB6f3372b0a228dcf;
 pub type AppForHostSettingsServeFiles = AnonStructA965a4c67b4c5d53;
-pub type CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsServeFiles = AnonStructA965a4c67b4c5d53;
+pub type CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsResponseCache = AnonStructB6f3372b0a228dcf;
+pub type CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsServeFiles = AnonStructA965a4c67b4c5d53;
 
 // Generated Refcount Helpers
 
@@ -2720,7 +2765,7 @@ impl HostMemoGetResult {
     }
 }
 
-impl AnonStructC36e85b27c5677aa {
+impl AnonStruct4bc38282ead38c10 {
     /// Recursively decrement Roc-owned fields.
     ///
     /// # Safety
@@ -3065,7 +3110,7 @@ impl BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
     }
 }
 
-impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMs {
+impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
@@ -3074,9 +3119,9 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
         let value = self;
         let _ = roc_host;
         match value.tag {
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Compression => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Compression => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
                 let payload = value.payload_cors_allow_origins();
                 {
                     let list = payload;
@@ -3089,14 +3134,18 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
                     unsafe { list.decref(roc_host); }
                 }
             },
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Port => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ServeFiles => {
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache => {
+                let payload = value.payload_response_cache();
+                unsafe { payload.decref(roc_host); }
+            },
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles => {
                 let payload = value.payload_serve_files();
                 unsafe { payload.decref(roc_host); }
             },
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
         }
     }
 
@@ -3109,21 +3158,66 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
         let value = self;
         let _ = amount;
         match value.tag {
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Compression => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Compression => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
                 let payload = value.payload_cors_allow_origins();
                 unsafe { payload.incref(amount); }
             },
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::Port => {},
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::ServeFiles => {
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache => {
+                let payload = value.payload_response_cache();
+                unsafe { payload.incref(amount); }
+            },
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles => {
                 let payload = value.payload_serve_files();
                 unsafe { payload.incref(amount); }
             },
-            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
+            CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
         }
+    }
+}
+
+impl AnonStructB6f3372b0a228dcf {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        {
+            let list = value.bypass_headers;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+        {
+            let list = value.methods;
+            if list.has_one_ref() {
+                for item_ref in list.allocation_items() {
+                    let item = *item_ref;
+                        unsafe { item.decref(roc_host); }
+                }
+            }
+            unsafe { list.decref(roc_host); }
+        }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.bypass_headers.incref(amount); }
+        unsafe { value.methods.incref(amount); }
     }
 }
 
@@ -3150,7 +3244,7 @@ impl AnonStructA965a4c67b4c5d53 {
     }
 }
 
-impl AnonStruct4dc83b5d9c0c77ea {
+impl AnonStructCb9f69505fcdcfaf {
     /// Recursively decrement Roc-owned fields.
     ///
     /// # Safety
@@ -3481,7 +3575,7 @@ pub fn make_roc_host(env: *mut c_void) -> RocHost {
 #[allow(improper_ctypes)]
 unsafe extern "C" {
     /// Entrypoint: app_for_host
-    pub fn roc_app() -> AnonStruct4dc83b5d9c0c77ea;
+    pub fn roc_app() -> AnonStructCb9f69505fcdcfaf;
 
     /// Entrypoint: init_for_host!
     pub fn roc_init() -> InitForHostResult;

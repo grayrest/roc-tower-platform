@@ -7,9 +7,12 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Instant;
 
-use http::{HeaderValue, Request, Response, StatusCode};
+use http::{header, HeaderName, HeaderValue, Method, Request, Response, StatusCode};
+use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::timeout::Timeout;
@@ -23,8 +26,14 @@ use tower_http::request_id::{
 use tower_http::trace::TraceLayer;
 
 use crate::body::{AppBody, BoxError};
-use crate::config::{CorsMode, HostConfig};
+use crate::cache::{self, Key, ResponseCache, Stored};
+use crate::config::{CorsMode, HostConfig, ResponseCacheConfig};
 use crate::router::RocRouter;
+
+/// Internal header a handler sets (via `Res.cacheable`) to declare a response
+/// cacheable and name the tables its reads touched. The cache layer consumes it
+/// and strips it before the response leaves the process.
+const CACHE_TABLES_HEADER: HeaderName = HeaderName::from_static("x-tp-cache-tables");
 
 type ErringService = BoxCloneSyncService<Request<Incoming>, Response<AppBody>, BoxError>;
 pub type AppService = BoxCloneSyncService<Request<Incoming>, Response<AppBody>, Infallible>;
@@ -78,6 +87,203 @@ fn error_response(err: BoxError) -> Response<AppBody> {
     response
 }
 
+/// Which requests this cache applies to, made explicit by config: only these
+/// methods, and never a request carrying a bypass header (e.g. `authorization`,
+/// so a personalized response never lands in a shared entry).
+struct CachePolicy {
+    methods: Vec<Method>,
+    bypass_headers: Vec<HeaderName>,
+}
+
+impl CachePolicy {
+    fn cacheable_request<B>(&self, req: &Request<B>) -> bool {
+        self.methods.contains(req.method())
+            && !self
+                .bypass_headers
+                .iter()
+                .any(|h| req.headers().contains_key(h))
+    }
+}
+
+/// The outermost caching layer. It sits OUTSIDE compression, so a stored entry
+/// is the already-encoded body — a hit returns finished bytes and re-runs
+/// nothing below (router, Roc handler, DB all skipped). Keyed on
+/// `(method, path+query, Accept-Encoding)`; entries carry the tables their reads
+/// touched so the write path can purge precisely.
+#[derive(Clone)]
+struct CacheService {
+    inner: ErringService,
+    cache: Arc<ResponseCache>,
+    policy: Arc<CachePolicy>,
+}
+
+/// The cache key for a request (the negotiated encoding partitions gzip vs br
+/// vs identity, since the stored body is already compressed).
+fn request_key(req: &Request<Incoming>) -> Key {
+    let target = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or_else(|| req.uri().path())
+        .to_string();
+    let encoding = req
+        .headers()
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    Key {
+        method: req.method().as_str().to_string(),
+        target,
+        encoding,
+    }
+}
+
+/// True when `If-None-Match` matches the entry's ETag (exact or `*`).
+fn none_match(req: &Request<Incoming>, etag: &str) -> bool {
+    req.headers()
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|inm| inm == "*" || inm.split(',').any(|t| t.trim() == etag))
+}
+
+fn not_modified(etag: &str) -> Response<AppBody> {
+    let mut resp = Response::new(AppBody::empty());
+    *resp.status_mut() = StatusCode::NOT_MODIFIED;
+    if let Ok(v) = HeaderValue::from_str(etag) {
+        resp.headers_mut().insert(header::ETAG, v);
+    }
+    resp
+}
+
+/// Replay a stored entry as a fresh response (body is a cheap `Bytes` clone).
+fn serve_stored(stored: &Stored) -> Response<AppBody> {
+    let mut resp = Response::new(AppBody::full(stored.body.clone()));
+    *resp.status_mut() = StatusCode::from_u16(stored.status).unwrap_or(StatusCode::OK);
+    let headers = resp.headers_mut();
+    for (name, value) in &stored.headers {
+        headers.insert(name.clone(), value.clone());
+    }
+    if let Ok(v) = HeaderValue::from_str(&stored.etag) {
+        headers.insert(header::ETAG, v);
+    }
+    resp
+}
+
+impl tower::Service<Request<Incoming>> for CacheService {
+    type Response = Response<AppBody>;
+    type Error = BoxError;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+        // Pass straight through when this request isn't in scope.
+        if !self.policy.cacheable_request(&req) {
+            let clone = self.inner.clone();
+            let mut inner = std::mem::replace(&mut self.inner, clone);
+            return Box::pin(async move { inner.ready().await?.call(req).await });
+        }
+
+        let key = request_key(&req);
+        let cache = self.cache.clone();
+
+        // Hit: serve the stored bytes (or 304) without touching the inner stack.
+        if let Some(stored) = cache.lookup(&key, Instant::now()) {
+            let response = if none_match(&req, &stored.etag) {
+                not_modified(&stored.etag)
+            } else {
+                serve_stored(&stored)
+            };
+            return Box::pin(async move { Ok(response) });
+        }
+
+        let clone = self.inner.clone();
+        let mut inner = std::mem::replace(&mut self.inner, clone);
+        Box::pin(async move {
+            let revalidate_etag = req
+                .headers()
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned);
+            let response = inner.ready().await?.call(req).await?;
+            Ok(maybe_store(&cache, key, response, revalidate_etag).await)
+        })
+    }
+}
+
+/// After a miss, store the response iff it opted in (`x-tp-cache-tables`) and
+/// succeeded; strip the internal header, attach the ETag, and answer a
+/// concurrent `If-None-Match` for the freshly-computed tag with `304`.
+async fn maybe_store(
+    cache: &ResponseCache,
+    key: Key,
+    response: Response<AppBody>,
+    revalidate_etag: Option<String>,
+) -> Response<AppBody> {
+    let is_cacheable = response.status().is_success()
+        && response.headers().contains_key(&CACHE_TABLES_HEADER);
+    if !is_cacheable {
+        return response;
+    }
+
+    let (mut parts, body) = response.into_parts();
+    let tables: Vec<Box<str>> = parts
+        .headers
+        .get(&CACHE_TABLES_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(Box::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    parts.headers.remove(&CACHE_TABLES_HEADER);
+
+    let bytes = match body.collect().await {
+        Ok(collected) => collected.to_bytes(),
+        // On a body error, don't cache; hand back an empty body (the client sees
+        // a truncated response either way — buffering just surfaced it here).
+        Err(err) => {
+            tracing::warn!("response cache: body error, not caching: {err}");
+            return Response::from_parts(parts, AppBody::empty());
+        }
+    };
+
+    let etag = cache::etag_for(&bytes);
+    let headers: Vec<(HeaderName, HeaderValue)> = parts
+        .headers
+        .iter()
+        .map(|(n, v)| (n.clone(), v.clone()))
+        .collect();
+    cache.insert(
+        key,
+        Stored {
+            status: parts.status.as_u16(),
+            headers,
+            body: bytes.clone(),
+            etag: etag.clone(),
+        },
+        tables,
+        Instant::now(),
+    );
+
+    if revalidate_etag.is_some_and(|inm| inm == "*" || inm.split(',').any(|t| t.trim() == etag)) {
+        return not_modified(&etag);
+    }
+
+    if let Ok(v) = HeaderValue::from_str(&etag) {
+        parts.headers.insert(header::ETAG, v);
+    }
+    Response::from_parts(parts, AppBody::full(bytes))
+}
+
 pub fn build_stack(router: RocRouter, config: &HostConfig) -> Result<AppService, String> {
     let mut service: ErringService = BoxCloneSyncService::new(router);
 
@@ -96,6 +302,13 @@ pub fn build_stack(router: RocRouter, config: &HostConfig) -> Result<AppService,
         service = BoxCloneSyncService::new(compressed);
     }
 
+    // Outside compression so entries store the already-encoded body: a hit
+    // returns finished bytes and never reaches compression, the router, Roc, or
+    // the DB. Installed as the process-global handle so the write path can purge.
+    if let Some(cache_cfg) = &config.response_cache {
+        service = BoxCloneSyncService::new(cache_service(service, cache_cfg));
+    }
+
     if let Some(cors) = cors_layer(&config.cors)? {
         service = BoxCloneSyncService::new(ServiceBuilder::new().layer(cors).service(service));
     }
@@ -108,6 +321,21 @@ pub fn build_stack(router: RocRouter, config: &HostConfig) -> Result<AppService,
         .service(CatchError(service));
 
     Ok(BoxCloneSyncService::new(traced))
+}
+
+/// Build the cache service and install its handle as the process-global so the
+/// write path ([`crate::effect`]) can purge the same store.
+fn cache_service(inner: ErringService, cfg: &ResponseCacheConfig) -> CacheService {
+    let cache = Arc::new(ResponseCache::new(cfg.ttl, cfg.max_entries));
+    cache::install_global(cache.clone());
+    CacheService {
+        inner,
+        cache,
+        policy: Arc::new(CachePolicy {
+            methods: cfg.methods.clone(),
+            bypass_headers: cfg.bypass_headers.clone(),
+        }),
+    }
 }
 
 fn cors_layer(mode: &CorsMode) -> Result<Option<CorsLayer>, String> {
