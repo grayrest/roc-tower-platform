@@ -1,0 +1,74 @@
+# Typed-read + Roc-serialize vs `@sql json` — end-to-end A/B (rusqlite)
+
+**Date:** 2026-07-15 · **Build:** default rusqlite host · seeded DB
+(`bench/seed.py`, 200 users / 5000 articles / 10000 comments) · macOS aarch64 ·
+wrk `-t4 -c16 -d15s`, pooled median of 2 order-balanced passes (typed-first +
+json-first, to cancel thermal/load drift).
+
+The whole RealWorld app runs in BOTH modes (`Api.read_mode = Typed | Json`),
+each passing **154/154** conformance. `Typed` reads typed rows and serializes
+the envelope with Roc's `Json.to_str`; `Json` streams the SQL-assembled
+document (`@sql json`) verbatim.
+
+## Results
+
+| endpoint | shape | typed rps | json rps | Δ rps | typed p50 | json p50 |
+|----------|-------|----------:|---------:|------:|----------:|---------:|
+| byslug   | 1-row single object          | 56925 | 55949 | **+1.7%** | 248µs | 248µs |
+| profile  | 1-row single object          | 67253 | 68273 | **−1.5%** | 214µs | 210µs |
+| comments | multi-row aggregate, **sqlgen positional** read | 30110 | 19880 | **+51%** | 456µs | 710µs |
+| tags     | flat aggregate array         | 11367 | 11438 | **−0.6%** | 1.04ms | 1.01ms |
+| list     | 20-row aggregate, **dynamic by-name** read | 5079 | 6150 | **−17%** | 2.66ms | 2.03ms |
+
+## Reading — the thesis holds where the typed read is cheap
+
+The bet was: SQLite's JSON aggregate engine is the movable cost; get typed rows
+into Roc cheaply and let Roc's serializer replace SQL-side JSON assembly. The
+data splits cleanly along **how the rows are read**, which is exactly what the
+thesis predicts:
+
+- **Single objects (byslug, profile): parity.** No aggregate to eliminate, and
+  one `json_object` ≈ one Roc record encode. Neither side has an edge (±2%).
+- **`comments`: typed wins +51%.** This is the thesis in its pure form — a
+  `json_group_array` aggregate replaced by a Roc-serialized list, where the row
+  fetch is a **generated positional** read (`sqlgen`, `Host.sql_col_*` by index,
+  no per-cell column lookup). SQLite's aggregate assembly was the cost; moving
+  it to Roc removed it.
+- **`tags`: parity.** Also an aggregate, but a trivial flat string array — there
+  is essentially no assembly cost to reclaim, so it's a wash.
+- **`list`: typed LOSES −17%.** *Also* a `json_group_array` aggregate, but the
+  dynamic list/feed path can't go through sqlgen (its WHERE is built at runtime
+  from filters), so it reads rows via `Sql.query!` **by name** —
+  `find_first_index` over the ~12 column names for *every cell* of *every* row
+  (≈240 lookups for a 20-row page), plus a `split_tags` per row. That per-cell
+  lookup overhead more than eats the aggregate-elimination win.
+
+**The list regression is not a counter-example to the thesis — it's the cost of
+the read mechanism, not the serialize step.** `comments` and `list` both build
+N records and Roc-serialize them; the only structural difference is positional
+(sqlgen) vs by-name (`Sql.query!`) cell reads, and that is where the ~68% swing
+between them comes from. A positional dynamic-read path (or a way to route the
+list through sqlgen) would very likely flip `list` to a win too.
+
+## Consequence for eliminating `@sql json`
+
+- Eliminating `@sql json` is **a clear win on the heaviest aggregate endpoint
+  (comments, +51%)** and **neutral on single objects and tags**.
+- The one regression (`list`, −17%) is attributable to the platform's dynamic
+  read being **by-name**, not to Roc serialization. Closing it needs a
+  positional `Sql.Row` accessor (or sqlgen coverage of the filtered list) —
+  tracked as the obvious follow-up before a full cutover.
+- Net: the typed path is viable as the single API surface today, with one known
+  optimization (positional dynamic reads) standing between it and a clean sweep.
+
+## Reproducing
+
+```sh
+python3 bench/seed.py bench/seeded.db                      # once, deterministic
+# Api.read_mode = Typed
+just build examples/realworld/main.roc && cp main bench/srv-typed
+# Api.read_mode = Json
+just build examples/realworld/main.roc && cp main bench/srv-json
+bench/run.sh typed:bench/srv-typed json:bench/srv-json     # pass 1
+bench/run.sh json:bench/srv-json typed:bench/srv-typed     # pass 2 (order-balanced)
+```

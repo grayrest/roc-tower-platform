@@ -36,6 +36,7 @@ declare -a EPS=(
     "profile|/api/profiles/user14"
     "list|/api/articles?limit=20"
     "comments|/api/articles/article-2785/comments"
+    "tags|/api/tags"
 )
 
 start() { # binary port -> pid
