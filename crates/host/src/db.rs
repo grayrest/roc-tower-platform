@@ -31,3 +31,16 @@ pub fn param_from_host(value: &abi::HostSqlValue) -> SqlValue {
         abi::HostSqlValueTag::Blob => SqlValue::Blob(value.payload_blob().as_slice().to_vec()),
     }
 }
+
+/// Engine-neutral DB error classification returned by a backend's write path;
+/// the effect layer maps it onto the public `Effect.Err`.
+#[derive(Debug)]
+pub enum DbError {
+    UniqueViolation(String),
+    ForeignKeyViolation(String),
+    Busy,
+    Other(String),
+}
+
+/// One write in a `Must` transaction: SQL plus its ordered bound params.
+pub type Write = (String, Vec<SqlValue>);

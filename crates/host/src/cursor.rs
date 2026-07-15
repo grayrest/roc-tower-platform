@@ -42,8 +42,10 @@ use std::sync::{Mutex, OnceLock};
 use rusqlite::types::ValueRef;
 use rusqlite::{CachedStatement, Row, Rows};
 
+use rusqlite::TransactionBehavior;
+
 use crate::abi;
-use crate::db::SqlValue;
+use crate::db::{DbError, SqlValue, Write};
 use crate::effects::{checkout_sqlite, decref_list_with, to_rusqlite, PooledSqlite};
 use crate::roc_call::roc_str;
 use crate::roc_host;
@@ -386,4 +388,66 @@ pub extern "C" fn roc_sql_finish(handle: u64) {
         // back and drop finalizes.
         drop(unsafe { Box::from_raw(handle as *mut Cursor) });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Write effects (the rusqlite backend's half of the effect executor). Both DB
+// backends expose `run_write_txn` + `run_autocommit`, so the effect layer stays
+// engine-agnostic.
+// ---------------------------------------------------------------------------
+
+/// Run `writes` in one `BEGIN IMMEDIATE` transaction, in order. On the first
+/// failure the whole group rolls back and `Err((index, error))` names it.
+pub fn run_write_txn(db: &str, writes: &[Write]) -> Result<(), (usize, DbError)> {
+    let mut connection = checkout_sqlite(db).map_err(|message| (0, DbError::Other(message)))?;
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| (0, classify(&err)))?;
+    for (index, (sql, params)) in writes.iter().enumerate() {
+        let bound: Vec<rusqlite::types::Value> = params.iter().map(to_rusqlite).collect();
+        let outcome = tx
+            .prepare_cached(sql)
+            .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(bound.iter())));
+        if let Err(err) = outcome {
+            // Dropping `tx` without commit rolls the whole group back.
+            return Err((index, classify(&err)));
+        }
+    }
+    let last = writes.len().saturating_sub(1);
+    tx.commit().map_err(|err| (last, classify(&err)))
+}
+
+/// Run one write outside a transaction (autocommit) — the `Opt` DbWrite path.
+pub fn run_autocommit(db: &str, sql: &str, params: &[SqlValue]) -> Result<(), DbError> {
+    let connection = checkout_sqlite(db).map_err(DbError::Other)?;
+    let bound: Vec<rusqlite::types::Value> = params.iter().map(to_rusqlite).collect();
+    connection
+        .prepare_cached(sql)
+        .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(bound.iter())))
+        .map(|_| ())
+        .map_err(|err| classify(&err))
+}
+
+/// Map a rusqlite error to the engine-neutral `DbError`.
+fn classify(err: &rusqlite::Error) -> DbError {
+    if let rusqlite::Error::SqliteFailure(inner, message) = err {
+        let detail = message.clone().unwrap_or_else(|| err.to_string());
+        match inner.extended_code {
+            rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY => {
+                return DbError::UniqueViolation(detail);
+            }
+            rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY => {
+                return DbError::ForeignKeyViolation(detail);
+            }
+            _ => {}
+        }
+        if matches!(
+            inner.code,
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+        ) {
+            return DbError::Busy;
+        }
+        return DbError::Other(detail);
+    }
+    DbError::Other(err.to_string())
 }

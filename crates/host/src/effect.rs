@@ -23,11 +23,9 @@
 
 use std::mem::ManuallyDrop;
 
-use rusqlite::TransactionBehavior;
-
 use crate::abi;
 use crate::db::SqlValue;
-use crate::effects::{checkout_sqlite, send_request, to_rusqlite};
+use crate::effects::send_request;
 use crate::roc_call::{copy_headers, roc_str, ResponseParts};
 use crate::roc_host;
 use crate::types::{
@@ -200,45 +198,22 @@ fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, Eff
         Action::Db { db, .. } => db.clone(),
         _ => unreachable!("only DB Must effects reach run_db_transaction"),
     };
-
-    let mut connection = match checkout_sqlite(&db) {
-        Ok(connection) => connection,
-        Err(message) => {
-            tracing::error!("effect: DB checkout failed: {message}");
-            return Some((first.err_handler, EffectErr::Other(message)));
-        }
-    };
-    let tx = match connection.transaction_with_behavior(TransactionBehavior::Immediate) {
-        Ok(tx) => tx,
-        Err(err) => {
-            tracing::error!("effect: BEGIN IMMEDIATE failed: {err}");
-            return Some((first.err_handler, classify_db_error(&err)));
-        }
-    };
-
-    for item in items {
-        let (sql, params) = match &item.action {
-            Action::Db { sql, params, .. } => (sql, params),
+    let writes: Vec<crate::db::Write> = items
+        .iter()
+        .map(|item| match &item.action {
+            Action::Db { sql, params, .. } => (sql.clone(), params.clone()),
             _ => unreachable!("only DB Must effects reach run_db_transaction"),
-        };
-        let bound: Vec<rusqlite::types::Value> = params.iter().map(to_rusqlite).collect();
-        let outcome = tx
-            .prepare_cached(sql)
-            .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(bound.iter())));
-        if let Err(err) = outcome {
-            let classified = classify_db_error(&err);
-            tracing::warn!("effect: DbWrite failed ({classified:?}); rolling back transaction");
-            // Dropping `tx` without commit rolls the whole group back.
-            return Some((item.err_handler, classified));
+        })
+        .collect();
+
+    match crate::cursor::run_write_txn(&db, &writes) {
+        Ok(()) => None,
+        Err((index, err)) => {
+            let classified = EffectErr::from_db(err);
+            tracing::warn!("effect: DbWrite failed ({classified:?}); rolled back transaction");
+            Some((items[index].err_handler, classified))
         }
     }
-
-    if let Err(err) = tx.commit() {
-        tracing::error!("effect: COMMIT failed: {err}");
-        let last = items.last().expect("items is non-empty");
-        return Some((last.err_handler, classify_db_error(&err)));
-    }
-    None
 }
 
 /// Run one external `Must` (or `Opt`) action to completion.
@@ -265,13 +240,7 @@ fn run_action(action: &Action) -> Result<(), EffectErr> {
         }
         // A DbWrite only reaches here as an `Opt`: run it autocommit.
         Action::Db { db, sql, params } => {
-            let connection = checkout_sqlite(db).map_err(EffectErr::Other)?;
-            let bound: Vec<rusqlite::types::Value> = params.iter().map(to_rusqlite).collect();
-            connection
-                .prepare_cached(sql)
-                .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(bound.iter())))
-                .map(|_| ())
-                .map_err(|err| classify_db_error(&err))
+            crate::cursor::run_autocommit(db, sql, params).map_err(EffectErr::from_db)
         }
     }
 }
@@ -285,28 +254,16 @@ fn run_opts(opts: &[Action]) {
     }
 }
 
-/// Map a `rusqlite` error to the typed `Effect.Err` variant.
-fn classify_db_error(err: &rusqlite::Error) -> EffectErr {
-    if let rusqlite::Error::SqliteFailure(inner, message) = err {
-        let detail = message.clone().unwrap_or_else(|| err.to_string());
-        match inner.extended_code {
-            rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE | rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY => {
-                return EffectErr::UniqueViolation(detail);
-            }
-            rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY => {
-                return EffectErr::ForeignKeyViolation(detail);
-            }
-            _ => {}
+impl EffectErr {
+    /// Lift a backend's engine-neutral `DbError` into the effect error.
+    fn from_db(err: crate::db::DbError) -> Self {
+        match err {
+            crate::db::DbError::UniqueViolation(d) => EffectErr::UniqueViolation(d),
+            crate::db::DbError::ForeignKeyViolation(d) => EffectErr::ForeignKeyViolation(d),
+            crate::db::DbError::Busy => EffectErr::Busy,
+            crate::db::DbError::Other(d) => EffectErr::Other(d),
         }
-        if matches!(
-            inner.code,
-            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-        ) {
-            return EffectErr::Busy;
-        }
-        return EffectErr::Other(detail);
     }
-    EffectErr::Other(err.to_string())
 }
 
 /// Invoke a `Must` effect's boxed `err_handler` with a classified error and
