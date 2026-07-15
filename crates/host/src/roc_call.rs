@@ -35,7 +35,7 @@ pub struct RequestParts {
 pub struct ResponseParts {
     pub status: u16,
     pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+    pub body: crate::body::ResponseBody,
 }
 
 pub(crate) fn roc_str(text: &str) -> abi::RocStr {
@@ -132,11 +132,31 @@ pub fn call_handler(
             &args as *const Args as *const u8,
             capture,
         );
-        let response = ret.assume_init();
+        let mut response = ret.assume_init();
+
+        // Hand the body's Roc list to a `ResponseBody` owner so hyper can stream
+        // straight out of arena memory. Take the list out and neutralize the
+        // response's copy FIRST: `response.decref` below recursively decrefs the
+        // body field, and `RocListWith` is `Copy`, so without this an arena body
+        // would be a harmless double no-op but a >4 MiB cap-fallback (global)
+        // body would be genuinely freed out from under the owner.
+        let body_list = response.body;
+        response.body = abi::RocListWith::empty();
+        let body = match crate::arena::current_arena() {
+            // SAFETY: `body_list` is the handler's sole live reference to the
+            // response body (just neutralized in `response`), and it was built
+            // this request, so its bytes live in `arena` (or a global fallback).
+            Some(arena) => crate::body::ResponseBody::from_roc(body_list, arena),
+            None => {
+                let copy = body_list.as_slice().to_vec();
+                body_list.decref(host);
+                crate::body::ResponseBody::Copied(copy)
+            }
+        };
         let handler_response = ResponseParts {
             status: response.status,
             headers: copy_headers(response.headers.as_slice()),
-            body: response.body.as_slice().to_vec(),
+            body,
         };
 
         // Host executes the critical effects the handler returned (Arch B),

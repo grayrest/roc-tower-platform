@@ -232,7 +232,7 @@ impl RouterInner {
             tracing::error!("Roc handler returned invalid status {}", roc_response.status);
             StatusCode::INTERNAL_SERVER_ERROR
         });
-        let mut response = Response::new(AppBody::full(roc_response.body));
+        let mut response = Response::new(AppBody::full(roc_response.body.into_bytes()));
         *response.status_mut() = status;
         for (name, value) in &roc_response.headers {
             match (

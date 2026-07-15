@@ -73,6 +73,16 @@ pub(crate) static CHUNK_ALLOCS: std::sync::atomic::AtomicUsize =
 pub(crate) static CHUNK_FREES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Serializes every test that installs an arena — across modules — so the
+/// process-wide chunk counters and the response-body in-flight gauge yield
+/// attributable deltas. Poison-tolerant so a test that trips a debug guard can't
+/// wedge the rest of the suite.
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Header bytes for a given alignment — identical to `DefaultAllocators`.
 #[inline]
 fn header_size(alignment: usize) -> usize {
@@ -155,8 +165,6 @@ unsafe impl Send for RequestArena {}
 unsafe impl Sync for RequestArena {}
 
 impl RequestArena {
-    // Minted per request by the lifecycle wiring (A2, router.rs); used by tests here.
-    #[allow(dead_code)]
     pub fn new() -> Arc<Self> {
         Arc::new(RequestArena {
             state: Mutex::new(ArenaState {
@@ -255,6 +263,12 @@ impl RequestArena {
         unsafe { write_size_word(ptr, total | TAG_ARENA) };
         Some(ptr as *mut c_void)
     }
+
+    /// Total chunk bytes this arena has reserved — an upper bound on the memory
+    /// a zero-copy response body pins by borrowing from it.
+    pub fn reserved_bytes(&self) -> usize {
+        self.state.lock().expect("arena mutex poisoned").total
+    }
 }
 
 impl Drop for RequestArena {
@@ -306,6 +320,12 @@ pub fn uninstall() {
 #[inline]
 fn with_current<R>(f: impl FnOnce(Option<&RequestArena>) -> R) -> R {
     CURRENT.with(|slot| f(slot.borrow().as_deref()))
+}
+
+/// Clone the current thread's arena reference, if one is installed. Used by the
+/// response handoff to keep the body's arena-backed bytes alive past the handler.
+pub fn current_arena() -> Option<Arc<RequestArena>> {
+    CURRENT.with(|slot| slot.borrow().clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -431,17 +451,10 @@ pub extern "C" fn host_realloc(
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
-    use std::sync::Mutex;
 
     const BIG_TEXT: &[u8] = b"a string long enough to defeat the small-string optimization";
 
-    /// Serializes the arena tests so the process-wide chunk counters yield
-    /// attributable deltas. Poison-tolerant: a `#[should_panic]`-style test that
-    /// trips the debug guard must not wedge the rest of the suite.
-    static SERIAL: Mutex<()> = Mutex::new(());
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
-        SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    use super::test_serial as serial;
 
     fn tagged(ptr: *const c_void) -> bool {
         (unsafe { read_size_word(ptr as *const u8) } & TAG_ARENA) != 0

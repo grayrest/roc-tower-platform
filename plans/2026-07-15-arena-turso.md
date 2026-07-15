@@ -248,9 +248,9 @@ the materialized-views builder flag is real.
   effects (re-audited in A2)]
 
 ### Status
-- [ ] A1 arena core
-- [ ] A2 lifecycle wiring
-- [ ] A3 zero-copy response handoff
+- [x] A1 arena core (arena.rs + lib.rs; 9 unit tests) — 6f56e18
+- [x] A2 lifecycle wiring (router install/catch_unwind, CtxGuard owns arena) — d8f3c46
+- [x] A3 zero-copy response handoff (ResponseBody borrow via Bytes::from_owner) — 154/154 green
 - [ ] A4 gates + bench harness + docs
 - [ ] B0 turso spike (GATE)
 - [ ] B1 pool + write effects (incl. effect.rs)

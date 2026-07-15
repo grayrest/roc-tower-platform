@@ -335,10 +335,12 @@ fn invoke_err_handler(callable: abi::RocErasedCallable, err: &EffectErr) -> Resp
             capture,
         );
         let reply = ret.assume_init();
+        // Error-handler replies are small and off the hot path — copy the body
+        // and release the reply immediately rather than pinning the arena.
         let out = ResponseParts {
             status: reply.status,
             headers: copy_headers(reply.headers.as_slice()),
-            body: reply.body.as_slice().to_vec(),
+            body: crate::body::ResponseBody::Copied(reply.body.as_slice().to_vec()),
         };
         reply.decref(host);
         out
