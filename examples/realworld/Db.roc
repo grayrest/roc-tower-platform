@@ -33,6 +33,20 @@ Db := [].{
         author : Db.Profile,
     }
 
+    ## RealWorld list-item article: the full article MINUS `body` (the spec
+    ## forbids the body in list/feed items). Serialized in Roc from typed rows.
+    ArticleSummary : {
+        slug : Str,
+        title : Str,
+        description : Str,
+        tagList : List(Str),
+        createdAt : Str,
+        updatedAt : Str,
+        favorited : JsonBool,
+        favoritesCount : I64,
+        author : Db.Profile,
+    }
+
     ## The database file the request's model names — the standard first step
     ## of a coeffect that reads.
     of = |req| Box.unbox(req.model).db
@@ -163,7 +177,10 @@ Db := [].{
     ## every match and pay the SELECT-clause subqueries for all of them);
     ## the COUNT query wants IN (materialize the id-list once instead of
     ## probing all rows).
-    list_articles! = |ctx, db, viewer, filters| {
+    ## PURE: turn the list filters into the shared page WHERE, the count
+    ## statement, and the ordered positional `where_params` — the exact tuple
+    ## both `run_article_page!` (json) and `run_article_page_typed!` (typed) take.
+    list_query_parts = |filters| {
         tag_part =
             if filters.tag.is_empty()
                 { page: [], count: [], params: [] }
@@ -209,16 +226,32 @@ Db := [].{
                 "SELECT COUNT(*) AS n FROM articles a JOIN users u ON u.id = a.author_id${count_where}"
             else
                 "SELECT COUNT(*) AS n FROM article_tags att JOIN articles a ON a.id = att.article_id JOIN users u ON u.id = a.author_id${count_where}"
-        run_article_page!(ctx, db, viewer, page_where, count_sql, where_params, filters.limit, filters.offset)
+        { page_where: page_where, count_sql: count_sql, where_params: where_params }
+    }
+
+    ## JSON list: page + count assembled in SQL, envelope stitched in Roc.
+    list_articles! = |ctx, db, viewer, filters| {
+        parts = Db.list_query_parts(filters)
+        run_article_page!(ctx, db, viewer, parts.page_where, parts.count_sql, parts.where_params, filters.limit, filters.offset)
+    }
+
+    ## TYPED list: same filter parts, typed rows serialized in Roc.
+    list_articles_typed! = |ctx, db, viewer, filters| {
+        parts = Db.list_query_parts(filters)
+        run_article_page_typed!(ctx, db, viewer, parts.page_where, parts.count_sql, parts.where_params, filters.limit, filters.offset)
     }
 
     ## The viewer's feed: articles by followed authors, most recent first.
     ## Same EXISTS-for-page / IN-for-count split as `list_articles!`.
-    feed_articles! = |ctx, db, viewer, limit, offset| {
-        page_where = " WHERE EXISTS(SELECT 1 FROM follows fo2 WHERE fo2.follower_id = ? AND fo2.followed_id = a.author_id)"
-        count_sql = "SELECT COUNT(*) AS n FROM articles a WHERE a.author_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
-        run_article_page!(ctx, db, viewer, page_where, count_sql, [Integer(viewer)], limit, offset)
-    }
+    feed_where = " WHERE EXISTS(SELECT 1 FROM follows fo2 WHERE fo2.follower_id = ? AND fo2.followed_id = a.author_id)"
+    feed_count = "SELECT COUNT(*) AS n FROM articles a WHERE a.author_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
+
+    feed_articles! = |ctx, db, viewer, limit, offset|
+        run_article_page!(ctx, db, viewer, Db.feed_where, Db.feed_count, [Integer(viewer)], limit, offset)
+
+    ## TYPED feed: same page/count, typed rows serialized in Roc.
+    feed_articles_typed! = |ctx, db, viewer, limit, offset|
+        run_article_page_typed!(ctx, db, viewer, Db.feed_where, Db.feed_count, [Integer(viewer)], limit, offset)
 
     ## Load a profile by username with the viewer's following flag; rejects
     ## 404 on a miss. Returns the user id alongside for follow writes.
@@ -371,6 +404,74 @@ run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit
     # Envelope assembled in Roc: the big array is spliced once into the body,
     # the count is tiny. Both are already JSON, so `RawJson`, not `Res.json`.
     Ok(RawJson.from("{\"articles\":${RawJson.to_str(articles)},\"articlesCount\":${count.to_str()}}"))
+}
+
+## Internal: the body-less article columns for list/feed rows — mirrors
+## `article_select` (the by-slug typed fragment) but OMITS `a.body`, which the
+## spec forbids in list items. Read by name via `Sql.query!`; `:viewer` is
+## param 1 (SQLite reuses it for both flags), page_where `?` follow it.
+article_summary_select =
+    \\SELECT a.slug, a.title, a.description, a.created_at, a.updated_at,
+    \\       u.username, u.bio, u.image,
+    \\       (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+    \\       EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer) AS favorited,
+    \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id) AS following,
+    \\       (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list
+    \\FROM articles a JOIN users u ON u.id = a.author_id
+
+## Internal: one `Sql.query!` row (by name) to an ArticleSummary; 500 on a
+## corrupt cell (impossible for this fixed shape, but typed all the way).
+article_summary_from_row = |row| {
+    slug = row.str("slug") ? |_| Api.error(500, "corrupt article row")
+    title = row.str("title") ? |_| Api.error(500, "corrupt article row")
+    description = row.str("description") ? |_| Api.error(500, "corrupt article row")
+    created_at = row.str("created_at") ? |_| Api.error(500, "corrupt article row")
+    updated_at = row.str("updated_at") ? |_| Api.error(500, "corrupt article row")
+    username = row.str("username") ? |_| Api.error(500, "corrupt article row")
+    bio = row.nullable_str("bio") ? |_| Api.error(500, "corrupt article row")
+    image = row.nullable_str("image") ? |_| Api.error(500, "corrupt article row")
+    favorites_count = row.i64("favorites_count") ? |_| Api.error(500, "corrupt article row")
+    favorited = row.i64("favorited") ? |_| Api.error(500, "corrupt article row")
+    following = row.i64("following") ? |_| Api.error(500, "corrupt article row")
+    tag_list = row.nullable_str("tag_list") ? |_| Api.error(500, "corrupt article row")
+    Ok({
+        slug: slug,
+        title: title,
+        description: description,
+        tagList: Db.split_tags(tag_list),
+        createdAt: created_at,
+        updatedAt: updated_at,
+        favorited: JsonBool.from(favorited != 0),
+        favoritesCount: favorites_count,
+        author: { username: username, bio: bio, image: image, following: JsonBool.from(following != 0) },
+    })
+}
+
+## Internal: TYPED sibling of `run_article_page!` — read the page as typed
+## rows (body-less), read the count, and hand the `{articles, articlesCount}`
+## record back for the pure handler to serialize in Roc.
+run_article_page_typed! = |ctx, db, viewer, page_where, count_sql, where_params, limit, offset| {
+    page_sql = "${article_summary_select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
+    page_params = [Integer(viewer)]
+        .concat(where_params)
+        .append(Integer(limit))
+        .append(Integer(offset))
+    rows = Sql.query!(ctx, db, page_sql, page_params)
+        ? |message| Api.error(500, "db error: ${message}")
+    articles = rows.fold(Ok([]), |acc, row| match acc {
+        Err(e) => Err(e)
+        Ok(list) => match article_summary_from_row(row) {
+            Err(e) => Err(e)
+            Ok(summary) => Ok(list.append(summary))
+        }
+    })?
+
+    count_rows = Sql.query!(ctx, db, count_sql, where_params)
+        ? |message| Api.error(500, "db error: ${message}")
+    count_row = Sql.first(count_rows) ? |_| Api.error(500, "count returned no rows")
+    count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
+
+    Ok({ articles: articles, articlesCount: count })
 }
 
 ## split_tags: NULL means no tags

@@ -272,18 +272,30 @@ Articles := [].{
             .no_content()
     }
 
-    ## Coeffect: the filtered, paginated global article list + count.
-    list_page! = { filters: Articles.filters, bounds: Articles.bounds }.Cofx
+    ## Coeffect: the filtered, paginated global article list + count. `filters`
+    ## builds the query shape once; the Db call differs by mode.
+    list_filters = { filters: Articles.filters, bounds: Articles.bounds }.Cofx
+
+    list_page! = Articles.list_filters
         ->Cofx.and_then(|input, req| {
             viewer = Auth.optional_user!(req)?
-            Db.list_articles!(req.ctx, Db.of(req), Auth.viewer_id(viewer), {
-                tag: input.filters.tag,
-                author: input.filters.author,
-                favorited: input.filters.favorited,
-                limit: input.bounds.limit,
-                offset: input.bounds.offset,
-            })
+            Db.list_articles!(req.ctx, Db.of(req), Auth.viewer_id(viewer), Articles.list_args(input))
         })
+
+    list_page_typed! = Articles.list_filters
+        ->Cofx.and_then(|input, req| {
+            viewer = Auth.optional_user!(req)?
+            Db.list_articles_typed!(req.ctx, Db.of(req), Auth.viewer_id(viewer), Articles.list_args(input))
+        })
+
+    ## PURE: the filters+bounds coeffect value to the Db list-args record.
+    list_args = |input| {
+        tag: input.filters.tag,
+        author: input.filters.author,
+        favorited: input.filters.favorited,
+        limit: input.bounds.limit,
+        offset: input.bounds.offset,
+    }
 
     ## Coeffect: the authenticated viewer's feed page + count.
     feed_page! = Articles.bounds
@@ -292,17 +304,35 @@ Articles := [].{
             Db.feed_articles!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
         })
 
-    ## `page` bound to each of its two sources: the filtered global list
-    ## and the viewer's feed.
-    list_h! = Box.box(Cofx.with1(Articles.list_page!, Articles.page))
+    feed_page_typed! = Articles.bounds
+        ->Cofx.and_then(|page_bounds, req| {
+            user = Auth.current_user!(req)?
+            Db.feed_articles_typed!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
+        })
 
-    feed_h! = Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
+    ## `page` bound to each of its two sources (global list, viewer's feed).
+    ## `Typed` serializes the `{articles, articlesCount}` envelope in Roc;
+    ## `Json` streams the SQL-assembled document verbatim.
+    list_h! =
+        if Api.read_mode == Typed
+            Box.box(Cofx.with1(Articles.list_page_typed!, Articles.page_typed))
+        else
+            Box.box(Cofx.with1(Articles.list_page!, Articles.page))
 
-    ## PURE handler: a page of articles, the whole `{articles, articlesCount}`
-    ## envelope assembled in SQL (the summaries already OMIT the body the spec
-    ## forbids in list items), written verbatim.
+    feed_h! =
+        if Api.read_mode == Typed
+            Box.box(Cofx.with1(Articles.feed_page_typed!, Articles.page_typed))
+        else
+            Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
+
+    ## PURE handler (Json mode): the SQL-assembled page envelope (summaries
+    ## already OMIT the body the spec forbids in list items), verbatim.
     page : RawJson -> Res.Response
     page = |doc| Res.json_raw(200, doc)
+
+    ## PURE handler (Typed mode): serialize the typed page envelope in Roc.
+    page_typed : { articles : List(Db.ArticleSummary), articlesCount : I64 } -> Res.Response
+    page_typed = |data| Res.json(200, data)
 
     ## `favorite` bound to its coeffects.
     favorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite))
