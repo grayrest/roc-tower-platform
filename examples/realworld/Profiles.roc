@@ -34,12 +34,21 @@ Profiles := [].{
             Db.load_profile_json!(req.ctx, Db.of(req), Auth.viewer_id(viewer), username)
         })
 
-    ## `get` bound to its coeffect.
-    get_h! = Box.box(Cofx.with1(Profiles.profile_json!, Profiles.get))
+    ## `get` bound to its coeffect. `Typed` reuses the typed `target!` read and
+    ## serializes `{profile}` in Roc; `Json` streams the SQL-assembled document.
+    get_h! =
+        if Api.read_mode == Typed
+            Box.box(Cofx.with1(Profiles.target!, Profiles.get_typed))
+        else
+            Box.box(Cofx.with1(Profiles.profile_json!, Profiles.get))
 
-    ## PURE handler: the SQL-assembled profile envelope, written verbatim.
+    ## PURE handler (Json mode): the SQL-assembled profile envelope, verbatim.
     get : RawJson -> Res.Response
     get = |doc| Res.json_raw(200, doc)
+
+    ## PURE handler (Typed mode): serialize the typed profile in Roc.
+    get_typed : { id : I64, profile : Db.Profile } -> Res.Response
+    get_typed = |target| Res.json(200, { profile: target.profile })
 
     ## `follow` / `unfollow` bound to their coeffects.
     follow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.follow))

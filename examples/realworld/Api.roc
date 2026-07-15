@@ -3,6 +3,11 @@ import pf.Res
 ## RealWorld API conventions: the `{"errors":{"body":[...]}}` error shape,
 ## ISO-8601 timestamps, and slug generation. Pure helpers only.
 Api := [].{
+    ## A/B switch for the GET read endpoints (typed-vs-json benchmark):
+    ## `Typed` reads typed rows and serializes the envelope in Roc; `Json`
+    ## assembles the document in SQL (`@sql json`). Flip and rebuild to
+    ## produce the two bench binaries; both paths stay compiled either way.
+    read_mode = Typed
     ## A field-keyed RealWorld error response: `{"errors":{"<field>":["<message>"]}}`
     ## (the shape the official Hurl conformance suite asserts on, e.g.
     ## `errors.username[0] == "can't be blank"`). The key is dynamic, so the

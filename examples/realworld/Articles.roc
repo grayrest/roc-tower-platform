@@ -193,12 +193,21 @@ Articles := [].{
         })
     }
 
-    ## `get` bound to its coeffect.
-    get_h! = Box.box(Cofx.with1(Articles.article_json!, Articles.get))
+    ## `get` bound to its coeffect. `Typed` reads a typed row and serializes
+    ## `{article}` in Roc; `Json` streams the SQL-assembled document verbatim.
+    get_h! =
+        if Api.read_mode == Typed
+            Box.box(Cofx.with1(Articles.loaded_article!, Articles.get_typed))
+        else
+            Box.box(Cofx.with1(Articles.article_json!, Articles.get))
 
-    ## PURE handler: the SQL-assembled article envelope, written verbatim.
+    ## PURE handler (Json mode): the SQL-assembled article envelope, verbatim.
     get : RawJson -> Res.Response
     get = |doc| Res.json_raw(200, doc)
+
+    ## PURE handler (Typed mode): serialize the typed article in Roc.
+    get_typed : { id : I64, author_id : I64, article : Db.Article } -> Res.Response
+    get_typed = |loaded| Res.json(200, { article: loaded.article })
 
     ## `update` bound to its coeffects (owner gate, patch, instant).
     update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch, Req.now!, Articles.update))
