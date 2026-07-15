@@ -1,5 +1,15 @@
 # Plan: typed-read GET endpoints vs `@sql json` (the elimination bench)
 
+> **DONE 2026-07-15.** All phases complete. Both engines benchmarked
+> (notes/2026-07-15-typed-vs-json.md): rusqlite comments +51% / parity elsewhere
+> / list −17%; turso +4–10% / list −7%. User chose **delete @sql json now**
+> (accept the list regression). The variant is removed end-to-end (example,
+> platform RawJson/json_raw/query_json, sqlgen json kind); read endpoints are
+> typed-only. 154/154 on **both** rusqlite and turso, clippy + sqlgen tests
+> green. Follow-up (not done): positional `Sql.Row` reads to flip the list
+> regression to a win.
+
+
 ## Summary
 Give every RealWorld GET endpoint a typed-read + Roc-serialize path alongside the
 existing `@sql json` path, A/B them end-to-end on both engines, and — if typed
