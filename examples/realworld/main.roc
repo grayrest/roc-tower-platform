@@ -12,6 +12,7 @@ import Users
 import Profiles
 import Articles
 import Comments
+import Tags
 
 # RealWorld (Conduit) backend — https://realworld-docs.netlify.app — as a
 # stress test of the coeffect API: every handler is pure, every read is a
@@ -30,20 +31,8 @@ main = |{}| {
         .concat(Profiles.routes({ prefix: "/api/profiles" }))
         .concat(Articles.routes({ prefix: "/api/articles" }))
         .concat(Comments.routes({ prefix: "/api/articles" }))
-        .concat([
-            { method: "GET", path: "/api/tags", handler: tags_h! },
-        ]),
+        .concat(Tags.routes({ prefix: "/api/tags" })),
 }
-
-## Coeffect: the tags envelope, assembled in SQL.
-tags! = |req| Db.all_tags_json!(req.ctx, Box.unbox(req.model).db)
-
-## `tags` bound to its coeffect.
-tags_h! = Box.box(Cofx.with1(tags!, tags))
-
-## PURE handler: the SQL-assembled tags envelope, written verbatim.
-tags : RawJson -> Res.Response
-tags = |doc| Res.json_raw(200, doc)
 
 # --- Schema ------------------------------------------------------------------
 #

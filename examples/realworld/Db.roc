@@ -275,6 +275,37 @@ Db := [].{
         Ok(doc)
     }
 
+    ## RealWorld comment object, JSON-shaped (nested author profile).
+    Comment : { id : I64, createdAt : Str, updatedAt : Str, body : Str, author : Db.Profile }
+
+    ## TYPED comments read: flat rows (author fields alongside), oldest first,
+    ## with the viewer's following flag as a real boolean (`: Bool` → JsonBool).
+    ## The Roc side nests the author and shapes the envelope.
+    ## @params viewer: I64, article_id: I64
+    ## @sql
+    comments_q =
+        \\SELECT c.id, c.created_at, c.updated_at, c.body,
+        \\       u.username, u.bio, u.image,
+        \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id) AS "following: Bool"
+        \\FROM comments c JOIN users u ON u.id = c.author_id
+        \\WHERE c.article_id = :article_id ORDER BY c.id
+
+    load_comments! = |ctx, db, viewer, article_id| {
+        rows = DbGen.comments_q!(ctx, db, { viewer: viewer, article_id: article_id })
+            ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        Ok(rows.map(Db.comment_from_row))
+    }
+
+    ## Map a generated comment row (flat) to the JSON-shaped comment: nest the
+    ## author profile.
+    comment_from_row = |row| {
+        id: row.id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        body: row.body,
+        author: { username: row.username, bio: row.bio, image: row.image, following: row.following },
+    }
+
     ## One comment's id + author for the delete-comment authorization check;
     ## scoped to the article so a wrong-article id 404s.
     ## @params comment_id: I64, article_id: I64
@@ -299,6 +330,17 @@ Db := [].{
     all_tags_json! = |ctx, db| {
         doc = DbGen.tags_json_q!(ctx, db, {}) ? |DbErr(message)| Api.error(500, "db error: ${message}")
         Ok(doc)
+    }
+
+    ## TYPED tags read: every tag in use, sorted. The Roc side pulls the one
+    ## column out to a `List(Str)` and shapes the `{tags}` envelope.
+    ## @sql
+    tags_q =
+        \\SELECT DISTINCT tag FROM article_tags ORDER BY tag
+
+    all_tags! = |ctx, db| {
+        rows = DbGen.tags_q!(ctx, db, {}) ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        Ok(rows.map(|row| row.tag))
     }
 }
 
