@@ -122,10 +122,30 @@ read(s)), so this is ~11–22µs/request — a large share of the end-to-end gap
 remainder is turso's generally younger step/IO/cell-extraction path on the
 heavier real queries.
 
-**Actionable:** `turso_sdk_kit` exposes `prepare_cached`; switching
-`turso_db.rs` from `prepare_single` to it (the pooled connection persists across
-requests, so the cache would survive) should recover most of the gap. Not yet
-tried.
+**Fix (done): connection pool + `prepare_cached`.** `prepare_cached` *alone* was
+inert — `checkout()` did `db.connect()` per request and the statement cache is
+per-connection (fresh, empty each time), so it re-prepared exactly like
+`prepare_single` (measured: byslug 15.1k→15.1k rps, flat). The real fix is a
+**connection pool** (idle-set per db path, checkout/return guard, `POOL_MAX=16`,
+mirroring rusqlite's r2d2 pool) so a persistent connection keeps its
+`prepare_cached` cache warm. With pool + cache (2-pass order-balanced medians,
+5000-row seed):
+
+| endpoint | turso `prepare_single` (no pool) | turso pool + `prepare_cached` | speedup | vs rusqlite |
+|----------|---------------------------------:|------------------------------:|--------:|------------:|
+| byslug   | 15472 | **53396** | **3.45×** | 0.94× (near parity) |
+| profile  | 27009 | **66505** | **2.46×** | 0.99× (parity) |
+| comments | 11914 | **32659** | **2.74×** | **1.13× (beats rusqlite)** |
+| list     |  2534 |  2719 | 1.07× | 0.57× (still 1.7× slower) |
+| tags     |  3229 |  3439 | 1.07× | 0.31× (still 3.2× slower) |
+
+So the gap was **bimodal**: the prepare-bound endpoints (byslug/profile/comments)
+close to **parity or better** once the plan is cached on a pooled connection;
+`list` and `tags` barely move (+7%) because they are **execution**-bound —
+`list` is a 20-row page with per-row correlated subqueries read by name;
+`tags` is `DISTINCT tag ORDER BY tag` over 10k `article_tags` rows (full
+scan + sort + dedup). That residual is turso's younger execution engine, which
+no statement caching addresses. 154/154 conformance holds on the pooled backend.
 
 ### Both engines, one sentence
 

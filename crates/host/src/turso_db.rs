@@ -61,11 +61,63 @@ fn open_database(path: &str) -> Result<Arc<TursoDatabase>, String> {
     Ok(db)
 }
 
-fn checkout(path: &str) -> Result<Arc<TursoConnection>, String> {
+/// Max idle connections retained per database path. Outstanding connections are
+/// bounded by in-flight request concurrency; returning past this cap just drops
+/// the connection (a cheap Arc handle) rather than growing the idle set.
+/// Mirrors rusqlite's `SQLITE_POOL_MAX`.
+const POOL_MAX: usize = 16;
+
+fn pools() -> &'static Mutex<HashMap<String, Vec<Arc<TursoConnection>>>> {
+    static POOLS: OnceLock<Mutex<HashMap<String, Vec<Arc<TursoConnection>>>>> = OnceLock::new();
+    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A connection borrowed from the pool for one request. On drop it returns
+/// itself to the pool's idle set so its prepared-statement cache
+/// (`prepare_cached`, keyed per connection) stays warm across requests — the
+/// whole point of pooling here. A panic unwinding past this guard across a Roc
+/// frame skips the drop (see `roc_call.rs`); the connection is then simply not
+/// returned — leaked to a plain drop, never shared while in use — and the pool
+/// re-creates on the next checkout.
+pub(crate) struct PooledConn {
+    conn: Option<Arc<TursoConnection>>,
+    path: String,
+}
+
+impl PooledConn {
+    fn conn(&self) -> &TursoConnection {
+        self.conn.as_ref().expect("pooled connection already returned")
+    }
+}
+
+impl Drop for PooledConn {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take()
+            && let Ok(mut pools) = pools().lock()
+        {
+            let idle = pools.entry(std::mem::take(&mut self.path)).or_default();
+            if idle.len() < POOL_MAX {
+                idle.push(conn);
+            }
+        }
+    }
+}
+
+/// Check out a connection for `db`: reuse an idle one (warm statement cache) or
+/// open a fresh one. Returned to the pool when the `PooledConn` drops.
+fn checkout(path: &str) -> Result<PooledConn, String> {
+    {
+        let mut pools = pools().lock().map_err(|_| "turso pool poisoned".to_string())?;
+        if let Some(idle) = pools.get_mut(path)
+            && let Some(conn) = idle.pop()
+        {
+            return Ok(PooledConn { conn: Some(conn), path: path.to_owned() });
+        }
+    }
     let db = open_database(path)?;
     let conn = db.connect().map_err(|e| format!("turso checkout for {path:?}: {e:?}"))?;
     conn.set_busy_timeout(BUSY_TIMEOUT);
-    Ok(conn)
+    Ok(PooledConn { conn: Some(conn), path: path.to_owned() })
 }
 
 /// Convert an engine-neutral bound param to a turso value.
@@ -81,7 +133,7 @@ fn to_turso(value: &SqlValue) -> Value {
 
 /// Prepare + bind + run a statement to completion (no result rows expected).
 fn exec_write(conn: &TursoConnection, sql: &str, params: &[SqlValue]) -> Result<(), TursoError> {
-    let mut stmt = conn.prepare_single(sql)?;
+    let mut stmt = conn.prepare_cached(sql)?;
     for (i, value) in params.iter().enumerate() {
         stmt.bind_positional(i + 1, to_turso(value))?;
     }
@@ -91,7 +143,7 @@ fn exec_write(conn: &TursoConnection, sql: &str, params: &[SqlValue]) -> Result<
 
 /// Run a parameter-less statement (pragmas, BEGIN/COMMIT/ROLLBACK).
 fn exec_raw(conn: &TursoConnection, sql: &str) -> Result<(), TursoError> {
-    let mut stmt = conn.prepare_single(sql)?;
+    let mut stmt = conn.prepare_cached(sql)?;
     stmt.execute(None)?;
     Ok(())
 }
@@ -121,8 +173,11 @@ fn classify(err: &TursoError) -> DbError {
 struct Cursor {
     columns: Vec<String>,
     stmt: Box<TursoStatement>,
-    /// Held so the connection outlives the statement.
-    _conn: Arc<TursoConnection>,
+    /// Held so the connection outlives the statement, and returned to the pool
+    /// when the cursor is finalized. Declared AFTER `stmt` so the statement
+    /// drops (finalizes) first — the connection must not re-enter the pool
+    /// (available to another thread) while its statement is still live.
+    _conn: PooledConn,
     /// True after a step that produced a row; getters read the current row.
     has_row: bool,
 }
@@ -208,11 +263,11 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
         args.sql.decref(host);
     }
 
-    let conn = match checkout(&db) {
-        Ok(conn) => conn,
+    let pooled = match checkout(&db) {
+        Ok(pooled) => pooled,
         Err(message) => return begin_err(&message),
     };
-    match build_cursor(conn, &sql, &params) {
+    match build_cursor(pooled, &sql, &params) {
         Ok(cursor) => {
             let handle = Box::into_raw(Box::new(cursor)) as u64;
             registry().lock().expect("cursor registry poisoned").insert(handle, ctx);
@@ -222,15 +277,20 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
     }
 }
 
-fn build_cursor(conn: Arc<TursoConnection>, sql: &str, params: &[SqlValue]) -> Result<Cursor, String> {
-    let mut stmt = conn.prepare_single(sql).map_err(|e| format!("{e:?}"))?;
+fn build_cursor(pooled: PooledConn, sql: &str, params: &[SqlValue]) -> Result<Cursor, String> {
+    // prepare_cached keys the compiled Program by SQL string on the connection;
+    // a hit skips parse+plan (measured ~+11µs/query otherwise). The connection
+    // comes from the pool and is reused across requests, so the cache persists,
+    // and the app's SQL-string set is bounded (LIMIT/OFFSET are `?` params, not
+    // in the text). Mirrors cursor.rs's rusqlite `prepare_cached`.
+    let mut stmt = pooled.conn().prepare_cached(sql).map_err(|e| format!("{e:?}"))?;
     for (i, value) in params.iter().enumerate() {
         stmt.bind_positional(i + 1, to_turso(value)).map_err(|e| format!("bind param {}: {e:?}", i + 1))?;
     }
     let columns: Vec<String> = (0..stmt.column_count())
         .map(|i| stmt.column_name(i).unwrap_or_default())
         .collect();
-    Ok(Cursor { columns, stmt, _conn: conn, has_row: false })
+    Ok(Cursor { columns, stmt, _conn: pooled, has_row: false })
 }
 
 /// `Host.sql_step! : U64 => Try(Bool, Str)`.
@@ -372,17 +432,18 @@ pub extern "C" fn roc_sql_finish(handle: u64) {
 
 /// Run `writes` in one `BEGIN IMMEDIATE` transaction, in order.
 pub fn run_write_txn(db: &str, writes: &[Write]) -> Result<(), (usize, DbError)> {
-    let conn = checkout(db).map_err(|message| (0, DbError::Other(message)))?;
-    exec_raw(&conn, "BEGIN IMMEDIATE").map_err(|err| (0, classify(&err)))?;
+    let pooled = checkout(db).map_err(|message| (0, DbError::Other(message)))?;
+    let conn = pooled.conn();
+    exec_raw(conn, "BEGIN IMMEDIATE").map_err(|err| (0, classify(&err)))?;
     for (index, (sql, params)) in writes.iter().enumerate() {
-        if let Err(err) = exec_write(&conn, sql, params) {
-            let _ = exec_raw(&conn, "ROLLBACK");
+        if let Err(err) = exec_write(conn, sql, params) {
+            let _ = exec_raw(conn, "ROLLBACK");
             return Err((index, classify(&err)));
         }
     }
     let last = writes.len().saturating_sub(1);
-    if let Err(err) = exec_raw(&conn, "COMMIT") {
-        let _ = exec_raw(&conn, "ROLLBACK");
+    if let Err(err) = exec_raw(conn, "COMMIT") {
+        let _ = exec_raw(conn, "ROLLBACK");
         return Err((last, classify(&err)));
     }
     Ok(())
@@ -390,6 +451,6 @@ pub fn run_write_txn(db: &str, writes: &[Write]) -> Result<(), (usize, DbError)>
 
 /// Run one write outside a transaction (autocommit) — the `Opt` DbWrite path.
 pub fn run_autocommit(db: &str, sql: &str, params: &[SqlValue]) -> Result<(), DbError> {
-    let conn = checkout(db).map_err(DbError::Other)?;
-    exec_write(&conn, sql, params).map_err(|err| classify(&err))
+    let pooled = checkout(db).map_err(DbError::Other)?;
+    exec_write(pooled.conn(), sql, params).map_err(|err| classify(&err))
 }
