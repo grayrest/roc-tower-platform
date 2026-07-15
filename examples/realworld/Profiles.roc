@@ -28,7 +28,7 @@ Profiles := [].{
 
     ## PURE handler: serialize the typed profile as `{profile}` in Roc.
     get : { id : I64, profile : Db.Profile } -> Res.Response
-    get = |target| Res.json(200, { profile: target.profile })
+    get = |target| Res.cacheable(Res.json(200, { profile: target.profile }), Db.profile_read_tables)
 
     ## `follow` / `unfollow` bound to their coeffects.
     follow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.follow))

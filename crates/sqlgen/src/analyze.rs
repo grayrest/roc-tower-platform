@@ -65,6 +65,10 @@ pub struct Analysis {
     pub params: Vec<Param>,
     /// `sqlite3_stmt_readonly` — a read (SELECT / read-only CTE) vs a write.
     pub readonly: bool,
+    /// The distinct base tables the statement reads, correlated subqueries
+    /// included (their table opens land in the same VDBE program). Sorted +
+    /// deduped. Feeds the response cache's per-entry invalidation key.
+    pub tables: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -154,10 +158,22 @@ impl<'c> Analyzer<'c> {
             .map(|name| Param { name, ty: None })
             .collect();
 
+        let mut tables: Vec<String> = cursors
+            .cursors
+            .values()
+            .filter_map(|c| match c {
+                Cursor::Table(t) | Cursor::Index(t, _) => Some(t.clone()),
+                Cursor::Ephemeral => None,
+            })
+            .collect();
+        tables.sort();
+        tables.dedup();
+
         Ok(Analysis {
             columns,
             params,
             readonly,
+            tables,
         })
     }
 

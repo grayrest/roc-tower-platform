@@ -20,6 +20,11 @@ main = |{}| {
         CorsPermissive,
         TimeoutMs(10000),
         MaxBodyBytes(65536),
+        # In-memory response cache for anonymous GETs. Invalidation is precise
+        # (a write purges the entries that read the mutated table), so the TTL is
+        # only a backstop. `authorization`-bearing requests bypass it, so a
+        # personalized response never enters a shared entry.
+        ResponseCache({ ttl_ms: 30000, max_entries: 4096, methods: ["GET"], bypass_headers: ["authorization"] }),
     ],
     init!: init!,
     routes: Users.routes({ prefix: "/api" })

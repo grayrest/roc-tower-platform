@@ -108,6 +108,15 @@ Res := [].{
         effects: response.effects,
     }
 
+    ## Mark a response cacheable by the host's in-memory response cache, declaring
+    ## the tables its underlying reads touched. The cache purges this entry when
+    ## any of those tables is written (via the effect executor), so a stale read
+    ## is never served past a mutation. A no-op unless the app enabled the
+    ## `ResponseCache` setting; the header is internal and stripped before send.
+    cacheable : Res.Response, List(Str) -> Res.Response
+    cacheable = |response, tables|
+        Res.with_header(response, "x-tp-cache-tables", Str.join_with(tables, ","))
+
     ## The default failure handler used by `Res.fx` / `.fx`: HTTP 500.
     default_err : Res.Err -> Res.Reply
     default_err = |_err| { status: 500, headers: [], body: "effect failed".to_utf8() }

@@ -258,6 +258,14 @@ fn emit_read(
     };
 
     let params_arg = if bindings.is_empty() { "_params" } else { "params" };
+    // The base tables this read touches (correlated subqueries included), for the
+    // response cache's table-scoped invalidation: `Res.cacheable(resp, DbGen.<q>_tables)`.
+    let tables_lit = analysis
+        .tables
+        .iter()
+        .map(|t| format!("\"{t}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     let decl = format!(
         "    {name}! : U64, Str, {param_ty} => {ret_ty}\n\
          \x20   {name}! = |ctx, db, {params_arg}| {{\n\
@@ -265,7 +273,11 @@ fn emit_read(
          \x20       result = {call}\n\
          \x20       Host.sql_finish!(handle)\n\
          \x20       result\n\
-         \x20   }}",
+         \x20   }}\n\
+         \n\
+         \x20   ## The base tables `{name}!` reads — the response-cache dependency set.\n\
+         \x20   {name}_tables : List(Str)\n\
+         \x20   {name}_tables = [{tables_lit}]",
         name = name,
         param_ty = param_record_ty,
         ret_ty = ret_ty,
@@ -273,6 +285,7 @@ fn emit_read(
         bindings = bindings,
         call = call,
         params_arg = params_arg,
+        tables_lit = tables_lit,
     );
 
     Ok(EmittedQuery {

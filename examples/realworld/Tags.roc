@@ -14,7 +14,8 @@ Tags := [].{
     ## `get` bound to its coeffect.
     get_h! = Box.box(Cofx.with1(Tags.tags!, Tags.get))
 
-    ## PURE handler: serialize the tag list as `{tags}` in Roc.
+    ## PURE handler: serialize the tag list as `{tags}` in Roc. Cacheable —
+    ## purged whenever `article_tags` is written.
     get : List(Str) -> Res.Response
-    get = |tag_list| Res.json(200, { tags: tag_list })
+    get = |tag_list| Res.cacheable(Res.json(200, { tags: tag_list }), Db.tags_read_tables)
 }

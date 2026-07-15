@@ -76,7 +76,7 @@ Comments := [].{
 
     ## PURE handler: serialize the typed comment list as `{comments}` in Roc.
     list : List(Db.Comment) -> Res.Response
-    list = |comments| Res.json(200, { comments: comments })
+    list = |comments| Res.cacheable(Res.json(200, { comments: comments }), Db.comment_read_tables)
 
     ## Coeffect: the comment at {slug}/{id}, which the authenticated viewer
     ## must have written — 401 anonymous, 404 unknown article/comment,

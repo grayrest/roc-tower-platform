@@ -50,6 +50,31 @@ Db := [].{
     ## of a coeffect that reads.
     of = |req| Box.unbox(req.model).db
 
+    # --- response-cache dependency sets (see `Res.cacheable`) ---------------
+    # Each is the set of tables whose mutation must purge the cached response.
+    # sqlgen fills these in for generated readers (`DbGen.*_tables`, subqueries
+    # included); the dynamic list/feed reads (no generated query) declare theirs
+    # by hand. NOTE: the article reads splice the MATERIALIZED `tag_list` column,
+    # so sqlgen sees only the physical `articles` read — `article_tags` (the
+    # trigger source that feeds `tag_list`) is added explicitly so a tag edit
+    # invalidates the article.
+
+    ## Tables an article read (by-slug) depends on, incl. the materialized-tag source.
+    article_read_tables = DbGen.article_by_slug_q_tables.concat(["article_tags"])
+
+    ## Tables the list/feed page depends on — the dynamic `Sql.query!` path, so
+    ## declared by hand (over-declared is safe: it only over-purges).
+    list_read_tables = ["articles", "users", "favorites", "follows", "article_tags"]
+
+    ## Tables a profile read depends on (generated).
+    profile_read_tables = DbGen.profile_by_username_q_tables
+
+    ## Tables a comments read depends on (generated).
+    comment_read_tables = DbGen.comments_q_tables
+
+    ## Tables the tag list depends on (generated).
+    tags_read_tables = DbGen.tags_q_tables
+
     ## A NullableStr as a SQL parameter (Val -> TEXT, Null -> NULL).
     to_sql : NullableStr -> Host.SqlValue
     to_sql = |nullable| match nullable {

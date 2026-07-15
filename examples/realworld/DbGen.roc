@@ -11,6 +11,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+
+    ## The base tables `article_by_slug_q!` reads — the response-cache dependency set.
+    article_by_slug_q_tables : List(Str)
+    article_by_slug_q_tables = ["articles", "favorites", "follows", "users"]
     article_meta_q! : U64, Str, { slug : Str } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str)])
     article_meta_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT id, author_id FROM articles WHERE slug = :slug", params: [Text(params.slug)] }) ? |message| DbErr(message)
@@ -18,6 +22,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+
+    ## The base tables `article_meta_q!` reads — the response-cache dependency set.
+    article_meta_q_tables : List(Str)
+    article_meta_q_tables = ["articles"]
     profile_by_username_q! : U64, Str, { username : Str, viewer : I64 } => Try({ id : I64, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }, [NoRows, DbErr(Str)])
     profile_by_username_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT u.id, u.username, u.bio, u.image, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = u.id) AS \"following: Bool\" FROM users u WHERE u.username = :username", params: [Integer(params.viewer), Text(params.username)] }) ? |message| DbErr(message)
@@ -25,6 +33,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+
+    ## The base tables `profile_by_username_q!` reads — the response-cache dependency set.
+    profile_by_username_q_tables : List(Str)
+    profile_by_username_q_tables = ["follows", "users"]
     comments_q! : U64, Str, { article_id : I64, viewer : I64 } => Try(List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str)])
     comments_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT c.id, c.created_at, c.updated_at, c.body, u.username, u.bio, u.image, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id) AS \"following: Bool\" FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id", params: [Integer(params.viewer), Integer(params.article_id)] }) ? |message| DbErr(message)
@@ -32,6 +44,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+
+    ## The base tables `comments_q!` reads — the response-cache dependency set.
+    comments_q_tables : List(Str)
+    comments_q_tables = ["comments", "follows", "users"]
     comment_meta_q! : U64, Str, { article_id : I64, comment_id : I64 } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str)])
     comment_meta_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT c.id, c.author_id FROM comments c WHERE c.id = :comment_id AND c.article_id = :article_id", params: [Integer(params.comment_id), Integer(params.article_id)] }) ? |message| DbErr(message)
@@ -39,6 +55,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+
+    ## The base tables `comment_meta_q!` reads — the response-cache dependency set.
+    comment_meta_q_tables : List(Str)
+    comment_meta_q_tables = ["comments"]
     tags_q! : U64, Str, {} => Try(List({ tag : Str }), [DbErr(Str)])
     tags_q! = |ctx, db, _params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT DISTINCT tag FROM article_tags ORDER BY tag", params: [] }) ? |message| DbErr(message)
@@ -46,6 +66,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+
+    ## The base tables `tags_q!` reads — the response-cache dependency set.
+    tags_q_tables : List(Str)
+    tags_q_tables = ["article_tags"]
 }
 
 ## Read a nullable TEXT cell into NullableStr.
