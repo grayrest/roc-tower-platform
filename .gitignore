@@ -10,3 +10,6 @@
 # The B0 turso spike is excluded from the workspace, so it builds into its own
 # target dir.
 /crates/turso-spike/target
+# macOS sysroot for the turso host link (machine-specific SDK symlinks); create
+# with `just turso-sysroot`.
+/platform/targets/macos-sysroot

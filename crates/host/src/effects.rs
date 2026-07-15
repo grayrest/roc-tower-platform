@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+#[cfg(not(feature = "turso"))]
 use r2d2_sqlite::SqliteConnectionManager;
 
 use crate::abi;
@@ -60,12 +61,17 @@ pub(crate) unsafe fn decref_list_with<T: Copy>(list: abi::RocList<T>, drop_item:
 /// the process runs a single DB topology with explicit pragmas instead of the
 /// old shared-`Mutex<Connection>` cache (which corrupted concurrent
 /// transactions).
+#[cfg(not(feature = "turso"))]
 type SqlitePool = r2d2::Pool<SqliteConnectionManager>;
+#[cfg(not(feature = "turso"))]
 pub(crate) type PooledSqlite = r2d2::PooledConnection<SqliteConnectionManager>;
 
+#[cfg(not(feature = "turso"))]
 const SQLITE_POOL_MAX: u32 = 16;
+#[cfg(not(feature = "turso"))]
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[cfg(not(feature = "turso"))]
 fn sqlite_pools() -> &'static Mutex<HashMap<String, SqlitePool>> {
     static POOLS: OnceLock<Mutex<HashMap<String, SqlitePool>>> = OnceLock::new();
     POOLS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -259,6 +265,7 @@ pub(crate) fn send_request(
 // ---------------------------------------------------------------------------
 
 /// Convert an engine-neutral bound param to a rusqlite value at bind time.
+#[cfg(not(feature = "turso"))]
 pub(crate) fn to_rusqlite(value: &crate::db::SqlValue) -> rusqlite::types::Value {
     use rusqlite::types::Value;
     match value {
@@ -273,6 +280,7 @@ pub(crate) fn to_rusqlite(value: &crate::db::SqlValue) -> rusqlite::types::Value
 /// Get (or lazily build) the connection pool for `db`. Every connection is
 /// initialised with `busy_timeout=5s`, WAL journalling, and
 /// `synchronous=NORMAL` (spike I3's explicit-pragma topology).
+#[cfg(not(feature = "turso"))]
 pub(crate) fn sqlite_pool(db: &str) -> Result<SqlitePool, String> {
     let mut pools = sqlite_pools()
         .lock()
@@ -316,6 +324,7 @@ pub(crate) fn sqlite_pool(db: &str) -> Result<SqlitePool, String> {
 /// Check out one pooled connection for `db`. The caller returns it to the pool
 /// by dropping it. Coeffect reads check out per statement (autocommit); the
 /// effect executor checks out once for a `BEGIN IMMEDIATE` transaction.
+#[cfg(not(feature = "turso"))]
 pub(crate) fn checkout_sqlite(db: &str) -> Result<PooledSqlite, String> {
     sqlite_pool(db)?
         .get()

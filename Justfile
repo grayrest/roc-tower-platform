@@ -50,6 +50,40 @@ host: glue
 build app="examples/hello/main.roc": host
     "{{ roc }}" build "{{ app }}"
 
+# --- Turso backend (experimental: `--features turso`) ----------------------
+# The typed-API-on-Turso experiment. Swaps the DB backend to Turso; the roc
+# link then needs CoreFoundation (pulled by turso's iana-time-zone dep), which
+# `turso-sysroot` supplies. macOS only.
+
+# Build a minimal macOS sysroot so roc can link turso's CoreFoundation dep.
+# Symlinks libSystem + CoreFoundation (+ its libobjc re-export) from the active
+# SDK into the path roc auto-discovers frameworks from (platform/targets).
+turso-sysroot:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sdk="$(xcrun --show-sdk-path)"
+    sr="platform/targets/macos-sysroot"
+    mkdir -p "$sr/usr/lib" "$sr/System/Library/Frameworks/CoreFoundation.framework"
+    ln -sf "$sdk/usr/lib/libSystem.tbd"     "$sr/usr/lib/libSystem.tbd"
+    ln -sf "$sdk/usr/lib/libSystem.B.tbd"   "$sr/usr/lib/libSystem.B.tbd"
+    ln -sf "$sdk/usr/lib/libobjc.A.tbd"     "$sr/usr/lib/libobjc.A.tbd"
+    ln -sf "$sdk/usr/lib/libobjc.tbd"       "$sr/usr/lib/libobjc.tbd"
+    # roc skips symlinked framework dirs, so the .framework must be a real dir
+    # with the tbd inside (the tbd itself may be a symlink).
+    ln -sf "$sdk/System/Library/Frameworks/CoreFoundation.framework/Versions/Current/CoreFoundation.tbd" \
+        "$sr/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation.tbd"
+    echo "turso sysroot ready at $sr"
+
+# Build the turso-backed host staticlib and install it as the platform target.
+host-turso: glue turso-sysroot
+    cargo build --release -p tower-platform-host --features turso
+    mkdir -p "platform/targets/{{ target_dir }}"
+    cp target/release/libtower_platform_host.a "platform/targets/{{ target_dir }}/libhost.a"
+
+# Build a Roc app against the turso host (output: ./main).
+build-turso app="examples/realworld/main.roc": host-turso
+    "{{ roc }}" build "{{ app }}"
+
 # Build and run an example app.
 run app="examples/hello/main.roc": (build app)
     ./main
@@ -70,6 +104,25 @@ check-examples: glue
 # hurl) and network for the first spec download. NOT part of `just check` —
 # run manually when touching examples/realworld.
 realworld-conformance: (build "examples/realworld/main.roc")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    spec_dir="target/realworld-spec"
+    if [[ ! -d "$spec_dir/hurl" ]]; then
+        mkdir -p "$spec_dir"
+        curl -fsSL "https://github.com/realworld-apps/realworld/archive/refs/heads/main.tar.gz" \
+            | tar xz --strip-components=3 -C "$spec_dir" "realworld-main/specs/api"
+    fi
+    rm -f /tmp/tower-platform-realworld.db*
+    PORT=8199 ./main & server=$!
+    trap 'kill $server 2>/dev/null || true' EXIT
+    for _ in $(seq 50); do nc -z 127.0.0.1 8199 2>/dev/null && break; sleep 0.1; done
+    hurl --test --jobs 1 \
+        --variable "host=http://127.0.0.1:8199" \
+        --variable "uid=$(date +%s)$$" \
+        "$spec_dir"/hurl/*.hurl
+
+# Same conformance suite, but against the turso-backed server.
+realworld-conformance-turso: (build-turso "examples/realworld/main.roc")
     #!/usr/bin/env bash
     set -euo pipefail
     spec_dir="target/realworld-spec"

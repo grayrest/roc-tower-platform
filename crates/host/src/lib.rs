@@ -12,6 +12,13 @@ mod arena;
 mod body;
 mod db;
 mod config;
+// The DB backend: rusqlite by default, turso under `--features turso`. The
+// turso file is mounted under the same `cursor` name so the rest of the host
+// (effect executor, ctx sweep) is unchanged.
+#[cfg(not(feature = "turso"))]
+mod cursor;
+#[cfg(feature = "turso")]
+#[path = "turso_db.rs"]
 mod cursor;
 mod effect;
 mod effects;
