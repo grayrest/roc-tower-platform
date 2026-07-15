@@ -49,6 +49,18 @@ fn scans_schema_in_declaration_order() {
 }
 
 #[test]
+fn keeps_trigger_begin_end_body_as_one_statement() {
+    // The `;` inside a trigger body must NOT split the CREATE TRIGGER into
+    // pieces; the whole `BEGIN ... END` stays one schema statement.
+    let src = "## @schema\ntrg =\n    \\\\CREATE TRIGGER t AFTER INSERT ON favorites\n    \\\\BEGIN\n    \\\\  UPDATE articles SET n = n + 1 WHERE id = NEW.article_id;\n    \\\\END\n";
+    let s = scan(src).expect("scan");
+    assert_eq!(s.schema.len(), 1, "trigger stayed one statement: {:?}", s.schema);
+    assert!(s.schema[0].contains("CREATE TRIGGER t"));
+    assert!(s.schema[0].contains("UPDATE articles"));
+    assert!(s.schema[0].trim_end().ends_with("END"), "got: {}", s.schema[0]);
+}
+
+#[test]
 fn splices_fragment_into_queries() {
     let s = scan_ok();
     let load = s.queries.iter().find(|q| q.name == "load_profile").unwrap();

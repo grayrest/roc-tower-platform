@@ -251,10 +251,38 @@ fn splice_fragments(sql: &str, fragments: &[Fragment]) -> Result<String, String>
 }
 
 /// Split a schema binding on `;` into individual statements, dropping blanks.
+/// Split a `## @schema` binding into individual statements on `;`, keeping a
+/// trigger's `BEGIN ... END` body intact — the `;` inside it terminate the
+/// trigger's own statements, not the `CREATE TRIGGER`. A `;` only separates
+/// top-level statements when the running `BEGIN`/`END` word count is balanced.
 fn split_statements(sql: &str) -> Vec<String> {
-    sql.split(';')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut depth = 0i32;
+    for piece in sql.split_inclusive(';') {
+        buf.push_str(piece);
+        depth += count_keyword(piece, "BEGIN") - count_keyword(piece, "END");
+        if piece.ends_with(';') && depth <= 0 {
+            push_stmt(&mut out, &buf);
+            buf.clear();
+            depth = 0;
+        }
+    }
+    push_stmt(&mut out, &buf);
+    out
+}
+
+fn push_stmt(out: &mut Vec<String>, buf: &str) {
+    let stmt = buf.trim().trim_end_matches(';').trim();
+    if !stmt.is_empty() {
+        out.push(stmt.to_string());
+    }
+}
+
+/// Count whole-word (case-insensitive) occurrences of `kw`, so `END` in a
+/// trigger body is counted but not the `END` inside an identifier.
+fn count_keyword(s: &str, kw: &str) -> i32 {
+    s.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .filter(|w| w.eq_ignore_ascii_case(kw))
+        .count() as i32
 }
