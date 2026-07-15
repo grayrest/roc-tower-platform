@@ -823,6 +823,97 @@ fn measure_aggregate_thesis() {
     println!("        (the JSON-assembly delta is what a typed → Roc-serialize path moves out of the DB)");
 }
 
+/// Why is turso ~2-3x below rusqlite END-TO-END when execution is at parity?
+/// The servers differ in statement caching: rusqlite's cursor (cursor.rs) uses
+/// `prepare_cached` (plan reused across requests); the turso cursor (turso_db.rs)
+/// uses `prepare_single` (parse + plan EVERY request). This isolates that
+/// per-request prepare cost on the 5000-row seed, for the simple typed read the
+/// "parity" number measured with a REUSED statement.
+fn measure_prepare_cost() {
+    let path = "bench/seeded.db";
+    if !std::path::Path::new(path).exists() {
+        println!("  --   SKIPPED: {path} missing (run: python3 bench/seed.py bench/seeded.db)");
+        return;
+    }
+    let simple = "SELECT title, description, body, author_id, created_at FROM articles WHERE slug = :slug";
+    let slug = "article-2785";
+    let n = 2000u32;
+
+    let db = open(path).expect("open");
+    let conn = db.connect().expect("connect");
+
+    // turso, statement REUSED (reset+rebind) — execution only, the parity path.
+    let turso_reused = {
+        let mut stmt = conn.prepare_single(simple).expect("prepare");
+        let mut run = || {
+            stmt.reset().unwrap();
+            let p = stmt.named_position(":slug").unwrap();
+            stmt.bind_positional(p, Value::build_text(slug)).unwrap();
+            loop {
+                match stmt.step(None).expect("step") {
+                    TursoStatusCode::Row => { std::hint::black_box(stmt.row_value(0).ok()); }
+                    _ => break,
+                }
+            }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..n { run(); }
+        t.elapsed().as_nanos() as f64 / n as f64
+    };
+
+    // turso, prepare_single EVERY iteration — exactly the server's turso_db.rs path.
+    let turso_fresh = {
+        let mut run = || {
+            let mut stmt = conn.prepare_single(simple).expect("prepare");
+            let p = stmt.named_position(":slug").unwrap();
+            stmt.bind_positional(p, Value::build_text(slug)).unwrap();
+            loop {
+                match stmt.step(None).expect("step") {
+                    TursoStatusCode::Row => { std::hint::black_box(stmt.row_value(0).ok()); }
+                    _ => break,
+                }
+            }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..n { run(); }
+        t.elapsed().as_nanos() as f64 / n as f64
+    };
+
+    let rconn = rusqlite::Connection::open(path).expect("rusqlite open");
+    // rusqlite, prepare_cached EVERY iteration — exactly the server's cursor.rs path.
+    let rusq_cached = {
+        let run = || {
+            let mut stmt = rconn.prepare_cached(simple).expect("prepare_cached");
+            let mut rows = stmt.query(rusqlite::named_params! { ":slug": slug }).unwrap();
+            if let Some(row) = rows.next().unwrap() { std::hint::black_box(row.get_ref(0).ok()); }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..n { run(); }
+        t.elapsed().as_nanos() as f64 / n as f64
+    };
+    // rusqlite, fresh prepare EVERY iteration — the un-cached reference.
+    let rusq_fresh = {
+        let run = || {
+            let mut stmt = rconn.prepare(simple).expect("prepare");
+            let mut rows = stmt.query(rusqlite::named_params! { ":slug": slug }).unwrap();
+            if let Some(row) = rows.next().unwrap() { std::hint::black_box(row.get_ref(0).ok()); }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..n { run(); }
+        t.elapsed().as_nanos() as f64 / n as f64
+    };
+
+    println!("  --   turso    reused (exec only, the parity #):  {:.2}µs", turso_reused / 1000.0);
+    println!("  --   turso    prepare_single/query (SERVER path): {:.2}µs  → +{:.2}µs parse+plan", turso_fresh / 1000.0, (turso_fresh - turso_reused) / 1000.0);
+    println!("  --   rusqlite prepare_cached/query (SERVER path): {:.2}µs", rusq_cached / 1000.0);
+    println!("  --   rusqlite prepare/query (no cache, ref):      {:.2}µs  → +{:.2}µs parse+plan", rusq_fresh / 1000.0, (rusq_fresh - rusq_cached) / 1000.0);
+    println!("        turso's per-request prepare is {:.1}x rusqlite's cached-read cost — the end-to-end gap the parity # hid", turso_fresh / rusq_cached);
+}
+
 fn main() {
     println!("turso {} — B0 coverage + perf spike\n", TursoDatabase::version());
     let mut r = Report { failures: Vec::new() };
@@ -860,6 +951,9 @@ fn main() {
 
     println!("\n[realistic data (5000 rows): simple typed vs @sql json]");
     measure_realistic();
+
+    println!("\n[per-request prepare cost: prepare_single vs prepare_cached]");
+    measure_prepare_cost();
 
     println!("\n[thesis: JSON-aggregate assembly cost vs returning rows]");
     measure_aggregate_thesis();

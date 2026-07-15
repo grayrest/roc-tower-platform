@@ -93,6 +93,40 @@ Two things differ from rusqlite:
 `list` still loses (−7%, same by-name `Sql.query!` overhead as on rusqlite,
 here compounded by turso's per-cell cost).
 
+### Why turso is 2–3.7× lower end-to-end when execution is at parity
+
+The B0 "parity" number (0.97–1.04×) measured a **reused** prepared statement —
+execution only. But the two backends cache statements differently in the real
+server:
+
+- `cursor.rs` (rusqlite) uses **`prepare_cached`** — the plan is reused across
+  requests on the pooled connection.
+- `turso_db.rs` uses **`prepare_single`** — every request re-parses and re-plans.
+
+Measured on the 5000-row seed (turso-spike `measure_prepare_cost`, simple typed
+5-col indexed read):
+
+| path | per-query | prepare tax |
+|------|----------:|------------:|
+| turso, statement reused (the parity #) | 1.93µs | — |
+| **turso, `prepare_single`/query (server path)** | **12.91µs** | **+10.98µs** |
+| **rusqlite, `prepare_cached`/query (server path)** | **1.87µs** | ~0 (cache hit) |
+| rusqlite, fresh `prepare`/query (no cache) | 3.70µs | +1.82µs |
+
+So **execution really is at parity** (1.93 vs 1.87µs) — but in the server turso
+pays a **+11µs parse+plan on every query** that rusqlite caches away, making the
+per-query cost **6.9×**. Two compounding facts: turso's planner is ~6× slower to
+plan than SQLite's (+10.98 vs +1.82µs), *and* `turso_db.rs` doesn't cache while
+`cursor.rs` does. A request runs ≥2 queries (auth token lookup + the data
+read(s)), so this is ~11–22µs/request — a large share of the end-to-end gap; the
+remainder is turso's generally younger step/IO/cell-extraction path on the
+heavier real queries.
+
+**Actionable:** `turso_sdk_kit` exposes `prepare_cached`; switching
+`turso_db.rs` from `prepare_single` to it (the pooled connection persists across
+requests, so the cache would survive) should recover most of the gap. Not yet
+tried.
+
 ### Both engines, one sentence
 
 - **rusqlite:** typed is a *big* win on the heavy fast-read aggregate
