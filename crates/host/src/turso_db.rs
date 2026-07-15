@@ -251,6 +251,7 @@ fn step_ok(has_row: bool) -> abi::HostSqlStepResult {
 /// `Host.sql_begin! : { ctx, db, sql, params } => Try(U64, Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBeginResult {
+    let _t = crate::profile::exec();
     let host = roc_host();
     let ctx = args.ctx;
     let db = String::from_utf8_lossy(args.db.as_slice()).into_owned();
@@ -296,6 +297,7 @@ fn build_cursor(pooled: PooledConn, sql: &str, params: &[SqlValue]) -> Result<Cu
 /// `Host.sql_step! : U64 => Try(Bool, Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_step(handle: u64) -> abi::HostSqlStepResult {
+    let _t = crate::profile::exec();
     match with_cursor(handle, |cursor| match cursor.stmt.step(None) {
         Ok(TursoStatusCode::Row) => {
             cursor.has_row = true;
@@ -347,6 +349,7 @@ pub extern "C" fn roc_sql_columns(handle: u64) -> abi::RocList<abi::RocStr> {
 /// `Host.sql_col_type! : U64, U64 => Host.ColType`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_type(handle: u64, index: u64) -> abi::HostColType {
+    crate::profile::getter();
     with_value(handle, index, |v| match &v {
         Value::Null => abi::HostColType::Null,
         Value::Text(_) => abi::HostColType::Text,
@@ -361,6 +364,7 @@ pub extern "C" fn roc_sql_col_type(handle: u64, index: u64) -> abi::HostColType 
 /// `Host.sql_col_i64! : U64, U64 => I64`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_i64(handle: u64, index: u64) -> i64 {
+    crate::profile::getter();
     with_value(handle, index, |v| match &v {
         Value::Numeric(_) => v.to_float_or_zero() as i64,
         Value::Text(_) => v.to_text().and_then(|s| s.parse().ok()).unwrap_or(0),
@@ -372,6 +376,7 @@ pub extern "C" fn roc_sql_col_i64(handle: u64, index: u64) -> i64 {
 /// `Host.sql_col_f64! : U64, U64 => F64`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
+    crate::profile::getter();
     with_value(handle, index, |v| match &v {
         Value::Numeric(_) => v.to_float_or_zero(),
         Value::Text(_) => v.to_text().and_then(|s| s.parse().ok()).unwrap_or(0.0),
@@ -383,6 +388,7 @@ pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
 /// `Host.sql_col_str! : U64, U64 => Str`. One copy from the borrowed cell bytes.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
+    crate::profile::getter();
     let host = roc_host();
     with_value(handle, index, |v| match &v {
         Value::Text(_) => abi::RocStr::from_slice(v.to_text().unwrap_or("").as_bytes(), host),
@@ -402,6 +408,7 @@ pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {
+    crate::profile::getter();
     let host = roc_host();
     with_value(handle, index, |v| {
         let bytes: &[u8] = match &v {
@@ -417,6 +424,7 @@ pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<
 /// `Host.sql_finish! : U64 => {}`. Idempotent.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_finish(handle: u64) {
+    let _t = crate::profile::exec();
     let present = {
         let mut reg = registry().lock().expect("cursor registry poisoned");
         reg.remove(&handle).is_some()

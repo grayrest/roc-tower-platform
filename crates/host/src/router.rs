@@ -157,6 +157,7 @@ impl RouterInner {
         params: Vec<(String, String)>,
         req: Request<Incoming>,
     ) -> Result<Response<AppBody>, BoxError> {
+        let dispatch_start = crate::profile::now();
         let (parts, body) = req.into_parts();
 
         let collected = match Limited::new(body, self.max_body_bytes).collect().await {
@@ -211,9 +212,13 @@ impl RouterInner {
         let ctx = ctx_guard.id();
         let join = tokio::task::spawn_blocking(move || {
             crate::arena::install(arena);
+            let handler_start = crate::profile::now();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 call_handler(handler, model, request_parts, ctx)
             }));
+            if let Some(t) = handler_start {
+                crate::profile::record_handler(t.elapsed().as_nanos() as u64);
+            }
             crate::arena::uninstall();
             match result {
                 Ok(out) => out,
@@ -254,6 +259,9 @@ impl RouterInner {
             tokio::task::spawn_blocking(move || deferred.run());
         }
 
+        if let Some(t) = dispatch_start {
+            crate::profile::record_dispatch(t.elapsed().as_nanos() as u64);
+        }
         Ok(response)
     }
 

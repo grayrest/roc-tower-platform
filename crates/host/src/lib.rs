@@ -23,6 +23,7 @@ mod cursor;
 mod effect;
 mod effects;
 mod middleware;
+mod profile;
 mod roc_call;
 mod router;
 mod server;

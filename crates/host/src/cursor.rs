@@ -176,6 +176,7 @@ fn step_ok(has_row: bool) -> abi::HostSqlStepResult {
 /// `Host.sql_begin! : { ctx, db, sql, params } => Try(U64, Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBeginResult {
+    let _t = crate::profile::exec();
     let host = roc_host();
     let ctx = args.ctx;
     let db = String::from_utf8_lossy(args.db.as_slice()).into_owned();
@@ -252,6 +253,7 @@ fn build_cursor(
 /// `Host.sql_step! : U64 => Try(Bool, Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_step(handle: u64) -> abi::HostSqlStepResult {
+    let _t = crate::profile::exec();
     match with_cursor(handle, |cursor| {
         // SAFETY: `rows` borrows the still-live statement; the returned row
         // reference is valid until the next step, which is exactly when we
@@ -308,6 +310,7 @@ pub extern "C" fn roc_sql_columns(handle: u64) -> abi::RocList<abi::RocStr> {
 /// `Host.sql_col_type! : U64, U64 => Host.ColType`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_type(handle: u64, index: u64) -> abi::HostColType {
+    crate::profile::getter();
     with_row(handle, |row| match row.get_ref(index as usize) {
         Ok(ValueRef::Integer(_)) => abi::HostColType::Integer,
         Ok(ValueRef::Real(_)) => abi::HostColType::Real,
@@ -322,6 +325,7 @@ pub extern "C" fn roc_sql_col_type(handle: u64, index: u64) -> abi::HostColType 
 /// non-numeric read as 0 (callers check `sql_col_type!` when NULL matters).
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_i64(handle: u64, index: u64) -> i64 {
+    crate::profile::getter();
     with_row(handle, |row| match row.get_ref(index as usize) {
         Ok(ValueRef::Integer(n)) => n,
         Ok(ValueRef::Real(f)) => f as i64,
@@ -334,6 +338,7 @@ pub extern "C" fn roc_sql_col_i64(handle: u64, index: u64) -> i64 {
 /// `Host.sql_col_f64! : U64, U64 => F64`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
+    crate::profile::getter();
     with_row(handle, |row| match row.get_ref(index as usize) {
         Ok(ValueRef::Real(f)) => f,
         Ok(ValueRef::Integer(n)) => n as f64,
@@ -347,6 +352,7 @@ pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
 /// NULL); callers that must distinguish NULL check `sql_col_type!` first.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
+    crate::profile::getter();
     // Build the RocStr directly from the borrowed cell bytes inside the closure
     // — the common Text/Blob path is then a single copy into Roc-owned memory,
     // with no intermediate `Vec`. (Integer/Real coerce through a `to_string`.)
@@ -363,6 +369,7 @@ pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {
+    crate::profile::getter();
     let host = roc_host();
     with_row(handle, |row| {
         let bytes: &[u8] = match row.get_ref(index as usize) {
@@ -379,6 +386,7 @@ pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<
 /// (rather than freeing an arbitrary pointer).
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_finish(handle: u64) {
+    let _t = crate::profile::exec();
     let present = {
         let mut reg = registry().lock().expect("cursor registry poisoned");
         reg.remove(&handle).is_some()
