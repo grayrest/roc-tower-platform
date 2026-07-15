@@ -761,6 +761,68 @@ fn measure_realistic() {
     println!("  --   @sql json read (heavy):              turso {:.2}µs  rusqlite {:.2}µs  ({:.2}x)", jc/1000.0, jr/1000.0, jc/jr);
 }
 
+/// The thesis test: how much does the DB spend *assembling a JSON aggregate*
+/// (`json_group_array` over 20 rows) versus just *returning those 20 rows* for
+/// the host/Roc to serialize? The difference is the SQL-side JSON-aggregate cost
+/// that a typed → Roc-serialize path avoids. Realistic data, both engines.
+fn measure_aggregate_thesis() {
+    use turso_core::{StepResult, Value as CValue};
+
+    let path = "bench/seeded.db";
+    if !std::path::Path::new(path).exists() {
+        println!("  --   SKIPPED: {path} missing");
+        return;
+    }
+    // Same 20-row page, two shapes: assemble a JSON array in SQL, vs return the
+    // rows. `favoritesCount` (a COUNT aggregate subquery) is included so both
+    // paths do the same underlying work — only the JSON assembly differs.
+    let agg = "SELECT json_group_array(json_object('slug', slug, 'title', title, 'description', description, 'createdAt', created_at, \
+        'favoritesCount', (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id))) \
+        FROM (SELECT * FROM articles a ORDER BY a.id DESC LIMIT 20) a";
+    let rows = "SELECT slug, title, description, created_at, \
+        (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) \
+        FROM articles a ORDER BY a.id DESC LIMIT 20";
+
+    let db = open(path).expect("open");
+    let core_db = db.db_core().expect("db_core");
+    let core_conn = turso_core::Database::connect(&core_db).expect("core connect");
+    let bench_core = |sql: &str, ncols: usize| -> f64 {
+        let mut stmt = turso_core::Connection::prepare(&core_conn, sql).expect("prepare");
+        let mut run = || {
+            stmt.reset().unwrap();
+            loop {
+                match stmt.step().unwrap() {
+                    StepResult::Row => { for c in 0..ncols { std::hint::black_box(stmt.row().unwrap().get_value(c).to_text().map(|s| s.len())); } }
+                    StepResult::IO => core_db.io.step().unwrap(),
+                    StepResult::Done => break,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        for _ in 0..200 { run(); }
+        let t = Instant::now();
+        for _ in 0..2000 { run(); }
+        t.elapsed().as_nanos() as f64 / 2000.0
+    };
+    let rconn = rusqlite::Connection::open(path).expect("rusqlite");
+    let bench_rusq = |sql: &str, ncols: usize| -> f64 {
+        let mut stmt = rconn.prepare(sql).expect("prepare");
+        let run = |stmt: &mut rusqlite::Statement| {
+            let mut rows = stmt.query([]).expect("q");
+            while let Some(row) = rows.next().expect("row") { for c in 0..ncols { std::hint::black_box(row.get_ref(c).ok()); } }
+        };
+        for _ in 0..200 { run(&mut stmt); }
+        let t = Instant::now();
+        for _ in 0..2000 { run(&mut stmt); }
+        t.elapsed().as_nanos() as f64 / 2000.0
+    };
+    let (ta, tr) = (bench_core(agg, 1), bench_core(rows, 5));
+    let (ra, rr) = (bench_rusq(agg, 1), bench_rusq(rows, 5));
+    println!("  --   rusqlite: json_group_array {:.2}µs vs return-rows {:.2}µs → JSON assembly costs {:.2}µs ({:.1}x the row fetch)", ra/1000.0, rr/1000.0, (ra-rr)/1000.0, ra/rr);
+    println!("  --   turso:    json_group_array {:.2}µs vs return-rows {:.2}µs → JSON assembly costs {:.2}µs ({:.1}x the row fetch)", ta/1000.0, tr/1000.0, (ta-tr)/1000.0, ta/tr);
+    println!("        (the JSON-assembly delta is what a typed → Roc-serialize path moves out of the DB)");
+}
+
 fn main() {
     println!("turso {} — B0 coverage + perf spike\n", TursoDatabase::version());
     let mut r = Report { failures: Vec::new() };
@@ -798,6 +860,9 @@ fn main() {
 
     println!("\n[realistic data (5000 rows): simple typed vs @sql json]");
     measure_realistic();
+
+    println!("\n[thesis: JSON-aggregate assembly cost vs returning rows]");
+    measure_aggregate_thesis();
 
     println!("\n[B4: redundant-copy cost (borrowed vs owned cell read)]");
     measure_b4_copy_cost();
