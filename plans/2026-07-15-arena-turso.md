@@ -257,11 +257,16 @@ the materialized-views builder flag is real.
   **no measurable gain** (SQLite-bound, not allocation-bound), so it was reverted;
   the mint-per-request arena stands as B4's substrate. See
   notes/2026-07-15-arena-bench.md. User decision: keep simple arena, proceed to B0.
-- [ ] B0 turso spike (GATE)
-- [ ] B1 pool + write effects (incl. effect.rs)
-- [ ] B2 cursor FFI
-- [ ] B3 cutover + dialect gate + docs
-- [ ] B4 zero-copy assessment (GATE)
+- [x] B0 turso spike (GATE) — **NO-GO**. Turso 0.7.0 coverage/correctness/
+  contention/durability/pragmas/constraints all ✅, but it is **8–18× slower
+  than rusqlite** (8× on a trivial point lookup, ~17× on the hot `@sql json`
+  query) — an order of magnitude over the 1.5× gate. See
+  notes/2026-07-15-turso-b0-spike.md; reproducer at crates/turso-spike.
+- [~] B1–B4 **shelved** by the B0 gate. rusqlite stays as the runtime + sqlgen
+  analyzer. Re-runnable against a future Turso release; if the microbench ever
+  drops under ~1.5×, reconsider. Materialization (stored doc columns, the
+  2026-07-14 61–80% read win) is the better read-throughput lever on rusqlite,
+  independent of Turso.
 
 ---
 

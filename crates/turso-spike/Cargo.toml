@@ -1,0 +1,16 @@
+[package]
+name = "turso-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# B0 coverage + perf spike (GATE). Standalone: not wired into the host. Decides
+# whether the rusqlite -> Turso runtime swap is viable before any of B1–B4.
+
+[[bin]]
+name = "turso-spike"
+path = "src/main.rs"
+
+[dependencies]
+turso_sdk_kit = "0.7"
+rusqlite = { version = "0.32", features = ["bundled"] }

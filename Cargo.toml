@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/host", "crates/e2e-tests", "crates/sqlgen"]
+# turso-spike is the B0 gate reproducer (NO-GO: turso 0.7 is 8–17x slower than
+# rusqlite). Excluded so it doesn't pull the turso deps into every `just check`;
+# run it standalone via `cargo run --manifest-path crates/turso-spike/Cargo.toml`.
+exclude = ["crates/turso-spike"]
 
 [workspace.package]
 version = "0.1.0"

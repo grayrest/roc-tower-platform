@@ -7,3 +7,6 @@
 /bench/seeded.db
 /bench/seeded.db-*
 /bench/srv-*
+# The B0 turso spike is excluded from the workspace, so it builds into its own
+# target dir.
+/crates/turso-spike/target
