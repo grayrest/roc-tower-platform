@@ -123,6 +123,52 @@ impl From<Vec<u8>> for ResponseBody {
     }
 }
 
+pub struct AppBody(UnsyncBoxBody<Bytes, BoxError>);
+
+impl AppBody {
+    pub fn new<B>(body: B) -> Self
+    where
+        B: Body<Data = Bytes> + Send + 'static,
+        B::Error: Into<BoxError>,
+    {
+        Self(body.map_err(Into::into).boxed_unsync())
+    }
+
+    pub fn empty() -> Self {
+        Self::new(Empty::new())
+    }
+
+    pub fn full(bytes: impl Into<Bytes>) -> Self {
+        Self::new(Full::new(bytes.into()))
+    }
+}
+
+impl Default for AppBody {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl Body for AppBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.0).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.0.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.0.size_hint()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,14 +286,17 @@ mod tests {
         let weak = Arc::downgrade(&arena);
         drop(arena);
 
-        let (first_holder_alive, second): (Box<dyn FnOnce()>, Box<dyn FnOnce()>) = if reaper_first {
-            (Box::new(move || drop(ctx)), Box::new(move || drop(body)))
+        // Drop whichever holder goes first; the region must survive until the
+        // second (last) holder drops, in either order.
+        if reaper_first {
+            drop(ctx);
+            assert!(weak.upgrade().is_some(), "region freed before the last holder dropped");
+            drop(body);
         } else {
-            (Box::new(move || drop(body)), Box::new(move || drop(ctx)))
-        };
-        first_holder_alive();
-        assert!(weak.upgrade().is_some(), "region freed before the last holder dropped");
-        second();
+            drop(body);
+            assert!(weak.upgrade().is_some(), "region freed before the last holder dropped");
+            drop(ctx);
+        }
         assert!(weak.upgrade().is_none(), "region not freed after the last holder dropped");
 
         let allocs = CHUNK_ALLOCS.load(Ordering::Relaxed) - a0;
@@ -264,51 +313,5 @@ mod tests {
     #[test]
     fn arena_freed_when_body_owner_drops_before_ctx_guard() {
         arena_freed_after_last_holder(false);
-    }
-}
-
-pub struct AppBody(UnsyncBoxBody<Bytes, BoxError>);
-
-impl AppBody {
-    pub fn new<B>(body: B) -> Self
-    where
-        B: Body<Data = Bytes> + Send + 'static,
-        B::Error: Into<BoxError>,
-    {
-        Self(body.map_err(Into::into).boxed_unsync())
-    }
-
-    pub fn empty() -> Self {
-        Self::new(Empty::new())
-    }
-
-    pub fn full(bytes: impl Into<Bytes>) -> Self {
-        Self::new(Full::new(bytes.into()))
-    }
-}
-
-impl Default for AppBody {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-impl Body for AppBody {
-    type Data = Bytes;
-    type Error = BoxError;
-
-    fn poll_frame(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.0).poll_frame(cx)
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.0.is_end_stream()
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        self.0.size_hint()
     }
 }
