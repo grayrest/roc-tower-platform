@@ -13,4 +13,5 @@ path = "src/main.rs"
 
 [dependencies]
 turso_sdk_kit = "0.7"
+turso_core = "0.7"
 rusqlite = { version = "0.32", features = ["bundled"] }

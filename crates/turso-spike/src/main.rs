@@ -555,6 +555,69 @@ fn bench_rusqlite(n: u32) -> f64 {
     start.elapsed().as_nanos() as f64 / n as f64
 }
 
+/// B4 measurement: how much does rsapi's `row_value().to_owned()` copy cost,
+/// relative to reading the cell borrowed? Reads the big article-by-slug JSON
+/// document cell N times each way on a turso_core statement (borrowed
+/// ValueRef vs owned clone). The delta bounds the single-copy win available by
+/// bypassing rsapi's always-owned row_value.
+fn measure_b4_copy_cost() {
+    use std::num::NonZero;
+    use turso_core::Value as CValue;
+
+    let db = open(":memory:").expect("open");
+    let conn = db.connect().expect("connect");
+    seed(&conn).expect("seed");
+
+    let core_db = db.db_core().expect("db_core");
+    let core_conn = turso_core::Database::connect(&core_db).expect("core connect");
+    let mut stmt = turso_core::Connection::prepare(&core_conn, article_json_by_slug()).expect("prepare");
+    // Param order by first appearance: :viewer (in the summary) then :slug.
+    stmt.bind_at(NonZero::new(1).unwrap(), CValue::from_i64(-1)).expect("bind viewer");
+    stmt.bind_at(NonZero::new(2).unwrap(), CValue::build_text("article-a")).expect("bind slug");
+
+    // Step to the single row (in-memory: no IO expected).
+    loop {
+        match stmt.step().expect("step") {
+            turso_core::StepResult::Row => break,
+            turso_core::StepResult::IO => core_db.io.step().expect("io"),
+            other => panic!("expected a row, got {other:?}"),
+        }
+    }
+    let row = stmt.row().expect("row");
+    let doc_len = row.get_value(0).to_text().map(|s| s.len()).unwrap_or(0);
+
+    const N: u32 = 100_000;
+    // Borrowed: access the cell, no copy.
+    for _ in 0..1000 {
+        std::hint::black_box(row.get_value(0).to_text().map(|s| s.len()));
+    }
+    let t0 = Instant::now();
+    for _ in 0..N {
+        std::hint::black_box(row.get_value(0).to_text().map(|s| s.len()));
+    }
+    let borrowed_ns = t0.elapsed().as_nanos() as f64 / N as f64;
+
+    // Owned: clone the cell into a turso Value (what rsapi row_value does).
+    for _ in 0..1000 {
+        std::hint::black_box(row.get_value(0).to_owned());
+    }
+    let t1 = Instant::now();
+    for _ in 0..N {
+        std::hint::black_box(row.get_value(0).to_owned());
+    }
+    let owned_ns = t1.elapsed().as_nanos() as f64 / N as f64;
+
+    let copy_ns = (owned_ns - borrowed_ns).max(0.0);
+    println!("  --   article JSON doc: {doc_len} bytes");
+    println!("  --   borrowed read:    {borrowed_ns:.1} ns/cell");
+    println!("  --   owned (to_owned):  {owned_ns:.1} ns/cell");
+    println!("  --   redundant copy:    {copy_ns:.1} ns/cell (~{:.2} µs)", copy_ns / 1000.0);
+    println!(
+        "        vs ~950µs end-to-end turso byslug p50 → the removable copy is ~{:.2}% of a request",
+        copy_ns / 1000.0 / 950.0 * 100.0
+    );
+}
+
 fn main() {
     println!("turso {} — B0 coverage + perf spike\n", TursoDatabase::version());
     let mut r = Report { failures: Vec::new() };
@@ -586,6 +649,9 @@ fn main() {
     check_constraint_errors(&mut r);
     println!("\n[microbench vs rusqlite]");
     check_microbench(&mut r);
+
+    println!("\n[B4: redundant-copy cost (borrowed vs owned cell read)]");
+    measure_b4_copy_cost();
 
     println!("\n=== GATE VERDICT ===");
     if r.failures.is_empty() {

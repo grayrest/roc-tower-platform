@@ -270,8 +270,13 @@ the materialized-views builder flag is real.
   the typed `profile` endpoint is **2.72×**. See notes/2026-07-15-turso-typed-endtoend.md.
 - [~] B3 (wholesale cutover + rusqlite deletion) **not done** — turso stays an
   opt-in flag given the perf deficit; no dialect-gate needed while rusqlite is
-  default. B4 (zero-copy borrows) is the open follow-up this build is the
-  substrate for.
+  default.
+- [x] B4 zero-copy assessment (GATE) — **no-go**. Measured (turso-spike,
+  turso_core direct): the redundant `to_owned` copy is **70 ns/cell (~0.01% of a
+  request)** — noise even scaled to multi-KB docs. And true zero-copy into a Roc
+  value is **unsound** (Roc's refcount headroom word can't live in turso's row
+  buffer; the buffer is transient). The arena copy is the floor and it's already
+  what the platform does. See notes/2026-07-15-turso-b4-zerocopy.md. Plan closed.
 
 ---
 

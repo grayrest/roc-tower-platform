@@ -1795,6 +1795,7 @@ name = "turso-spike"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "turso_core",
  "turso_sdk_kit",
 ]
 
