@@ -1,5 +1,47 @@
 # Design: coeffect memoization (the principled response cache)
 
+> **REJECTED by independent adversarial review, 2026-07-15. Do not build.**
+> Four independent reviewers (no shared context) converged on fatal flaws. Kept
+> as a record of the idea and why it fails; the salvageable kernel is carried
+> forward in `plans/2026-07-15-entity-tokens.md`.
+>
+> **Fatal / structural findings:**
+> 1. **Phantom rows (collections).** Row-identity deps can only name rows a read
+>    observed, so an INSERT (new article in a list/tag/feed) emits a token no
+>    cached collection recorded → never invalidated → stale. This is a *regression*
+>    vs the shipped table cache, which correctly depends on the `articles` table.
+>    Sinks the biggest wins (list 13.8×, tags 11.3×).
+> 2. **Trigger-cascade staleness.** A favorite `INSERT favorites` fires an AFTER
+>    trigger `UPDATE articles SET favorites_count` *inside* SQLite; effect.rs sees
+>    only `favorites`. The row model emits `favorite:99:5`, never `article:5`, so
+>    the cached article's `favoritesCount`/`tagList` never refresh — wrong for
+>    every viewer, on the hottest mutation. Table cache handles it (article read
+>    depends on the `favorites`/`article_tags` tables).
+> 3. **`and_then` can't thread a read-free key.** Every real coeffect is
+>    `Req.param(...) ->and_then(|value, req| ...)`; the continuation is opaque, so
+>    the combinator can't project the second stage's key without *running* it (a
+>    read). Uniform, auto-derived key threading is impossible through `and_then` —
+>    it forces per-stage hand-declaration, the exact thing the design claimed to
+>    abolish. (Vindicates the Q6 "bundle vs alongside" concern that was waved off.)
+> 4. **No home for compression.** Identity = "inputs the handler read", but
+>    `Accept-Encoding` is transport, not a coeffect — either re-compress every hit
+>    (lose the incumbent's win) or smuggle encoding into the "pure" hash.
+> 5. **Slower hot path.** Incumbent computes the key in pure Rust (zero Roc on a
+>    hit); the key pass is a Roc FFI entrypoint on *every* request → likely
+>    regresses the 120k ceiling.
+> 6. **Authed caching ≈ 0 gain + leak surface.** Keying personalized responses on
+>    `hash(bearer)` fragments per token (near-0 hit rate), lets a revoked token
+>    still HIT, and rests user isolation on a non-crypto 64-bit hash. The incumbent
+>    deliberately bypasses authed traffic to avoid this class.
+>
+> The kernel worth keeping — reads and writes emitting **entity** tokens through
+> the *same* functions — needs none of this and is captured cheaply on the
+> incumbent (opaque tokens already exist). See the entity-tokens plan.
+>
+> ---
+>
+> *Original design below, retained for context.*
+
 > Outcome of a grill-me session, 2026-07-15. Supersedes the HTTP-layer
 > table-scoped response cache (commits 5c08f22 / c858386) with a design that
 > lives at the coeffect/effect layer instead of the tower layer. Not yet
