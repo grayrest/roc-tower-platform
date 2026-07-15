@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use r2d2_sqlite::SqliteConnectionManager;
@@ -381,6 +381,13 @@ fn ctx_registry() -> &'static Mutex<HashMap<u64, RequestState>> {
 /// runs on normal return and on Rust panic-unwind alike.
 pub struct CtxGuard {
     id: u64,
+    /// The request arena, held so arena-allocated memo captures stay valid
+    /// through the memo teardown in `drop`. Struct fields drop *after*
+    /// `Drop::drop` runs, so this reference (and, if it is the last one, the
+    /// backing region) is released only once teardown has finished reading
+    /// those captures. Never read directly — its whole job is that lifetime.
+    #[allow(dead_code)]
+    arena: Arc<crate::arena::RequestArena>,
 }
 
 impl CtxGuard {
@@ -410,17 +417,20 @@ impl Drop for CtxGuard {
         // drop until the handler's blocking task has returned, so the sweep
         // never races a live step.
         crate::cursor::sweep_ctx_cursors(self.id);
+        // `arena` drops here, after the teardown above.
     }
 }
 
-/// Mint a fresh ctx id and insert its (empty) request store.
-pub fn mint_ctx() -> CtxGuard {
+/// Mint a fresh ctx id and insert its (empty) request store. The guard takes a
+/// reference to the request's arena so memo captures allocated in it outlive
+/// the memo teardown.
+pub fn mint_ctx(arena: Arc<crate::arena::RequestArena>) -> CtxGuard {
     let id = NEXT_CTX.fetch_add(1, Ordering::SeqCst);
     ctx_registry()
         .lock()
         .expect("ctx registry poisoned")
         .insert(id, RequestState::default());
-    CtxGuard { id }
+    CtxGuard { id, arena }
 }
 
 /// `Host.reserve_id! : () => U64` — the non-idempotent injector effect.

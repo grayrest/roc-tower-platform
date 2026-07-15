@@ -189,8 +189,8 @@ impl RouterInner {
         };
 
         let model = self.model;
-        // Mint the per-request coeffect ctx, then run the handler on the
-        // blocking pool. A detached reaper task owns the teardown guard and
+        // Mint the per-request arena and coeffect ctx, then run the handler on
+        // the blocking pool. A detached reaper task owns the teardown guard and
         // drops it — releasing memoized thunks AND sweeping any cursor the
         // handler left open on an error path — ONLY after the blocking task has
         // returned. Deferring teardown past the handler is what makes the ctx
@@ -198,10 +198,28 @@ impl RouterInner {
         // dispatch future being cancelled (client disconnect, timeout) as well
         // as a host panic unwinding out of a hosted fn (surfaced as a
         // JoinError). See plan decision 6.
-        let ctx_guard = crate::effects::mint_ctx();
+        //
+        // The guard also holds a reference to the arena so memo captures
+        // allocated in it stay valid through teardown (effects.rs). The blocking
+        // closure installs the arena in its thread-local slot for the duration
+        // of the handler. Cleanup is explicit (not RAII): a panic unwinding out
+        // of a hosted fn skips Rust drops in the intervening frames (roc_call.rs
+        // documents this), so a scope guard here is unreliable — catch_unwind,
+        // clear the slot on every path, then resume the unwind.
+        let arena = crate::arena::RequestArena::new();
+        let ctx_guard = crate::effects::mint_ctx(arena.clone());
         let ctx = ctx_guard.id();
-        let join =
-            tokio::task::spawn_blocking(move || call_handler(handler, model, request_parts, ctx));
+        let join = tokio::task::spawn_blocking(move || {
+            crate::arena::install(arena);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                call_handler(handler, model, request_parts, ctx)
+            }));
+            crate::arena::uninstall();
+            match result {
+                Ok(out) => out,
+                Err(payload) => std::panic::resume_unwind(payload),
+            }
+        });
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let outcome = join.await;
