@@ -41,7 +41,7 @@
 use core::ffi::c_void;
 use std::alloc::Layout;
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::abi;
 
@@ -72,6 +72,63 @@ pub(crate) static CHUNK_ALLOCS: std::sync::atomic::AtomicUsize =
 #[cfg(test)]
 pub(crate) static CHUNK_FREES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static CHUNK_REUSES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static CHUNK_RECYCLES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+// ---------------------------------------------------------------------------
+// Warm-chunk freelist.
+//
+// A mint-per-request arena allocates a 64 KiB chunk and, at drop, hands it back
+// to the system allocator — which `madvise`s the pages away. Under the typed
+// read path that per-request alloc+madvise churn was measured at ~22% of the
+// list-endpoint CPU (the `@sql json` workload it was first A/B'd against was
+// DB-bound, so it didn't show then — see notes/2026-07-15-request-cpu-profile.md).
+// Recycling standard-shaped chunks through a global freelist turns that churn
+// into a pointer hand-off — measured list throughput +30%. Bounded at
+// `CHUNK_POOL_MAX` chunks of idle memory.
+// ---------------------------------------------------------------------------
+
+/// Idle standard chunks retained across requests. 64 × 64 KiB = 4 MiB ceiling.
+const CHUNK_POOL_MAX: usize = 64;
+
+/// A recycled standard chunk base pointer, owned exclusively while pooled.
+struct PoolChunk(*mut u8);
+// SAFETY: the base is an owned `Layout(CHUNK_SIZE, CHUNK_ALIGN)` allocation;
+// `pop` transfers ownership out and `push` transfers it in, so at most one
+// arena ever holds a given chunk at a time.
+unsafe impl Send for PoolChunk {}
+
+fn chunk_pool() -> &'static Mutex<Vec<PoolChunk>> {
+    static POOL: OnceLock<Mutex<Vec<PoolChunk>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Take a warm standard chunk if pooling is on and one is available. The bump
+/// state is reset by the caller (`grow`), so stale contents don't matter.
+fn take_pooled_chunk() -> Option<*mut u8> {
+    let base = chunk_pool().lock().ok()?.pop()?.0;
+    #[cfg(test)]
+    CHUNK_REUSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(base)
+}
+
+/// Return a standard chunk to the warm pool instead of freeing it. Returns
+/// false (caller frees) when the pool is full.
+fn return_pooled_chunk(base: *mut u8) -> bool {
+    if let Ok(mut pool) = chunk_pool().lock()
+        && pool.len() < CHUNK_POOL_MAX
+    {
+        pool.push(PoolChunk(base));
+        #[cfg(test)]
+        CHUNK_RECYCLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return true;
+    }
+    false
+}
 
 /// Serializes every test that installs an arena — across modules — so the
 /// process-wide chunk counters and the response-body in-flight gauge yield
@@ -104,10 +161,14 @@ fn align_up(value: usize, align: usize) -> usize {
     (value + (align - 1)) & !(align - 1)
 }
 
-/// One backing allocation owned by the arena; freed in bulk at `Drop`.
+/// One backing allocation owned by the arena; freed (or recycled to the warm
+/// pool) in bulk at `Drop`.
 struct Chunk {
     base: *mut u8,
     layout: Layout,
+    /// Standard-shaped (`CHUNK_SIZE` / `CHUNK_ALIGN`), so it can return to the
+    /// warm pool. Oversized one-off chunks are always freed.
+    poolable: bool,
 }
 
 struct ArenaState {
@@ -131,19 +192,28 @@ impl ArenaState {
     /// `align`, and make it current. Returns false only on allocation failure.
     fn grow(&mut self, bytes: usize, align: usize) -> bool {
         let cap = bytes.max(CHUNK_SIZE);
+        // A standard-shaped chunk (fits the default size and alignment) can come
+        // from — and later return to — the warm pool; oversized one-offs can't.
+        let poolable = bytes <= CHUNK_SIZE && align <= CHUNK_ALIGN;
         let layout = match Layout::from_size_align(cap, align.max(CHUNK_ALIGN)) {
             Ok(layout) => layout,
             Err(_) => return false,
         };
-        // SAFETY: layout has non-zero size (cap >= CHUNK_SIZE).
-        let base = unsafe { std::alloc::alloc(layout) };
-        if base.is_null() {
-            return false;
-        }
-        #[cfg(test)]
-        CHUNK_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let base = match poolable.then(take_pooled_chunk).flatten() {
+            Some(base) => base,
+            None => {
+                // SAFETY: layout has non-zero size (cap >= CHUNK_SIZE).
+                let base = unsafe { std::alloc::alloc(layout) };
+                if base.is_null() {
+                    return false;
+                }
+                #[cfg(test)]
+                CHUNK_ALLOCS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                base
+            }
+        };
         self.total += layout.size();
-        self.chunks.push(Chunk { base, layout });
+        self.chunks.push(Chunk { base, layout, poolable });
         self.cur = base;
         self.cur_cap = layout.size();
         self.off = 0;
@@ -275,9 +345,13 @@ impl Drop for RequestArena {
     fn drop(&mut self) {
         let s = self.state.get_mut().expect("arena mutex poisoned");
         for chunk in s.chunks.drain(..) {
-            // SAFETY: `base`/`layout` are exactly what `grow` allocated, and no
-            // user pointer into this chunk outlives the arena (the last `Arc`
-            // drop is what runs this).
+            // The last `Arc` drop runs this, so no user pointer into the chunk
+            // is live: a standard chunk can go back to the warm pool for the
+            // next request; everything else is freed.
+            if chunk.poolable && return_pooled_chunk(chunk.base) {
+                continue;
+            }
+            // SAFETY: `base`/`layout` are exactly what `grow` allocated.
             unsafe { std::alloc::dealloc(chunk.base, chunk.layout) };
             #[cfg(test)]
             CHUNK_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -465,6 +539,8 @@ mod tests {
         let _g = serial();
         let a0 = CHUNK_ALLOCS.load(Ordering::Relaxed);
         let f0 = CHUNK_FREES.load(Ordering::Relaxed);
+        let u0 = CHUNK_REUSES.load(Ordering::Relaxed);
+        let c0 = CHUNK_RECYCLES.load(Ordering::Relaxed);
         {
             let arena = RequestArena::new();
             install(arena.clone());
@@ -480,10 +556,15 @@ mod tests {
             }
             uninstall();
         }
+        // Every chunk that entered the arena (freshly allocated OR reused from
+        // the pool) must leave it (freed OR recycled to the pool) — no leak,
+        // whether or not pooling is enabled.
         let allocs = CHUNK_ALLOCS.load(Ordering::Relaxed) - a0;
         let frees = CHUNK_FREES.load(Ordering::Relaxed) - f0;
-        assert!(allocs >= 1, "expected at least one chunk");
-        assert_eq!(allocs, frees, "arena leaked chunks on drop");
+        let reuses = CHUNK_REUSES.load(Ordering::Relaxed) - u0;
+        let recycles = CHUNK_RECYCLES.load(Ordering::Relaxed) - c0;
+        assert!(allocs + reuses >= 1, "expected at least one chunk");
+        assert_eq!(allocs + reuses, frees + recycles, "arena leaked chunks on drop");
     }
 
     #[test]

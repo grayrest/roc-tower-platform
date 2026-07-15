@@ -268,10 +268,12 @@ mod tests {
     /// frees the arena region. Both orderings must free it exactly once with no
     /// chunk left behind.
     fn arena_freed_after_last_holder(reaper_first: bool) {
-        use crate::arena::{CHUNK_ALLOCS, CHUNK_FREES};
+        use crate::arena::{CHUNK_ALLOCS, CHUNK_FREES, CHUNK_RECYCLES, CHUNK_REUSES};
         let _g = test_serial();
         let a0 = CHUNK_ALLOCS.load(Ordering::Relaxed);
         let f0 = CHUNK_FREES.load(Ordering::Relaxed);
+        let u0 = CHUNK_REUSES.load(Ordering::Relaxed);
+        let c0 = CHUNK_RECYCLES.load(Ordering::Relaxed);
 
         let arena = RequestArena::new();
         crate::arena::install(arena.clone());
@@ -299,10 +301,14 @@ mod tests {
         }
         assert!(weak.upgrade().is_none(), "region not freed after the last holder dropped");
 
+        // A chunk that came in (allocated OR reused from the warm pool) must go
+        // out (freed OR recycled to the pool) — no leak, with pooling on.
         let allocs = CHUNK_ALLOCS.load(Ordering::Relaxed) - a0;
         let frees = CHUNK_FREES.load(Ordering::Relaxed) - f0;
-        assert!(allocs >= 1);
-        assert_eq!(allocs, frees, "arena leaked chunks");
+        let reuses = CHUNK_REUSES.load(Ordering::Relaxed) - u0;
+        let recycles = CHUNK_RECYCLES.load(Ordering::Relaxed) - c0;
+        assert!(allocs + reuses >= 1);
+        assert_eq!(allocs + reuses, frees + recycles, "arena leaked chunks");
     }
 
     #[test]
