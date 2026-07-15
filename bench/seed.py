@@ -18,7 +18,7 @@ c.executescript("""
 CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, email TEXT NOT NULL UNIQUE, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, bio TEXT, image TEXT);
 CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id));
 CREATE TABLE IF NOT EXISTS follows (follower_id INTEGER NOT NULL, followed_id INTEGER NOT NULL, PRIMARY KEY (follower_id, followed_id));
-CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, description TEXT NOT NULL, body TEXT NOT NULL, author_id INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL, description TEXT NOT NULL, body TEXT NOT NULL, author_id INTEGER NOT NULL REFERENCES users(id), created_at TEXT NOT NULL, updated_at TEXT NOT NULL, favorites_count INTEGER NOT NULL DEFAULT 0, tag_list TEXT);
 CREATE TABLE IF NOT EXISTS article_tags (article_id INTEGER NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (article_id, tag));
 CREATE TABLE IF NOT EXISTS favorites (user_id INTEGER NOT NULL, article_id INTEGER NOT NULL, PRIMARY KEY (user_id, article_id));
 CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id), author_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -40,9 +40,15 @@ for a in range(1, N_ARTICLES+1):
         atags.append((a, t))
     for u in random.sample(range(1, N_USERS+1), random.randint(0, 4)):
         favs.append((u, a))
-c.executemany("INSERT INTO articles VALUES (?,?,?,?,?,?,?,?)", arts)
+c.executemany("INSERT INTO articles (id,slug,title,description,body,author_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)", arts)
 c.executemany("INSERT OR IGNORE INTO article_tags VALUES (?,?)", atags)
 c.executemany("INSERT OR IGNORE INTO favorites VALUES (?,?)", favs)
+
+# Backfill the MATERIALIZED aggregate columns (the app maintains these via
+# triggers; the read path fetches them as plain columns). GROUP_CONCAT with a
+# sorted inner subquery matches the trigger's spelling exactly.
+c.execute("UPDATE articles SET favorites_count = (SELECT COUNT(*) FROM favorites f WHERE f.article_id = articles.id)")
+c.execute("UPDATE articles SET tag_list = (SELECT GROUP_CONCAT(tag) FROM (SELECT tag FROM article_tags WHERE article_id = articles.id ORDER BY tag))")
 
 c.executemany("INSERT INTO comments VALUES (?,?,?,?,?,?)",
     [(i, random.randint(1, N_ARTICLES), random.randint(1, N_USERS), f"Comment {i} body.", TS, TS)

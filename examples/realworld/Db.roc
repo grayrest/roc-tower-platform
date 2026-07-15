@@ -68,10 +68,10 @@ Db := [].{
     article_select =
         \\SELECT a.id, a.author_id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at,
         \\       u.username, u.bio, u.image,
-        \\       (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+        \\       a.favorites_count,
         \\       EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer) AS favorited,
         \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id) AS following,
-        \\       (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list
+        \\       a.tag_list
         \\FROM articles a JOIN users u ON u.id = a.author_id
 
     ## GROUP_CONCAT output to a tag list: NULL (no tags) and "" become [].
@@ -144,7 +144,7 @@ Db := [].{
     ## probing all rows).
     ## PURE: turn the list filters into the shared page WHERE, the count
     ## statement, and the ordered positional `where_params` — the exact tuple
-    ## both `run_article_page!` (json) and `run_article_page_typed!` (typed) take.
+    ## `run_article_page!` takes.
     list_query_parts = |filters| {
         tag_part =
             if filters.tag.is_empty()
@@ -290,15 +290,31 @@ Db := [].{
 
 ## Internal: the body-less article columns for list/feed rows — mirrors
 ## `article_select` (the by-slug typed fragment) but OMITS `a.body`, which the
-## spec forbids in list items. Read by name via `Sql.query!`; `:viewer` is
-## param 1 (SQLite reuses it for both flags), page_where `?` follow it.
+## spec forbids in list items. `favorites_count`/`tag_list` are the MATERIALIZED
+## columns (trigger-maintained), so the only per-row work left is the two viewer
+## flags. Read by name via `Sql.query!`; `:viewer` is param 1 (SQLite reuses it
+## for both flags), page_where `?` follow it.
 article_summary_select =
     \\SELECT a.slug, a.title, a.description, a.created_at, a.updated_at,
     \\       u.username, u.bio, u.image,
-    \\       (SELECT COUNT(*) FROM favorites f WHERE f.article_id = a.id) AS favorites_count,
+    \\       a.favorites_count,
     \\       EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer) AS favorited,
     \\       EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id) AS following,
-    \\       (SELECT GROUP_CONCAT(tag) FROM (SELECT at2.tag FROM article_tags at2 WHERE at2.article_id = a.id ORDER BY at2.tag)) AS tag_list
+    \\       a.tag_list
+    \\FROM articles a JOIN users u ON u.id = a.author_id
+
+## Internal: the ANONYMOUS (viewer = 0) list variant. An unauthenticated viewer
+## favorites nothing and follows nobody, so both flags are constant 0 and the two
+## EXISTS subqueries are pure waste — dropped here. No `:viewer` parameter, so the
+## page params carry no leading viewer id. Same column set/names as
+## `article_summary_select` (the by-name row mapper is shared).
+article_summary_select_anon =
+    \\SELECT a.slug, a.title, a.description, a.created_at, a.updated_at,
+    \\       u.username, u.bio, u.image,
+    \\       a.favorites_count,
+    \\       0 AS favorited,
+    \\       0 AS following,
+    \\       a.tag_list
     \\FROM articles a JOIN users u ON u.id = a.author_id
 
 ## Internal: one `Sql.query!` row (by name) to an ArticleSummary; 500 on a
@@ -333,8 +349,14 @@ article_summary_from_row = |row| {
 ## the `{articles, articlesCount}` record back for the pure handler to
 ## serialize in Roc. `where_params` bind the page_where `?` in order.
 run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit, offset| {
-    page_sql = "${article_summary_select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
-    page_params = [Integer(viewer)]
+    # Anonymous (viewer 0): the flag subqueries are constant-false, so use the
+    # `_anon` select (no `:viewer` param). Authenticated: `:viewer` is page
+    # param 1, ahead of the page_where `?`. Feed always passes a real viewer.
+    is_anon = viewer == 0
+    select = if is_anon article_summary_select_anon else article_summary_select
+    page_sql = "${select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
+    viewer_params = if is_anon [] else [Integer(viewer)]
+    page_params = viewer_params
         .concat(where_params)
         .append(Integer(limit))
         .append(Integer(offset))
