@@ -26,7 +26,8 @@ use std::mem::ManuallyDrop;
 use rusqlite::TransactionBehavior;
 
 use crate::abi;
-use crate::effects::{checkout_sqlite, send_request, sql_param_to_rusqlite};
+use crate::db::SqlValue;
+use crate::effects::{checkout_sqlite, send_request, to_rusqlite};
 use crate::roc_call::{copy_headers, roc_str, ResponseParts};
 use crate::roc_host;
 use crate::types::{
@@ -52,7 +53,7 @@ enum Action {
     Db {
         db: String,
         sql: String,
-        params: Vec<rusqlite::types::Value>,
+        params: Vec<SqlValue>,
     },
     Http {
         method: String,
@@ -171,7 +172,7 @@ fn read_action(action: &abi::DbWriteOrHttpSendOrLog) -> Action {
             Action::Db {
                 db: string_of(&write.db),
                 sql: string_of(&write.sql),
-                params: write.params.as_slice().iter().map(sql_param_to_rusqlite).collect(),
+                params: write.params.as_slice().iter().map(crate::db::param_from_host).collect(),
             }
         }
         RocEffectActionTag::HttpSend => {
@@ -220,9 +221,10 @@ fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, Eff
             Action::Db { sql, params, .. } => (sql, params),
             _ => unreachable!("only DB Must effects reach run_db_transaction"),
         };
+        let bound: Vec<rusqlite::types::Value> = params.iter().map(to_rusqlite).collect();
         let outcome = tx
             .prepare_cached(sql)
-            .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(params.iter())));
+            .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(bound.iter())));
         if let Err(err) = outcome {
             let classified = classify_db_error(&err);
             tracing::warn!("effect: DbWrite failed ({classified:?}); rolling back transaction");
@@ -264,9 +266,10 @@ fn run_action(action: &Action) -> Result<(), EffectErr> {
         // A DbWrite only reaches here as an `Opt`: run it autocommit.
         Action::Db { db, sql, params } => {
             let connection = checkout_sqlite(db).map_err(EffectErr::Other)?;
+            let bound: Vec<rusqlite::types::Value> = params.iter().map(to_rusqlite).collect();
             connection
                 .prepare_cached(sql)
-                .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(params.iter())))
+                .and_then(|mut statement| statement.execute(rusqlite::params_from_iter(bound.iter())))
                 .map(|_| ())
                 .map_err(|err| classify_db_error(&err))
         }

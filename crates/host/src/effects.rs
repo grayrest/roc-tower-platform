@@ -258,16 +258,15 @@ pub(crate) fn send_request(
 // SQLite.
 // ---------------------------------------------------------------------------
 
-pub(crate) fn sql_param_to_rusqlite(value: &abi::HostSqlValue) -> rusqlite::types::Value {
+/// Convert an engine-neutral bound param to a rusqlite value at bind time.
+pub(crate) fn to_rusqlite(value: &crate::db::SqlValue) -> rusqlite::types::Value {
     use rusqlite::types::Value;
-    match value.tag {
-        abi::HostSqlValueTag::Null => Value::Null,
-        abi::HostSqlValueTag::Integer => Value::Integer(value.payload_integer()),
-        abi::HostSqlValueTag::Real => Value::Real(value.payload_real()),
-        abi::HostSqlValueTag::Text => Value::Text(
-            String::from_utf8_lossy(value.payload_text().as_slice()).into_owned(),
-        ),
-        abi::HostSqlValueTag::Blob => Value::Blob(value.payload_blob().as_slice().to_vec()),
+    match value {
+        crate::db::SqlValue::Null => Value::Null,
+        crate::db::SqlValue::Int(n) => Value::Integer(*n),
+        crate::db::SqlValue::Real(f) => Value::Real(*f),
+        crate::db::SqlValue::Text(s) => Value::Text(s.clone()),
+        crate::db::SqlValue::Blob(b) => Value::Blob(b.clone()),
     }
 }
 

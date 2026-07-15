@@ -8,6 +8,13 @@ license.workspace = true
 # rlib enables `cargo test`; roc build consumes only the staticlib.
 crate-type = ["staticlib", "rlib"]
 
+[features]
+# Default runtime is rusqlite. `--features turso` swaps the DB backend (cursor
+# reads + write effects) to Turso for the typed-API-on-turso experiment; the
+# rusqlite path is untouched and remains the default.
+default = []
+turso = ["dep:turso_sdk_kit"]
+
 [dependencies]
 tokio.workspace = true
 hyper.workspace = true
@@ -23,6 +30,7 @@ reqwest.workspace = true
 rusqlite.workspace = true
 r2d2.workspace = true
 r2d2_sqlite.workspace = true
+turso_sdk_kit = { version = "0.7", optional = true }
 getrandom.workspace = true
 argon2.workspace = true
 tracing.workspace = true

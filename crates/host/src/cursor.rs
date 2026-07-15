@@ -43,7 +43,8 @@ use rusqlite::types::ValueRef;
 use rusqlite::{CachedStatement, Row, Rows};
 
 use crate::abi;
-use crate::effects::{checkout_sqlite, decref_list_with, sql_param_to_rusqlite, PooledSqlite};
+use crate::db::SqlValue;
+use crate::effects::{checkout_sqlite, decref_list_with, to_rusqlite, PooledSqlite};
 use crate::roc_call::roc_str;
 use crate::roc_host;
 
@@ -177,8 +178,8 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
     let ctx = args.ctx;
     let db = String::from_utf8_lossy(args.db.as_slice()).into_owned();
     let sql = String::from_utf8_lossy(args.sql.as_slice()).into_owned();
-    let params: Vec<rusqlite::types::Value> =
-        args.params.as_slice().iter().map(sql_param_to_rusqlite).collect();
+    let params: Vec<SqlValue> =
+        args.params.as_slice().iter().map(crate::db::param_from_host).collect();
     unsafe {
         args.db.decref(host);
         decref_list_with(args.params, |value| value.decref(host));
@@ -209,7 +210,7 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
 fn build_cursor(
     conn: PooledSqlite,
     sql: &str,
-    params: &[rusqlite::types::Value],
+    params: &[SqlValue],
 ) -> Result<Cursor, String> {
     let conn: *mut PooledSqlite = Box::into_raw(Box::new(conn));
     // SAFETY: `conn` is a stable heap box that outlives the statement and rows
@@ -224,7 +225,7 @@ fn build_cursor(
         }
     };
     for (i, value) in params.iter().enumerate() {
-        if let Err(err) = stmt.raw_bind_parameter(i + 1, value) {
+        if let Err(err) = stmt.raw_bind_parameter(i + 1, to_rusqlite(value)) {
             drop(stmt);
             drop(unsafe { Box::from_raw(conn) });
             return Err(format!("bind param {}: {err}", i + 1));

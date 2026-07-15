@@ -10,6 +10,7 @@ mod abi;
 
 mod arena;
 mod body;
+mod db;
 mod config;
 mod cursor;
 mod effect;
