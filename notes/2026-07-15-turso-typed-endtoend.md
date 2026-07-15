@@ -19,11 +19,13 @@ throughput artifact for the API-direction discussion.
 
 ## Reading
 
-The B0 microbench measured Turso at **8–17× slower than rusqlite at the SQL
-level** (8× on a trivial point lookup, ~17× on the hot `@sql json` query).
-End-to-end that compresses to **1.75–4×**, because a real request spends much of
-its time outside SQLite — HTTP parse/serialize, Roc marshalling, the arena — and
-that fixed overhead dilutes the engine gap:
+The B0 microbench (release; see the correction note there) measured Turso at
+**~4.5–5.6× slower than rusqlite at the SQL level** (~4.5× on a trivial point
+lookup, ~5.6× on the hot `@sql json` query, on the tiny spike seed where
+per-query fixed overhead dominates). End-to-end that compresses to **1.75–4×**,
+because a real request spends much of its time outside SQLite — HTTP
+parse/serialize, Roc marshalling, the arena — and that fixed overhead dilutes
+the engine gap:
 
 - **`byslug`** (single `@sql json` query, most DB-dominated) shows the widest
   gap, 4.07× — closest to the raw engine ratio.
@@ -43,8 +45,9 @@ B4), which could shrink the typed path's per-cell marshalling — the ~30%-of-CP
 response-construction cost the Phase 7 profile identified. This build is the
 substrate for exploring that: the typed API runs on Turso today at a known 2.7×,
 and any zero-copy-borrow work would be measured against that baseline. The
-counterweight is Turso's 8–17× raw-engine deficit — a borrow optimization has to
-claw back a lot before the typed-on-Turso path beats typed-on-rusqlite.
+counterweight is Turso's ~4.5–5.6× raw-engine deficit (release) — a borrow
+optimization has to claw back a lot before the typed-on-Turso path beats
+typed-on-rusqlite, and B4 found the copy it targets is noise anyway.
 
 ## Reproducing
 

@@ -1,17 +1,27 @@
-# B0: Turso coverage + perf spike — **NO-GO**
+# B0: Turso coverage + perf spike — **NO-GO (magnitude corrected)**
 
 **Date:** 2026-07-15 · **Crate:** `crates/turso-spike` (excluded from the
-workspace; run `cargo run --manifest-path crates/turso-spike/Cargo.toml`) ·
+workspace; run `cargo run --release --manifest-path crates/turso-spike/Cargo.toml`) ·
 **Turso:** `turso_sdk_kit` 0.7.0 (`turso_core` 0.7.0), sync `async_io:false`
 stepping mode · macOS aarch64.
 
+> **Correction (2026-07-15):** the original figures below were run in a **debug
+> build**. rusqlite's bundled SQLite is compiled `-O2` regardless of the Rust
+> profile, so debug compares optimized C against unoptimized Rust and inflated
+> the turso ratio ~3×. The honest **release** numbers are **~4.5–5.6× at the SQL
+> microbench** (not 8–18×) and **1.75–4× end-to-end** on realistic data. The
+> microbench now refuses to report in a debug build. Everything below is updated
+> to the release figures.
+
 ## Verdict
 
-**NO-GO on the wholesale rusqlite → Turso runtime swap.** The pre-committed gate
-fails on performance: Turso 0.7.0 is **8–18× slower than bundled SQLite
-(rusqlite)** on the RealWorld read path, versus a 1.5× ceiling. Everything else
-Turso does well — the disqualifier is raw query speed, which is the one thing a
-SQLite-assembled-response platform cannot give up.
+**NO-GO on a *wholesale* rusqlite → Turso runtime swap on current perf**, but
+"NO-GO" here means "measurably slower," not "hopeless." Release Turso 0.7.0 is
+**~4.5–5.6× slower than bundled SQLite at the SQL microbench** (fixed per-query
+overhead on tiny data) and **1.75–4× end-to-end** on the realworld app — over
+the pre-committed 1.5× gate, but well within an order of magnitude. Everything
+else Turso does well; the gap is young-engine execution speed, and it is
+narrowing release-over-release.
 
 ## What passed (Turso 0.7.0 is genuinely capable)
 
@@ -25,48 +35,55 @@ SQLite-assembled-response platform cannot give up.
 | Pragma matrix | ✅ `journal_mode=WAL`, `foreign_keys=ON`, `busy_timeout`, and `synchronous=OFF/NORMAL/FULL` all accepted (the plan expected `NORMAL` unsupported — it is supported) |
 | Constraint classification | ✅ UNIQUE and PK violations surface as `Constraint("UNIQUE constraint failed: users.email (19)")` / `...users.id (19)` — column-qualified, classifiable for the host's 422 mapping |
 
-## What failed — the microbench (pre-committed gate: ≤ 1.5× rusqlite)
+## The microbench (pre-committed gate: ≤ 1.5× rusqlite)
 
 Both engines in-memory, same schema + seed, **prepared statement reused** (reset +
 rebind per iteration on both sides — an engine-to-engine execution comparison,
-no per-iteration parse/plan), warmed, `black_box`'d, 2000 iterations:
+no per-iteration parse/plan), warmed, `black_box`'d, 2000 iterations, **release**:
 
 | query | turso | rusqlite | ratio |
 |-------|------:|---------:|------:|
-| article-by-slug (`@sql json`, the hot read) | ~150 µs/q | ~8.5 µs/q | **~17–18×** |
-| typed indexed point lookup | ~14.5 µs/q | ~1.8 µs/q | **~8×** |
+| article-by-slug (`@sql json`, the hot read) | ~14.6 µs/q | ~2.6 µs/q | **~5.6×** |
+| typed indexed point lookup | ~0.8 µs/q | ~0.2 µs/q | **~4.5×** |
 
-The point lookup is the tell: Turso is **8× slower on the most trivial indexed
-2-predicate query**, so this is a *fundamental per-query execution overhead* in
-the young Rust engine, not a `json`/subquery-planner weakness. The `@sql json`
-query widens it to ~17× because the gap compounds over the correlated subqueries
-SQLite's mature C executor eats cheaply.
+The point lookup is the tell: Turso is ~4.5× slower on the most trivial indexed
+2-predicate query, so this is per-query *execution* overhead in the young Rust
+engine, not a `json`/subquery-planner weakness. The `@sql json` query widens it
+to ~5.6× as the gap compounds over the correlated subqueries.
 
-An earlier measurement showed ~79× — that was ~520 µs/query of **per-iteration
-`prepare`** (parse + plan of the large query), which the fixed bench removes by
-reusing the prepared statement. Even fully amortized, execution alone is 8–18×.
+**Build-config sensitivity (the correction):** the same bench in a **debug**
+build read 17.7× / 8.4×, and an earlier debug run with per-iteration `prepare`
+read ~79× — both artifacts of comparing optimized-C SQLite against unoptimized
+Rust. Release closes ~⅔ of the apparent gap. Further config barely moves it:
+`fat` LTO + `codegen-units=1` shaves ~8% (5.6→5.2×); disabling turso's default
+`encryption`/`pure-rust-crypto` features changes nothing (they're no-ops without
+a key). The residual ~4.5–5.6× is genuine implementation maturity.
 
-## Why this is disqualifying
+Also note the microbench runs on the **tiny spike seed (~2 rows)**, so it
+measures per-query *fixed* overhead where turso is worst; on realistic data the
+gap compresses (see the end-to-end note: 1.75–4×).
 
-The platform's headline is that SQLite assembles the response document and the
-host passes it through — the arena bench (`2026-07-15-arena-bench.md`) confirmed
-these endpoints are **SQLite-bound**. Making the SQLite layer 8–18× slower would
-dominate request time and regress every read endpoint by roughly that factor.
-There is no host-side mitigation for raw engine speed; the arena/zero-copy work
-saves microseconds on a path that would newly cost hundreds.
+## Why it still gates a wholesale swap
+
+The platform's read path is SQLite-bound (the arena bench,
+`2026-07-15-arena-bench.md`, confirmed host allocation is a thin slice). A
+1.75–4× DB slowdown end-to-end is not fatal for many apps, but it is a real
+regression against the platform's fast-response headline, with no host-side
+mitigation for raw engine speed — so a *wholesale* cutover is not justified on
+current perf. It is a "not yet," not a "never": turso is pre-1.0 and closing the
+gap release-over-release.
 
 ## Consequences for the plan
 
-- **B1–B4 do not proceed.** The wholesale cutover, cursor-FFI-on-turso, dialect
-  gate, and the B4 zero-copy DB borrows are all shelved: B4's borrow mechanism
-  needed Turso's Rust-owned pager, and that lever is moot if the engine is 8×
-  slower to begin with.
-- **rusqlite stays** as the host runtime and sqlgen's analyzer — no dialect
-  split to worry about.
-- **Re-runnable:** the gate is a standing crate. Re-run it against a future
-  Turso release; if the microbench ratio ever drops under ~1.5×, B1 can be
-  reconsidered. Turso is pre-1.0 and improving fast, so this is a "not yet,"
-  not a "never."
+- **No *wholesale* cutover** on current perf — rusqlite stays the default host
+  runtime and sqlgen's analyzer (no dialect split).
+- **B1+B2 were nonetheless built** afterward (user's call) as a typed-API-on-Turso
+  artifact behind `--features turso` — see `2026-07-15-turso-typed-endtoend.md`
+  (154/154 conformance, 1.75–4× end-to-end). This corrected-magnitude view is
+  what makes that build interesting rather than pointless.
+- **Re-runnable:** the gate is a standing crate (`--release`). Re-run it against
+  a future Turso release; if the ratio drops under ~1.5×, a default swap can be
+  reconsidered.
 
 ## Materialized views (the B4-adjacent question)
 

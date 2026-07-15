@@ -6,6 +6,12 @@ publish = false
 
 # B0 coverage + perf spike (GATE). Standalone: not wired into the host. Decides
 # whether the rusqlite -> Turso runtime swap is viable before any of B1–B4.
+#
+# IMPORTANT: run with `--release`. rusqlite's bundled SQLite is compiled -O2
+# regardless of the Rust profile, so a debug build compares optimized C against
+# unoptimized Rust and inflates the turso ratio ~3x. The microbench refuses to
+# print a verdict in a debug build for this reason. (fat LTO + codegen-units=1
+# shaves a further ~8%, not enough to matter — left off for build speed.)
 
 [[bin]]
 name = "turso-spike"

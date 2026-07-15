@@ -412,6 +412,13 @@ const POINT_LOOKUP: &str =
     "SELECT c.id, c.author_id FROM comments c WHERE c.id = :comment_id AND c.article_id = :article_id";
 
 fn check_microbench(r: &mut Report) {
+    // A debug build compares optimized-C rusqlite against unoptimized Rust turso
+    // and inflates the ratio ~3x — the original B0 mistake. Refuse to report.
+    if cfg!(debug_assertions) {
+        println!("  --   SKIPPED: run with --release (debug inflates the turso ratio ~3x)");
+        r.check("microbench (release build)", Err("built without --release".into()));
+        return;
+    }
     const N: u32 = 2000;
     // Hot @sql json query.
     let turso_ns = bench_turso(N);

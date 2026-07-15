@@ -26,7 +26,7 @@ That removable copy is **~0.01% of a ~950 µs turso `byslug` request**. Scaling
 the doc from the 289-byte seed to a realistic multi-KB document, the copy is
 memcpy-bound (multi-GB/s → ~1 µs for 10 KB) — still **under ~0.3%**. Removing
 rsapi's redundant `to_owned` is a real single-copy win, but it buys nothing
-measurable: DB engine time (B0's 8–17×) and HTTP/marshalling dominate.
+measurable: DB engine time (B0's ~4.5–5.6× release) and HTTP/marshalling dominate.
 
 ## 2. True zero-copy into a Roc value is unsound
 
@@ -68,7 +68,8 @@ materialization follow-up B4 was meant to gate is likewise unmotivated *for this
 reason* — though materialization remains a valid *read-throughput* lever on
 rusqlite (the 2026-07-14 61–80% win), which is a different axis entirely.
 
-The real lever for typed-on-turso is turso's own engine speed (8–17× vs
-rusqlite); no host-side marshalling change moves that. This closes the arena +
+The real lever for typed-on-turso is turso's own engine speed (~4.5–5.6× vs
+rusqlite at the release microbench; 1.75–4× end-to-end); no host-side
+marshalling change moves that. This closes the arena +
 turso plan: A shipped (perf-neutral), B0 NO-GO, B1/B2 built as the typed-on-turso
 artifact (154/154, 1.75–4× end-to-end), B4 assessed — copy is the floor.

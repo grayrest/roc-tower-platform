@@ -257,17 +257,19 @@ the materialized-views builder flag is real.
   **no measurable gain** (SQLite-bound, not allocation-bound), so it was reverted;
   the mint-per-request arena stands as B4's substrate. See
   notes/2026-07-15-arena-bench.md. User decision: keep simple arena, proceed to B0.
-- [x] B0 turso spike (GATE) — **NO-GO**. Turso 0.7.0 coverage/correctness/
-  contention/durability/pragmas/constraints all ✅, but it is **8–18× slower
-  than rusqlite** (8× on a trivial point lookup, ~17× on the hot `@sql json`
-  query) — an order of magnitude over the 1.5× gate. See
-  notes/2026-07-15-turso-b0-spike.md; reproducer at crates/turso-spike.
-- [x] B1+B2 **implemented anyway** (user chose to press on despite the B0 perf
-  gate, as a typed-API-on-Turso artifact for the Roc devs). Turso DB backend
-  (turso_db.rs) behind `--features turso`, rusqlite still the default. The whole
-  realworld app runs on turso: **154/154 conformance**. End-to-end turso is
-  **1.75–4× slower** (the 8–17× SQL-level gap dilutes behind HTTP/marshalling);
-  the typed `profile` endpoint is **2.72×**. See notes/2026-07-15-turso-typed-endtoend.md.
+- [x] B0 turso spike (GATE) — **NO-GO on a wholesale swap** (not "hopeless").
+  Turso 0.7.0 coverage/correctness/contention/durability/pragmas/constraints all
+  ✅. **Perf, corrected:** the original 8–18× was a **debug-build artifact**
+  (rusqlite's bundled SQLite is -O2 regardless of Rust profile). Release is
+  **~4.5–5.6× at the SQL microbench** (tiny-data fixed overhead) and **1.75–4×
+  end-to-end** — over the 1.5× gate but well within an order of magnitude. LTO
+  ~8%, encryption-off nil. See notes/2026-07-15-turso-b0-spike.md; reproducer at
+  crates/turso-spike (run `--release`).
+- [x] B1+B2 **implemented anyway** (user chose to press on, as a typed-API-on-Turso
+  artifact for the Roc devs). Turso DB backend (turso_db.rs) behind
+  `--features turso`, rusqlite still the default. The whole realworld app runs on
+  turso: **154/154 conformance**. End-to-end turso is **1.75–4× slower**; the
+  typed `profile` endpoint is **2.72×**. See notes/2026-07-15-turso-typed-endtoend.md.
 - [~] B3 (wholesale cutover + rusqlite deletion) **not done** — turso stays an
   opt-in flag given the perf deficit; no dialect-gate needed while rusqlite is
   default.
