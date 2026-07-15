@@ -262,11 +262,16 @@ the materialized-views builder flag is real.
   than rusqlite** (8× on a trivial point lookup, ~17× on the hot `@sql json`
   query) — an order of magnitude over the 1.5× gate. See
   notes/2026-07-15-turso-b0-spike.md; reproducer at crates/turso-spike.
-- [~] B1–B4 **shelved** by the B0 gate. rusqlite stays as the runtime + sqlgen
-  analyzer. Re-runnable against a future Turso release; if the microbench ever
-  drops under ~1.5×, reconsider. Materialization (stored doc columns, the
-  2026-07-14 61–80% read win) is the better read-throughput lever on rusqlite,
-  independent of Turso.
+- [x] B1+B2 **implemented anyway** (user chose to press on despite the B0 perf
+  gate, as a typed-API-on-Turso artifact for the Roc devs). Turso DB backend
+  (turso_db.rs) behind `--features turso`, rusqlite still the default. The whole
+  realworld app runs on turso: **154/154 conformance**. End-to-end turso is
+  **1.75–4× slower** (the 8–17× SQL-level gap dilutes behind HTTP/marshalling);
+  the typed `profile` endpoint is **2.72×**. See notes/2026-07-15-turso-typed-endtoend.md.
+- [~] B3 (wholesale cutover + rusqlite deletion) **not done** — turso stays an
+  opt-in flag given the perf deficit; no dialect-gate needed while rusqlite is
+  default. B4 (zero-copy borrows) is the open follow-up this build is the
+  substrate for.
 
 ---
 
