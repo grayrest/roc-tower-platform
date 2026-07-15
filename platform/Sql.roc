@@ -97,20 +97,6 @@ Sql := [].{
         collected
     }
 
-    ## Read the first row's first column as a preformed JSON document — the raw
-    ## path mirroring an `@sql json` generated reader, for dynamically-built
-    ## queries that assemble their JSON in SQL (`json_object`/
-    ## `json_group_array`). No `Sql.Row` materialization, no re-encode: the one
-    ## cell is copied straight into a `RawJson`. Finishes the cursor on every
-    ## arm; errors if the query yields no row.
-    query_json! : U64, Str, Str, List(Host.SqlValue) => Try(RawJson, Str)
-    query_json! = |ctx, db, sql, params| {
-        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: sql, params: params })?
-        result = read_first_json!(handle)
-        Host.sql_finish!(handle)
-        result
-    }
-
     ## Run a statement for effect only (DDL, or a write with no rows worth
     ## reading), draining any result rows. Finishes the cursor on every path.
     exec! : U64, Str, Str, List(Host.SqlValue) => Try({}, Str)
@@ -132,24 +118,11 @@ Sql := [].{
 
 import Host
 import NullableStr
-import RawJson
 
 # --- module-private effectful cursor helpers ---
 #
 # Top-level defs outside the nominal block are unreachable from other modules,
 # so these stepping loops are the platform's real privacy boundary.
-
-## Step once and read column 0 as a preformed JSON document; error if there is
-## no row. Does NOT finish the cursor — `query_json!` owns that on every arm.
-read_first_json! : U64 => Try(RawJson, Str)
-read_first_json! = |handle| {
-    has_row = Host.sql_step!(handle)?
-    if has_row {
-        Ok(RawJson.from(Host.sql_col_str!(handle, 0)))
-    } else {
-        Err("query_json! returned no rows")
-    }
-}
 
 ## Step every remaining row into `acc`, decoding each cell by its live storage
 ## class. Returns the accumulated rows, or the first step error. Does NOT

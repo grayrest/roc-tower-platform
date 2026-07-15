@@ -48,10 +48,6 @@ pub struct Query {
     pub sql: String,
     /// `## @sql one` — return the first row (else the whole list).
     pub one: bool,
-    /// `## @sql json` — the query assembles its own JSON document in SQL
-    /// (`json_object`/`json_group_array`); the reader returns column 0 as a
-    /// raw `RawJson` passthrough instead of a typed record.
-    pub json: bool,
     /// `## @params` overrides, if present.
     pub params: Vec<ParamAnnot>,
 }
@@ -68,7 +64,7 @@ pub struct Scanned {
 enum Marker {
     Schema,
     Fragment(String),
-    Sql { one: bool, json: bool },
+    Sql { one: bool },
 }
 
 /// Scan one Roc source file's marked items.
@@ -114,14 +110,14 @@ pub fn scan(source: &str) -> Result<Scanned, String> {
                     let spliced = splice_fragments(&sql, &scanned.fragments)?;
                     scanned.fragments.push(Fragment { name: frag_name, sql: spliced });
                 }
-                Marker::Sql { one, json } => {
+                Marker::Sql { one } => {
                     let spliced = splice_fragments(&sql, &scanned.fragments)?;
                     if spliced.contains('?') {
                         return Err(format!(
                             "@sql query {name:?} uses a positional `?`; @sql requires named :params"
                         ));
                     }
-                    scanned.queries.push(Query { name, sql: spliced, one, json, params });
+                    scanned.queries.push(Query { name, sql: spliced, one, params });
                 }
             }
             i = next;
@@ -147,13 +143,11 @@ fn parse_marker(trimmed: &str) -> Result<Option<Marker>, String> {
             Ok(Some(Marker::Fragment(name.to_string())))
         }
     } else if rest == "sql" {
-        Ok(Some(Marker::Sql { one: false, json: false }))
+        Ok(Some(Marker::Sql { one: false }))
     } else if rest == "sql one" {
-        Ok(Some(Marker::Sql { one: true, json: false }))
-    } else if rest == "sql json" {
-        Ok(Some(Marker::Sql { one: false, json: true }))
-    } else if rest == "sql json one" {
-        Ok(Some(Marker::Sql { one: true, json: true }))
+        Ok(Some(Marker::Sql { one: true }))
+    } else if rest == "sql json" || rest == "sql json one" {
+        Err("@sql json was removed — assemble the JSON envelope in Roc from a typed @sql / @sql one query".to_string())
     } else if rest.starts_with("params") {
         // handled by the caller
         Ok(None)

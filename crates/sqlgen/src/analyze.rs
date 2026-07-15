@@ -161,35 +161,6 @@ impl<'c> Analyzer<'c> {
         })
     }
 
-    /// Params-only analysis for a `## @sql json` query: the query assembles its
-    /// own document in SQL (`json_object`/`json_group_array`), so the generated
-    /// reader takes column 0 verbatim and never needs per-column types. We still
-    /// prepare the statement — that validates the SQL against the schema and
-    /// surfaces the named parameters — but skip the VDBE column-type walk (whose
-    /// job the JSON1 functions would only confuse).
-    pub fn analyze_json(&self, sql: &str) -> Result<Analysis, String> {
-        let stmt = self
-            .conn
-            .prepare(sql)
-            .map_err(|e| format!("prepare failed: {e}"))?;
-        if !stmt.readonly() {
-            return Err("@sql json query must be read-only (a SELECT)".to_string());
-        }
-        if stmt.column_count() < 1 {
-            return Err("@sql json query must SELECT a JSON document column".to_string());
-        }
-        let params = self
-            .param_names(&stmt)
-            .into_iter()
-            .map(|name| Param { name, ty: None })
-            .collect();
-        Ok(Analysis {
-            columns: Vec::new(),
-            params,
-            readonly: true,
-        })
-    }
-
     fn param_names(&self, stmt: &rusqlite::Statement) -> Vec<String> {
         let n = stmt.parameter_count();
         (1..=n)

@@ -19,15 +19,14 @@ gates drift). The shared article projection lives once as a `## @fragment`;
 the by-slug read splices it at codegen time while the dynamic article
 list/feed interpolate the same constant at request time.
 
-The read-only GET endpoints (article, list, feed, profile, comments, tags) go a
-step further with **`@sql json`**: the JSON document — envelope, camelCase keys,
-nested author, tag arrays, boolean flags — is assembled entirely in SQLite
-(`json_object`/`json_group_array`/`json_patch`) and returned as raw bytes via
-`Res.json_raw`, skipping the record → encode pipeline. The mutate-then-serialize
-handlers (`update`, `favorite`, `unfavorite`, `follow`, `unfollow`) keep the
-typed reads — they compute the response from the row's fields. See the platform
-[README](../../README.md#sql-json--assemble-the-document-in-sql-splice-it-once)
-for the annotation reference.
+Every endpoint — reads and mutate-then-serialize alike — reads typed rows and
+serializes its response envelope in Roc (`Res.json(status, record)`): flat rows
+mapped to the JSON shape (nesting the author, splitting tag lists, flags to
+`JsonBool`). An earlier `@sql json` variant assembled the document in SQLite and
+passed it through verbatim; it was removed after a both-engine A/B
+([../../notes/2026-07-15-typed-vs-json.md](../../notes/2026-07-15-typed-vs-json.md))
+in favor of the single typed surface. The dynamic list/feed still interpolate
+the shared projection at request time via `Sql.query!` (by-name reads).
 
 ## Running
 

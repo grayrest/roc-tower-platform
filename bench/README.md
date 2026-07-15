@@ -39,14 +39,17 @@ bench/run.sh main:bench/srv-main arena:bench/srv-arena
 
 | label      | path                                          | shape                         |
 |------------|-----------------------------------------------|-------------------------------|
-| `byslug`   | `/api/articles/article-2785`                  | single-row `@sql json` doc    |
-| `profile`  | `/api/profiles/user14`                        | single-row profile            |
-| `list`     | `/api/articles?limit=20`                      | 20-row `@sql json` list       |
-| `comments` | `/api/articles/article-2785/comments`         | multi-row `@sql json` doc     |
+| `byslug`   | `/api/articles/article-2785`                  | single-row typed object       |
+| `profile`  | `/api/profiles/user14`                        | single-row typed profile      |
+| `list`     | `/api/articles?limit=20`                      | 20-row typed list (dynamic)   |
+| `comments` | `/api/articles/article-2785/comments`         | multi-row typed list          |
+| `tags`     | `/api/tags`                                   | flat typed string array       |
 
-`list` and `comments` are the multi-row shapes whose response bodies the
-request arena keeps zero-copy; `byslug`/`profile` are the small-body shapes
-that the slow-drain heuristic copies (see `crates/host/src/body.rs`).
+All endpoints read typed rows and serialize the envelope in Roc (the `@sql json`
+variant was removed — see `notes/2026-07-15-typed-vs-json.md`). `list` and
+`comments` are the multi-row shapes whose response bodies the request arena
+keeps zero-copy; `byslug`/`profile` are the small-body shapes that the
+slow-drain heuristic copies (see `crates/host/src/body.rs`).
 
 ## Load parameters
 

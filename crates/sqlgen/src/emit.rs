@@ -114,20 +114,15 @@ pub fn emit_module(module_name: &str, scanned: &Scanned) -> Result<String, Strin
     let mut needs_nullable_str = false;
     let mut needs_nullable_i64 = false;
     let mut needs_jsonbool = false;
-    let mut needs_rawjson = false;
 
     for query in &scanned.queries {
-        let analysis = if query.json {
-            analyzer.analyze_json(&query.sql)
-        } else {
-            analyzer.analyze(&query.sql)
-        }
-        .map_err(|e| format!("analyze {:?}: {e}", query.name))?;
+        let analysis = analyzer
+            .analyze(&query.sql)
+            .map_err(|e| format!("analyze {:?}: {e}", query.name))?;
         let emitted = emit_query(query, &analysis)?;
         needs_nullable_str |= emitted.uses_nullable_str;
         needs_nullable_i64 |= emitted.uses_nullable_i64;
         needs_jsonbool |= emitted.uses_jsonbool;
-        needs_rawjson |= emitted.uses_rawjson;
         fns.push(emitted.decl);
         helpers.push(emitted.helper);
     }
@@ -147,9 +142,6 @@ pub fn emit_module(module_name: &str, scanned: &Scanned) -> Result<String, Strin
     }
     if needs_jsonbool {
         out.push_str("import pf.JsonBool\n");
-    }
-    if needs_rawjson {
-        out.push_str("import pf.RawJson\n");
     }
     out.push('\n');
     out.push_str(&format!("{gen_name} := [].{{\n"));
@@ -182,7 +174,6 @@ struct EmittedQuery {
     uses_nullable_str: bool,
     uses_nullable_i64: bool,
     uses_jsonbool: bool,
-    uses_rawjson: bool,
 }
 
 fn emit_query(query: &Query, analysis: &Analysis) -> Result<EmittedQuery, String> {
@@ -196,95 +187,11 @@ fn emit_query(query: &Query, analysis: &Analysis) -> Result<EmittedQuery, String
         .join(", ");
     let param_record_ty = param_record_type(&params);
 
-    if query.json {
-        emit_read_json(query, &sql_literal, &bindings, &param_record_ty)
-    } else if analysis.readonly {
+    if analysis.readonly {
         emit_read(query, analysis, &sql_literal, &bindings, &param_record_ty)
     } else {
         emit_write(query, &sql_literal, &bindings, &params)
     }
-}
-
-/// Emit a `## @sql json` reader: the query built its whole JSON document in SQL
-/// (`json_object`/`json_group_array`), so the reader reads column 0 verbatim
-/// into a `RawJson`, skipping all per-column decode. `json one` returns a single
-/// document with a `NoRows` miss (404-shaped); plain `json` reads the single
-/// aggregate row (a query that never returns zero rows by construction).
-fn emit_read_json(
-    query: &Query,
-    sql_literal: &str,
-    bindings: &str,
-    param_record_ty: &str,
-) -> Result<EmittedQuery, String> {
-    let name = &query.name;
-    let helper_name = format!("read_{name}");
-    let read_doc = "Ok(RawJson.from(Host.sql_col_str!(handle, 0)))";
-
-    let (ret_ty, helper) = if query.one {
-        (
-            "Try(RawJson, [NoRows, DbErr(Str)])".to_string(),
-            format!(
-                "{helper}! : U64 => Try(RawJson, [NoRows, DbErr(Str)])\n\
-                 {helper}! = |handle| {{\n\
-                 \x20   match Host.sql_step!(handle) {{\n\
-                 \x20       Err(message) => Err(DbErr(message))\n\
-                 \x20       Ok(has_row) =>\n\
-                 \x20           if has_row {{\n\
-                 \x20               {read_doc}\n\
-                 \x20           }} else {{\n\
-                 \x20               Err(NoRows)\n\
-                 \x20           }}\n\
-                 \x20   }}\n\
-                 }}",
-                helper = helper_name,
-            ),
-        )
-    } else {
-        (
-            "Try(RawJson, [DbErr(Str)])".to_string(),
-            format!(
-                "{helper}! : U64 => Try(RawJson, [DbErr(Str)])\n\
-                 {helper}! = |handle| {{\n\
-                 \x20   match Host.sql_step!(handle) {{\n\
-                 \x20       Err(message) => Err(DbErr(message))\n\
-                 \x20       Ok(has_row) =>\n\
-                 \x20           if has_row {{\n\
-                 \x20               {read_doc}\n\
-                 \x20           }} else {{\n\
-                 \x20               Err(DbErr(\"@sql json query returned no rows\"))\n\
-                 \x20           }}\n\
-                 \x20   }}\n\
-                 }}",
-                helper = helper_name,
-            ),
-        )
-    };
-
-    let params_arg = if bindings.is_empty() { "_params" } else { "params" };
-    let decl = format!(
-        "    {name}! : U64, Str, {param_ty} => {ret_ty}\n\
-         \x20   {name}! = |ctx, db, {params_arg}| {{\n\
-         \x20       handle = Host.sql_begin!({{ ctx: ctx, db: db, sql: {sql}, params: [{bindings}] }}) ? |message| DbErr(message)\n\
-         \x20       result = {helper}!(handle)\n\
-         \x20       Host.sql_finish!(handle)\n\
-         \x20       result\n\
-         \x20   }}",
-        name = name,
-        param_ty = param_record_ty,
-        ret_ty = ret_ty,
-        sql = sql_literal,
-        helper = helper_name,
-        params_arg = params_arg,
-    );
-
-    Ok(EmittedQuery {
-        decl,
-        helper,
-        uses_nullable_str: false,
-        uses_nullable_i64: false,
-        uses_jsonbool: false,
-        uses_rawjson: true,
-    })
 }
 
 fn emit_read(
@@ -374,7 +281,6 @@ fn emit_read(
         uses_nullable_str: fields.iter().any(|f| f.ty == RocType::NullableStr),
         uses_nullable_i64: fields.iter().any(|f| f.ty == RocType::NullableI64),
         uses_jsonbool: fields.iter().any(|f| f.ty == RocType::JsonBool),
-        uses_rawjson: false,
     })
 }
 
@@ -411,7 +317,6 @@ fn emit_write(
         uses_nullable_str: false,
         uses_nullable_i64: false,
         uses_jsonbool: false,
-        uses_rawjson: false,
     })
 }
 
