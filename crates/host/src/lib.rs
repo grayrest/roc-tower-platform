@@ -8,6 +8,7 @@
 #[path = "roc_platform_abi.rs"]
 mod abi;
 
+mod arena;
 mod body;
 mod config;
 mod cursor;
@@ -45,7 +46,16 @@ use std::sync::OnceLock;
 /// Compiled Roc code does not see this; it calls the `roc_*` symbols directly.
 fn roc_host() -> &'static abi::RocHost {
     static HOST: OnceLock<abi::RocHost> = OnceLock::new();
-    HOST.get_or_init(|| abi::make_roc_host(ptr::null_mut()))
+    HOST.get_or_init(|| {
+        // Route the host's own Roc-value helpers through the arena so values
+        // built host-side during a request share the request's lifetime; the
+        // generated `DefaultHandlers` (dbg/expect/crash) are kept as-is.
+        let mut host = abi::make_roc_host(ptr::null_mut());
+        host.roc_alloc = arena::host_alloc;
+        host.roc_dealloc = arena::host_dealloc;
+        host.roc_realloc = arena::host_realloc;
+        host
+    })
 }
 
 // SAFETY: the default allocator/handler function pointers are stateless and
@@ -59,21 +69,25 @@ unsafe impl Send for abi::RocHost {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_alloc(length: usize, alignment: usize) -> *mut c_void {
-    abi::DefaultAllocators::roc_alloc(ptr::null_mut(), length, alignment)
+    arena::roc_alloc(length, alignment)
 }
 
+/// # Safety
+/// `ptr_` must have been produced by `roc_alloc` with the same `alignment`.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_dealloc(ptr_: *mut c_void, alignment: usize) {
-    abi::DefaultAllocators::roc_dealloc(ptr::null_mut(), ptr_, alignment)
+pub unsafe extern "C" fn roc_dealloc(ptr_: *mut c_void, alignment: usize) {
+    unsafe { arena::roc_dealloc(ptr_, alignment) }
 }
 
+/// # Safety
+/// `ptr_` must have been produced by `roc_alloc` with the same `alignment`.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_realloc(
+pub unsafe extern "C" fn roc_realloc(
     ptr_: *mut c_void,
     new_length: usize,
     alignment: usize,
 ) -> *mut c_void {
-    abi::DefaultAllocators::roc_realloc(ptr::null_mut(), ptr_, new_length, alignment)
+    unsafe { arena::roc_realloc(ptr_, new_length, alignment) }
 }
 
 ///
