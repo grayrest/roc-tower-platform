@@ -403,6 +403,11 @@ struct RequestState {
 struct CacheAttribution {
     /// Derived (table -> columns-read) union across the request's statements.
     deps: HashMap<Box<str>, crate::shadow::Cols>,
+    /// Per-table cache generation sampled BEFORE the table's first read (the
+    /// R13 read-then-store handshake; `insert` drops the entry if it moved).
+    gens: HashMap<Box<str>, u64>,
+    /// Global cache epoch sampled at the first recorded read.
+    epoch: Option<u64>,
     /// Cookie NAMES read, in first-read order (variant dimension).
     cookies_read: Vec<String>,
     /// The route extracted the body (variant dimension).
@@ -456,6 +461,20 @@ pub(crate) fn poison_ctx(ctx: u64) {
 /// effect choke point — poison AND purge immediately (R2), so existing
 /// entries on those tables can't go silently stale.
 pub(crate) fn record_read(ctx: u64, analysis: &crate::shadow::SqlAnalysis) {
+    // Sample generations/epoch BEFORE the statement's data read (this runs
+    // in sql_begin, ahead of cursor construction): a write landing between
+    // sample and read bumps the generation, so the insert-time check drops
+    // the potentially-stale entry (R13).
+    let cache = crate::cache::global();
+    let epoch = cache.map(|cache| cache.epoch());
+    let sampled: Vec<(Box<str>, u64)> = match cache {
+        Some(cache) => analysis
+            .reads
+            .keys()
+            .map(|table| (table.clone(), cache.generation(table)))
+            .collect(),
+        None => Vec::new(),
+    };
     {
         let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
         let Some(state) = registry.get_mut(&ctx) else {
@@ -469,6 +488,12 @@ pub(crate) fn record_read(ctx: u64, analysis: &crate::shadow::SqlAnalysis) {
         {
             attribution.poisoned = true;
         }
+        if attribution.epoch.is_none() {
+            attribution.epoch = epoch;
+        }
+        for (table, generation) in sampled {
+            attribution.gens.entry(table).or_insert(generation);
+        }
         for (table, cols) in &analysis.reads {
             attribution
                 .deps
@@ -477,8 +502,8 @@ pub(crate) fn record_read(ctx: u64, analysis: &crate::shadow::SqlAnalysis) {
                 .or_insert_with(|| cols.clone());
         }
     }
-    for table in analysis.writes.keys() {
-        crate::cache::purge_table_global(table);
+    for (table, cols) in &analysis.writes {
+        crate::cache::purge_write_global(table, cols);
     }
 }
 
@@ -487,10 +512,10 @@ pub(crate) fn record_read(ctx: u64, analysis: &crate::shadow::SqlAnalysis) {
 /// the ctx entry before the router's oneshot resolves — R9). Returns `None`
 /// when no response cache is installed.
 pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps> {
-    crate::cache::global()?;
+    let cache = crate::cache::global()?;
     let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
     let state = registry.get_mut(&ctx)?;
-    let attribution = std::mem::take(&mut state.attribution);
+    let mut attribution = std::mem::take(&mut state.attribution);
     let body_hash = attribution.body_read.then(|| {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -509,8 +534,17 @@ pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps
             (name, value)
         })
         .collect();
+    let deps = attribution
+        .deps
+        .into_iter()
+        .map(|(table, cols)| {
+            let generation = attribution.gens.remove(&table).unwrap_or(0);
+            (table, cols, generation)
+        })
+        .collect();
     Some(crate::cache::CacheDeps {
-        deps: attribution.deps.into_iter().collect(),
+        deps,
+        epoch: attribution.epoch.unwrap_or_else(|| cache.epoch()),
         cacheable: !attribution.poisoned,
         cookies,
         body_hash,

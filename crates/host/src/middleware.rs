@@ -193,7 +193,12 @@ impl tower::Service<Request<Incoming>> for CacheService {
         let cache = self.cache.clone();
 
         // Hit: serve the stored bytes (or 304) without touching the inner stack.
-        if let Some(stored) = cache.lookup(&key, Instant::now()) {
+        // Transitional (DC4 adds variant resolution): match only plain entries.
+        if let Some(stored) = cache.lookup(
+            &key,
+            |spec| spec.is_plain().then_some(cache::PLAIN_VARIANT),
+            Instant::now(),
+        ) {
             let response = if none_match(&req, &stored.etag) {
                 not_modified(&stored.etag)
             } else {
@@ -262,15 +267,28 @@ async fn maybe_store(
         .iter()
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
+    // Transitional (DC4 replaces the header path with the CacheDeps
+    // extension): header-declared tables at full-column width, plain
+    // variant, generations sampled here (the pre-DC4 race window, unchanged).
+    let deps = tables
+        .into_iter()
+        .map(|table: Box<str>| {
+            let generation = cache.generation(&table);
+            (table, crate::shadow::Cols::All, generation)
+        })
+        .collect();
     cache.insert(
         key,
+        cache::PLAIN_VARIANT,
+        cache::VariantSpec::default(),
         Stored {
             status: parts.status.as_u16(),
             headers,
             body: bytes.clone(),
             etag: etag.clone(),
         },
-        tables,
+        deps,
+        cache.epoch(),
         Instant::now(),
     );
 
