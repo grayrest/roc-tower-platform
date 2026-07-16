@@ -79,13 +79,65 @@ impl VariantSpec {
 /// The variant id of a plain (no-variance) entry.
 pub const PLAIN_VARIANT: u64 = 0;
 
+/// The variant id for a request under `spec`. The same function computes the
+/// id at store time (values from the recorded `CacheDeps`) and at lookup time
+/// (values from the incoming request), so the two always agree. `None` when
+/// the spec needs a body hash the caller doesn't have — unresolvable, a miss.
+pub fn variant_hash(
+    spec: &VariantSpec,
+    cookie_value: impl Fn(&str) -> Option<String>,
+    body_hash: Option<u64>,
+    header_value: impl Fn(&str) -> Option<String>,
+) -> Option<u64> {
+    if spec.is_plain() {
+        return Some(PLAIN_VARIANT);
+    }
+    if spec.body && body_hash.is_none() {
+        return None;
+    }
+    let mut hasher = DefaultHasher::new();
+    for name in &spec.cookies {
+        name.hash(&mut hasher);
+        cookie_value(name).hash(&mut hasher);
+    }
+    if spec.body {
+        body_hash.hash(&mut hasher);
+    }
+    for name in &spec.headers {
+        name.hash(&mut hasher);
+        header_value(name).hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
+/// Parse request cookies per RFC 6265 (`a=1; b=2`), header order preserved.
+/// Shared by the router (building the ctx's cookie store) and the cache
+/// middleware (resolving cookie-variant lookups) so both see identical pairs.
+pub(crate) fn parse_cookies(headers: &http::HeaderMap) -> Vec<(String, String)> {
+    let mut cookies = Vec::new();
+    for value in headers.get_all(http::header::COOKIE) {
+        let Ok(text) = value.to_str() else { continue };
+        for pair in text.split(';') {
+            let pair = pair.trim();
+            if pair.is_empty() {
+                continue;
+            }
+            match pair.split_once('=') {
+                Some((name, value)) => {
+                    cookies.push((name.trim().to_owned(), value.trim().to_owned()));
+                }
+                None => cookies.push((pair.to_owned(), String::new())),
+            }
+        }
+    }
+    cookies
+}
+
 /// What a request's reads and coeffect extractions contribute to caching.
 /// Produced by `effects::take_cache_attribution` ON THE HANDLER THREAD (the
 /// reaper drops the ctx entry before the router's oneshot resolves — R9),
 /// threaded through the join result, and carried to the cache middleware as
 /// a response extension.
-// TODO(DC4): drop the allow once maybe_store consumes the fields.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct CacheDeps {
     /// Derived dependencies: (table, columns-read, table generation sampled
@@ -139,6 +191,15 @@ pub struct ResponseCache {
     inner: Mutex<Inner>,
 }
 
+/// Hash of raw request-body bytes — the D14 variant dimension. ONE function
+/// shared by the host side (recording, in `take_cache_attribution`) and the
+/// middleware side (lookup) so the two always agree.
+pub fn body_hash_of(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// A strong ETag over the exact stored bytes: hashed once at insert, then the
 /// middleware answers `If-None-Match` with `304` for free.
 pub fn etag_for(body: &[u8]) -> String {
@@ -188,8 +249,6 @@ impl ResponseCache {
 
     /// The variant spec under `base`, if any (the middleware uses this to
     /// decide whether a lookup needs the request body buffered first).
-    // TODO(DC4): drop the allow once the middleware resolves variants.
-    #[allow(dead_code)]
     pub fn spec_of(&self, base: &Key) -> Option<VariantSpec> {
         let inner = self.inner.lock().unwrap();
         inner.map.get(base).map(|set| set.spec.clone())
@@ -302,8 +361,6 @@ impl ResponseCache {
 
     /// Drop everything and bump the epoch (runtime DDL, fallback flush).
     /// In-flight readers fail the epoch check at insert.
-    // TODO(DC4): drop the allow once the write path flushes on runtime DDL.
-    #[allow(dead_code)]
     pub fn purge_all(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.map.clear();
@@ -402,8 +459,6 @@ pub fn purge_write_global(table: &str, cols: &Cols) {
 }
 
 /// Write-path convenience: flush everything (runtime DDL, fallback).
-// TODO(DC4): drop the allow once effect.rs uses the derived write path.
-#[allow(dead_code)]
 pub fn purge_all_global() {
     if let Some(cache) = GLOBAL.get() {
         cache.purge_all();

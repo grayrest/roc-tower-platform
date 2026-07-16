@@ -516,12 +516,9 @@ pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps
     let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
     let state = registry.get_mut(&ctx)?;
     let mut attribution = std::mem::take(&mut state.attribution);
-    let body_hash = attribution.body_read.then(|| {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        state.body.as_ref().hash(&mut hasher);
-        hasher.finish()
-    });
+    let body_hash = attribution
+        .body_read
+        .then(|| crate::cache::body_hash_of(state.body.as_ref()));
     let cookies = attribution
         .cookies_read
         .into_iter()

@@ -8,7 +8,15 @@ use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 
-use crate::middleware::AppService;
+use http_body_util::BodyExt;
+use hyper::body::Incoming;
+use tower::ServiceExt;
+
+use crate::middleware::{AppService, ReqBody};
+
+fn box_request(req: hyper::Request<Incoming>) -> hyper::Request<ReqBody> {
+    req.map(|body| body.boxed_unsync())
+}
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -33,7 +41,11 @@ async fn serve(service: AppService, port: u16, route_count: usize) -> i32 {
     tracing::info!("listening on http://{addr} with {route_count} route(s)");
 
     let graceful = GracefulShutdown::new();
-    let hyper_service = TowerToHyperService::new(service);
+    // Box the streaming body at the hyper boundary so every inner layer is
+    // body-agnostic (the cache layer swaps in a buffered body for
+    // body-variant lookups — D14).
+    let hyper_service =
+        TowerToHyperService::new(service.map_request(box_request as fn(_) -> _));
 
     loop {
         tokio::select! {

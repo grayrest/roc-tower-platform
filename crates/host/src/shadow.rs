@@ -53,8 +53,6 @@ impl Cols {
 
     /// Does a write of `self` columns touch a read of `other` columns?
     /// `All` on either side always intersects.
-    // TODO(DC3): drop the allow once purge_write consumes it.
-    #[allow(dead_code)]
     pub fn intersects(&self, other: &Cols) -> bool {
         match (self, other) {
             (Cols::All, _) | (_, Cols::All) => true,

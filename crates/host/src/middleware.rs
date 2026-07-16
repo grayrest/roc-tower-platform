@@ -13,7 +13,6 @@ use std::time::Instant;
 
 use http::{header, HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::BodyExt;
-use hyper::body::Incoming;
 use tower::limit::GlobalConcurrencyLimitLayer;
 use tower::timeout::Timeout;
 use tower::util::{BoxCloneSyncService, ServiceExt};
@@ -25,18 +24,28 @@ use tower_http::request_id::{
 };
 use tower_http::trace::TraceLayer;
 
+use bytes::Bytes;
+use http_body_util::combinators::UnsyncBoxBody;
+use http_body_util::{Full, Limited};
+
 use crate::body::{AppBody, BoxError};
 use crate::cache::{self, Key, ResponseCache, Stored};
 use crate::config::{CorsMode, HostConfig, ResponseCacheConfig};
 use crate::router::RocRouter;
+
+/// The request-body type below the entry adapter: hyper's streaming
+/// `Incoming` boxed, OR a re-boxed buffered body when the cache layer had to
+/// hash the bytes for a body-variant lookup (D14). Boxing at the top keeps
+/// every inner layer body-agnostic.
+pub type ReqBody = UnsyncBoxBody<Bytes, hyper::Error>;
 
 /// Internal header a handler sets (via `Res.cacheable`) to declare a response
 /// cacheable and name the tables its reads touched. The cache layer consumes it
 /// and strips it before the response leaves the process.
 const CACHE_TABLES_HEADER: HeaderName = HeaderName::from_static("x-tp-cache-tables");
 
-type ErringService = BoxCloneSyncService<Request<Incoming>, Response<AppBody>, BoxError>;
-pub type AppService = BoxCloneSyncService<Request<Incoming>, Response<AppBody>, Infallible>;
+type ErringService = BoxCloneSyncService<Request<ReqBody>, Response<AppBody>, BoxError>;
+pub type AppService = BoxCloneSyncService<Request<ReqBody>, Response<AppBody>, Infallible>;
 
 /// Sequential request ids; enough to correlate log lines within one process.
 #[derive(Clone, Default)]
@@ -54,7 +63,7 @@ impl MakeRequestId for CounterRequestId {
 #[derive(Clone)]
 struct CatchError(ErringService);
 
-impl tower::Service<Request<Incoming>> for CatchError {
+impl tower::Service<Request<ReqBody>> for CatchError {
     type Response = Response<AppBody>;
     type Error = Infallible;
     type Future =
@@ -65,7 +74,7 @@ impl tower::Service<Request<Incoming>> for CatchError {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let clone = self.0.clone();
         let mut inner = std::mem::replace(&mut self.0, clone);
         Box::pin(async move {
@@ -93,6 +102,9 @@ fn error_response(err: BoxError) -> Response<AppBody> {
 struct CachePolicy {
     methods: Vec<Method>,
     bypass_headers: Vec<HeaderName>,
+    /// Bound for buffering a request body ahead of a body-variant lookup
+    /// (mirrors the router's own cap, so nothing new is admitted).
+    max_body_bytes: usize,
 }
 
 impl CachePolicy {
@@ -119,7 +131,7 @@ struct CacheService {
 
 /// The cache key for a request (the negotiated encoding partitions gzip vs br
 /// vs identity, since the stored body is already compressed).
-fn request_key(req: &Request<Incoming>) -> Key {
+fn request_key<B>(req: &Request<B>) -> Key {
     let target = req
         .uri()
         .path_and_query()
@@ -141,7 +153,7 @@ fn request_key(req: &Request<Incoming>) -> Key {
 }
 
 /// True when `If-None-Match` matches the entry's ETag (exact or `*`).
-fn none_match(req: &Request<Incoming>, etag: &str) -> bool {
+fn none_match<B>(req: &Request<B>, etag: &str) -> bool {
     req.headers()
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -171,7 +183,7 @@ fn serve_stored(stored: &Stored) -> Response<AppBody> {
     resp
 }
 
-impl tower::Service<Request<Incoming>> for CacheService {
+impl tower::Service<Request<ReqBody>> for CacheService {
     type Response = Response<AppBody>;
     type Error = BoxError;
     type Future =
@@ -181,7 +193,7 @@ impl tower::Service<Request<Incoming>> for CacheService {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         // Pass straight through when this request isn't in scope.
         if !self.policy.cacheable_request(&req) {
             let clone = self.inner.clone();
@@ -191,65 +203,140 @@ impl tower::Service<Request<Incoming>> for CacheService {
 
         let key = request_key(&req);
         let cache = self.cache.clone();
-
-        // Hit: serve the stored bytes (or 304) without touching the inner stack.
-        // Transitional (DC4 adds variant resolution): match only plain entries.
-        if let Some(stored) = cache.lookup(
-            &key,
-            |spec| spec.is_plain().then_some(cache::PLAIN_VARIANT),
-            Instant::now(),
-        ) {
-            let response = if none_match(&req, &stored.etag) {
-                not_modified(&stored.etag)
-            } else {
-                serve_stored(&stored)
-            };
-            return Box::pin(async move { Ok(response) });
-        }
-
+        let policy = self.policy.clone();
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
+
         Box::pin(async move {
+            // A stored spec that varies on the body (D14: the route extracts
+            // it) needs the body hashed BEFORE lookup. Buffer it — bounded
+            // exactly like the router would — and rebuild the request; plain
+            // traffic never touches this branch.
+            let (req, body_hash) = if cache.spec_of(&key).is_some_and(|spec| spec.body) {
+                let (parts, body) = req.into_parts();
+                let bytes = match Limited::new(body, policy.max_body_bytes).collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(err) => {
+                        tracing::debug!("request body rejected at cache layer: {err}");
+                        let mut response = Response::new(AppBody::full("payload too large"));
+                        *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+                        return Ok(response);
+                    }
+                };
+                let hash = cache::body_hash_of(&bytes);
+                let body: ReqBody =
+                    UnsyncBoxBody::new(Full::new(bytes).map_err(|never| match never {}));
+                (Request::from_parts(parts, body), Some(hash))
+            } else {
+                (req, None)
+            };
+
+            // Hit: resolve the entry's variant from THIS request's values of
+            // the recorded dimensions and serve without touching the inner
+            // stack (router, Roc, DB all skipped).
+            let jar = cache::parse_cookies(req.headers());
+            if let Some(stored) = cache.lookup(
+                &key,
+                |spec| {
+                    cache::variant_hash(
+                        spec,
+                        |name| {
+                            jar.iter()
+                                .find(|(candidate, _)| candidate == name)
+                                .map(|(_, value)| value.clone())
+                        },
+                        body_hash,
+                        |name| header_value_of(req.headers(), name),
+                    )
+                },
+                Instant::now(),
+            ) {
+                let response = if none_match(&req, &stored.etag) {
+                    not_modified(&stored.etag)
+                } else {
+                    serve_stored(&stored)
+                };
+                return Ok(response);
+            }
+
             let revalidate_etag = req
                 .headers()
                 .get(header::IF_NONE_MATCH)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned);
+            // Snapshot what the store side needs from the request before it
+            // moves into the inner stack: `Vary` header values come from
+            // here (cookie values and the body hash ride the CacheDeps
+            // extension, recorded host-side).
+            let req_headers = req.headers().clone();
             let response = inner.ready().await?.call(req).await?;
-            Ok(maybe_store(&cache, key, response, revalidate_etag).await)
+            Ok(maybe_store(&cache, key, response, revalidate_etag, &req_headers).await)
         })
     }
 }
 
-/// After a miss, store the response iff it opted in (`x-tp-cache-tables`) and
-/// succeeded; strip the internal header, attach the ETag, and answer a
+/// The first value of `name` in `headers`, for `Vary` variant dimensions.
+fn header_value_of(headers: &http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Request-header names from the response's `Vary` header(s), lowercased.
+fn vary_names(headers: &http::HeaderMap) -> Vec<String> {
+    headers
+        .get_all(header::VARY)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// RFC 9111 store suppression: `Cache-Control: no-store` or `private` (this
+/// is a SHARED cache) blocks storage.
+fn cache_control_blocks_store(headers: &http::HeaderMap) -> bool {
+    headers
+        .get_all(header::CACHE_CONTROL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(|directive| directive.trim().to_ascii_lowercase())
+        .any(|directive| directive == "no-store" || directive.starts_with("private"))
+}
+
+/// After a miss, store the response iff its derived attribution says so
+/// (automatic — D10): 2xx, `CacheDeps` present and cacheable, and the
+/// response neither opts out (`Cache-Control: no-store`/`private` — this is
+/// a shared cache) nor declares un-keyable variance (`Vary: *`). The entry's
+/// variant spec is the union of the recorded dimensions (cookies read, body
+/// extracted) and the response's `Vary` names; the variant id is computed by
+/// the same `variant_hash` lookups use. Attaches the ETag and answers a
 /// concurrent `If-None-Match` for the freshly-computed tag with `304`.
 async fn maybe_store(
     cache: &ResponseCache,
     key: Key,
     response: Response<AppBody>,
     revalidate_etag: Option<String>,
+    req_headers: &http::HeaderMap,
 ) -> Response<AppBody> {
-    let is_cacheable = response.status().is_success()
-        && response.headers().contains_key(&CACHE_TABLES_HEADER);
-    if !is_cacheable {
-        return response;
-    }
-
     let (mut parts, body) = response.into_parts();
-    let tables: Vec<Box<str>> = parts
-        .headers
-        .get(&CACHE_TABLES_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| {
-            s.split(',')
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(Box::from)
-                .collect()
-        })
-        .unwrap_or_default();
+    // Transitional hygiene until DC5 deletes `Res.cacheable`: the legacy
+    // header is stripped but its content is no longer consulted.
     parts.headers.remove(&CACHE_TABLES_HEADER);
+    let deps = parts.extensions.remove::<cache::CacheDeps>();
+
+    let vary = vary_names(&parts.headers);
+    let storable = parts.status.is_success()
+        && deps.as_ref().is_some_and(|deps| deps.cacheable)
+        && !cache_control_blocks_store(&parts.headers)
+        && !vary.iter().any(|name| name == "*");
+    if !storable {
+        return Response::from_parts(parts, body);
+    }
+    let deps = deps.expect("checked by storable");
 
     let bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -261,34 +348,43 @@ async fn maybe_store(
         }
     };
 
+    let spec = cache::VariantSpec {
+        cookies: deps.cookies.iter().map(|(name, _)| name.clone()).collect(),
+        body: deps.body_hash.is_some(),
+        headers: vary,
+    };
+    // `spec.body` implies `deps.body_hash` is Some, so this always resolves.
+    let variant = cache::variant_hash(
+        &spec,
+        |name| {
+            deps.cookies
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .and_then(|(_, value)| value.clone())
+        },
+        deps.body_hash,
+        |name| header_value_of(req_headers, name),
+    )
+    .unwrap_or(cache::PLAIN_VARIANT);
+
     let etag = cache::etag_for(&bytes);
     let headers: Vec<(HeaderName, HeaderValue)> = parts
         .headers
         .iter()
         .map(|(n, v)| (n.clone(), v.clone()))
         .collect();
-    // Transitional (DC4 replaces the header path with the CacheDeps
-    // extension): header-declared tables at full-column width, plain
-    // variant, generations sampled here (the pre-DC4 race window, unchanged).
-    let deps = tables
-        .into_iter()
-        .map(|table: Box<str>| {
-            let generation = cache.generation(&table);
-            (table, crate::shadow::Cols::All, generation)
-        })
-        .collect();
     cache.insert(
         key,
-        cache::PLAIN_VARIANT,
-        cache::VariantSpec::default(),
+        variant,
+        spec,
         Stored {
             status: parts.status.as_u16(),
             headers,
             body: bytes.clone(),
             etag: etag.clone(),
         },
-        deps,
-        cache.epoch(),
+        deps.deps,
+        deps.epoch,
         Instant::now(),
     );
 
@@ -324,7 +420,8 @@ pub fn build_stack(router: RocRouter, config: &HostConfig) -> Result<AppService,
     // returns finished bytes and never reaches compression, the router, Roc, or
     // the DB. Installed as the process-global handle so the write path can purge.
     if let Some(cache_cfg) = &config.response_cache {
-        service = BoxCloneSyncService::new(cache_service(service, cache_cfg));
+        service =
+            BoxCloneSyncService::new(cache_service(service, cache_cfg, config.max_body_bytes));
     }
 
     if let Some(cors) = cors_layer(&config.cors)? {
@@ -343,7 +440,11 @@ pub fn build_stack(router: RocRouter, config: &HostConfig) -> Result<AppService,
 
 /// Build the cache service and install its handle as the process-global so the
 /// write path ([`crate::effect`]) can purge the same store.
-fn cache_service(inner: ErringService, cfg: &ResponseCacheConfig) -> CacheService {
+fn cache_service(
+    inner: ErringService,
+    cfg: &ResponseCacheConfig,
+    max_body_bytes: usize,
+) -> CacheService {
     let cache = Arc::new(ResponseCache::new(cfg.ttl, cfg.max_entries));
     cache::install_global(cache.clone());
     CacheService {
@@ -352,6 +453,7 @@ fn cache_service(inner: ErringService, cfg: &ResponseCacheConfig) -> CacheServic
         policy: Arc::new(CachePolicy {
             methods: cfg.methods.clone(),
             bypass_headers: cfg.bypass_headers.clone(),
+            max_body_bytes,
         }),
     }
 }

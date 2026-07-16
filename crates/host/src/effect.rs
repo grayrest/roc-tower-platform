@@ -217,7 +217,7 @@ fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, Eff
 
     match crate::cursor::run_write_txn(&db, &writes) {
         Ok(()) => {
-            purge_written_tables(writes.iter().map(|(sql, _)| sql.as_str()));
+            purge_written_tables(&db, writes.iter().map(|(sql, _)| sql.as_str()));
             None
         }
         Err((index, err)) => {
@@ -253,28 +253,54 @@ fn run_action(action: &Action) -> Result<(), EffectErr> {
         // A DbWrite only reaches here as an `Opt`: run it autocommit.
         Action::Db { db, sql, params } => {
             crate::cursor::run_autocommit(db, sql, params).map_err(EffectErr::from_db)?;
-            purge_written_tables(std::iter::once(sql.as_str()));
+            purge_written_tables(db, std::iter::once(sql.as_str()));
             Ok(())
         }
     }
 }
 
-/// After writes commit, purge every response-cache entry that read a mutated
-/// table (no-op unless the app enabled the cache). This is the platform's
-/// invalidation hook: every mutation is a declarative `DbWrite` through this one
-/// executor, so the cache stays coherent without handlers knowing it exists.
-fn purge_written_tables<'a>(sqls: impl Iterator<Item = &'a str>) {
+/// After writes commit, purge every response-cache entry whose read columns
+/// intersect the mutated ones (no-op unless the app enabled the cache). This
+/// is the platform's invalidation hook: every mutation is a declarative
+/// `DbWrite` through this one executor, so the cache stays coherent without
+/// handlers knowing it exists.
+///
+/// The write set comes from the analysis shadow — authoritative and
+/// TRIGGER-EXPANDED (preparing `INSERT INTO favorites …` reports the
+/// trigger-carried `articles.favorites_count` update), column-scoped where
+/// SQLite reports columns (UPDATE), whole-table where it doesn't
+/// (INSERT/DELETE). Runtime DDL flushes everything: `analyze` already
+/// mirrored it into the shadow and dropped the memoized derivations; the
+/// epoch bump covers in-flight readers (R4). Anything underivable fails
+/// CLOSED: the legacy single-table parse, else a full flush — never silent
+/// under-invalidation (D9).
+fn purge_written_tables<'a>(db: &str, sqls: impl Iterator<Item = &'a str>) {
     if crate::cache::global().is_none() {
         return;
     }
-    let mut seen: Vec<&str> = Vec::new();
     for sql in sqls {
-        if let Some(table) = write_target_table(sql)
-            && !seen.contains(&table)
-        {
-            seen.push(table);
-            crate::cache::purge_table_global(table);
+        match crate::shadow::analyze(db, sql) {
+            Ok(analysis) if analysis.schema_change => crate::cache::purge_all_global(),
+            Ok(analysis) if analysis.opaque => purge_fallback(sql),
+            Ok(analysis) => {
+                for (table, cols) in &analysis.writes {
+                    crate::cache::purge_write_global(table, cols);
+                }
+            }
+            Err(err) => {
+                tracing::warn!(%err, sql, "write purge: underivable; falling back");
+                purge_fallback(sql);
+            }
         }
+    }
+}
+
+/// Conservative purge for a write the shadow couldn't attribute: the legacy
+/// single-table parse at full-column width, else flush the whole cache.
+fn purge_fallback(sql: &str) {
+    match write_target_table(sql) {
+        Some(table) => crate::cache::purge_table_global(table),
+        None => crate::cache::purge_all_global(),
     }
 }
 

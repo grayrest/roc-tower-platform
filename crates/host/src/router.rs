@@ -10,11 +10,11 @@ use std::task::{Context, Poll};
 
 use http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use http_body_util::{BodyExt, Limited};
-use hyper::body::Incoming;
 use tower::util::ServiceExt;
 use tower_http::services::ServeDir;
 
 use crate::body::{AppBody, BoxError};
+use crate::middleware::ReqBody;
 use crate::config::{LoadedApp, ServeFilesConfig};
 use crate::roc_call::{call_handler, RequestParts, RocHandler, RocModel};
 
@@ -87,7 +87,7 @@ impl ServeFilesMount {
 
 type RouterFuture = Pin<Box<dyn Future<Output = Result<Response<AppBody>, BoxError>> + Send>>;
 
-impl tower::Service<Request<Incoming>> for RocRouter {
+impl tower::Service<Request<ReqBody>> for RocRouter {
     type Response = Response<AppBody>;
     type Error = BoxError;
     type Future = RouterFuture;
@@ -96,14 +96,14 @@ impl tower::Service<Request<Incoming>> for RocRouter {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, req: Request<Incoming>) -> Self::Future {
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
         let inner = self.inner.clone();
         Box::pin(async move { inner.route(req).await })
     }
 }
 
 impl RouterInner {
-    async fn route(&self, req: Request<Incoming>) -> Result<Response<AppBody>, BoxError> {
+    async fn route(&self, req: Request<ReqBody>) -> Result<Response<AppBody>, BoxError> {
         let method = req.method().clone();
         let path = req.uri().path().to_owned();
 
@@ -155,7 +155,7 @@ impl RouterInner {
         &self,
         handler: RocHandler,
         params: Vec<(String, String)>,
-        req: Request<Incoming>,
+        req: Request<ReqBody>,
     ) -> Result<Response<AppBody>, BoxError> {
         let dispatch_start = crate::profile::now();
         let (parts, body) = req.into_parts();
@@ -175,7 +175,7 @@ impl RouterInner {
         // coeffect and STRIP it from the Roc-visible header list, so a handler
         // cannot read cookies invisibly to the response cache's variant key.
         // D14: same for the body — it rides the ctx registry, not the record.
-        let cookies = Self::parse_cookies(&parts.headers);
+        let cookies = crate::cache::parse_cookies(&parts.headers);
         let request_parts = RequestParts {
             method: parts.method.as_str().to_owned(),
             path: parts.uri.path().to_owned(),
@@ -288,31 +288,11 @@ impl RouterInner {
         Ok(response)
     }
 
-    fn parse_cookies(headers: &http::HeaderMap) -> Vec<(String, String)> {
-        let mut cookies = Vec::new();
-        for value in headers.get_all(http::header::COOKIE) {
-            let Ok(text) = value.to_str() else { continue };
-            for pair in text.split(';') {
-                let pair = pair.trim();
-                if pair.is_empty() {
-                    continue;
-                }
-                match pair.split_once('=') {
-                    Some((name, value)) => {
-                        cookies.push((name.trim().to_owned(), value.trim().to_owned()));
-                    }
-                    None => cookies.push((pair.to_owned(), String::new())),
-                }
-            }
-        }
-        cookies
-    }
-
     async fn serve_file(
         &self,
         mount: &ServeFilesMount,
         rewritten_path: String,
-        req: Request<Incoming>,
+        req: Request<ReqBody>,
     ) -> Result<Response<AppBody>, BoxError> {
         let (mut parts, body) = req.into_parts();
         let path_and_query = match parts.uri.query() {
