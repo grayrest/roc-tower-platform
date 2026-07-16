@@ -25,6 +25,25 @@ Connect := [].{
     # invariant: erroneous checked type reached Monotype instantiation). Handlers
     # call `Res.json(200, msg)` directly.
 
+    ## The handler-side error: a Connect code paired with a message. Handlers
+    ## raise these with `?` — `? |_| NotFound("...")` for a literal, or a bare
+    ## constructor like `? Internal` to wrap the underlying `Str` error — and
+    ## the `route` wrapper renders them to responses via `Connect.render`.
+    Error : [
+        InvalidArgument(Str),
+        NotFound(Str),
+        Internal(Str),
+    ]
+
+    ## Render a handler error to its Connect wire response (the `render` a
+    ## `Res.mapped` route wrapper applies to the `Err` branch). Unannotated —
+    ## naming the `Res.Response` return still crashes lowering (see the note).
+    render = |error| match error {
+        InvalidArgument(message) => Connect.error(InvalidArgument, message)
+        NotFound(message) => Connect.error(NotFound, message)
+        Internal(message) => Connect.error(Internal, message)
+    }
+
     ## A Connect error: the code's mapped HTTP status and a `{ code, message }`
     ## JSON body — the shape a Connect client decodes into a typed error.
     ## Unannotated (like realworld's `Api.field_error`): naming the `Res.Response`

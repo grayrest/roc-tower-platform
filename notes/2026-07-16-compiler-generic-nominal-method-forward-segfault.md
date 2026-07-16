@@ -34,6 +34,27 @@
 > `cli/main.zig:lowerPlannedTestModule`), so `just test-roc` and any `expect`
 > evaluation are currently broken independent of app code. `roc check` / `roc
 > build` are unaffected.
+>
+> ## Follow-up 2026-07-16 (Res.mapped route-wrapper work)
+>
+> Two refinements from building the generic `Res.mapped` route wrapper:
+>
+> - **A generic nominal method is NOT sufficient to trigger the crash.** The
+>   platform's `Res.mapped : (req => Try(Res.Response, err)), (err -> Res.Response)
+>   -> Box(req => Res.Response)` — generic over BOTH the request and the app's
+>   error type, forwarding functions and boxing a `match` — **builds and runs
+>   fine**, instantiated across the module boundary with `err = Connect.Error`.
+>   So the crash is specific to the `Connect.ok = |v| Res.json(200, v)` shape:
+>   a generic method forwarding a *value* into ANOTHER module's generic
+>   (`Res.json`). Forwarding functions / boxing is fine.
+> - **The cross-module `-> Res.Response` annotation crash persists**, now as a
+>   *different* panic: annotating an example-module helper (`Connect.render :
+>   Connect.Error -> Res.Response`) aborts `roc check` with
+>   `compile.coordinator invariant violated: platform/app relation missing
+>   required app value` (not the postcheck-monotype message). Unannotating it —
+>   the established workaround for `Res.Response`-returning app helpers — clears
+>   it. `Res.mapped`'s own `-> Res.Response` annotation is fine because it lives
+>   in `Res.roc` (same module as the type), like `from_try`.
 
 ## Symptom
 

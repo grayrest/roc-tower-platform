@@ -47,12 +47,18 @@ main = |{}| {
     ],
     init!: init!,
     routes: [
-        { method: "POST", path: "/tower.connect.v1.CatalogService/GetBook", handler: Box.box(get_book!) },
-        { method: "POST", path: "/tower.connect.v1.CatalogService/ListBooks", handler: Box.box(list_books!) },
-        { method: "POST", path: "/tower.connect.v1.CatalogService/AddBook", handler: Box.box(add_book!) },
-        { method: "POST", path: "/tower.connect.v1.CatalogService/DeleteBook", handler: Box.box(delete_book!) },
+        { method: "POST", path: "/tower.connect.v1.CatalogService/GetBook", handler: route(get_book!) },
+        { method: "POST", path: "/tower.connect.v1.CatalogService/ListBooks", handler: route(list_books!) },
+        { method: "POST", path: "/tower.connect.v1.CatalogService/AddBook", handler: route(add_book!) },
+        { method: "POST", path: "/tower.connect.v1.CatalogService/DeleteBook", handler: route(delete_book!) },
     ],
 }
+
+## The route-table wrapper: bakes `Connect.render` into the generic platform
+## `Res.mapped`, so each handler is a bare `Request => Try(Response,
+## Connect.Error)` (using `?` over the domain error — no `from_try`, no
+## return-type annotation), rendered to a Connect response on the `Err` branch.
+route = |handler| Res.mapped(handler, Connect.render)
 
 init! : () => Try(Model, Str)
 init! = || {
@@ -65,54 +71,39 @@ init! = || {
 }
 
 # --- unary RPC handlers ------------------------------------------------------
-# Raw `Request => Response` handlers: decode the request message, read or write,
-# return a Connect success or error. Reads flow through `Sql.query!` (recorded
-# for cache invalidation); decoding the body marks the body-variant cache key;
-# mutations return `DbWrite` effects the host runs after the handler.
-
-# Each handler stays a direct `Request => Response` (what the router registers)
-# but delegates to a `Request => Try(Response, Response)` "attempt" where the
-# infix `?` works: it unwraps `Ok`, and on `Err` early-returns the mapped
-# Connect error. `Res.from_try` then collapses the `Try` (both sides are already
-# responses) back to a plain response. Same shape as realworld's `Auth.try_fetch!`.
+# Each handler is a bare `Request => Try(Response, Connect.Error)` — NO return
+# annotation (inferred from the `?` error tags and the `route`/`render` wiring),
+# NO `from_try`. Infix `?` unwraps `Ok` and, on `Err`, raises a domain error:
+# `? |_| NotFound("...")` for a literal message, or a bare constructor like
+# `? Internal` to wrap the underlying `Str` error. `route` (above) renders the
+# error to a Connect response. Reads flow through `Sql.query!` (recorded for
+# cache invalidation); decoding the body marks the body-variant cache key.
 
 ## GetBook({ id }) -> { book }. Read-only, so cacheable — keyed on the request
 ## body, so each id is a distinct cache entry.
-get_book! : Request => Response
-get_book! = |req| Res.from_try(get_book_attempt!(req))
-
-get_book_attempt! : Request => Try(Response, Response)
-get_book_attempt! = |req| {
+get_book! = |req| {
     request : { id : I64 }
-    request = Req.json_body!(req) ? |_| Connect.error(InvalidArgument, "GetBook expects { \"id\": <integer> }")
-    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Host.SqlValue.Integer(request.id)]) ? |message| Connect.error(Internal, message)
-    row = Sql.first(rows) ? |_| Connect.error(NotFound, "book ${request.id.to_str()} not found")
-    book = decode_book(row) ? |_| Connect.error(Internal, "corrupt book row")
+    request = Req.json_body!(req) ? |_| InvalidArgument("GetBook expects { \"id\": <integer> }")
+    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Host.SqlValue.Integer(request.id)]) ? Internal
+    row = Sql.first(rows) ? |_| NotFound("book ${request.id.to_str()} not found")
+    book = decode_book(row) ? |_| Internal("corrupt book row")
     Ok(Res.json(200, { book: book }))
 }
 
 ## ListBooks({}) -> { books }. Read-only, so cacheable. It never reads the
 ## request body, so it doesn't vary on it — every call shares one entry.
-list_books! : Request => Response
-list_books! = |req| Res.from_try(list_books_attempt!(req))
-
-list_books_attempt! : Request => Try(Response, Response)
-list_books_attempt! = |req| {
-    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", []) ? |message| Connect.error(Internal, message)
-    books = decode_books(rows) ? |_| Connect.error(Internal, "corrupt book row")
+list_books! = |req| {
+    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", []) ? Internal
+    books = decode_books(rows) ? |_| Internal("corrupt book row")
     Ok(Res.json(200, { books: books }))
 }
 
 ## AddBook({ title, author, year }) -> { book }. A DbWrite mutation: the effect
 ## poisons this response (never cached) and purges every cached read of `books`.
-add_book! : Request => Response
-add_book! = |req| Res.from_try(add_book_attempt!(req))
-
-add_book_attempt! : Request => Try(Response, Response)
-add_book_attempt! = |req| {
+add_book! = |req| {
     fields : { title : Str, author : Str, year : I64 }
-    fields = Req.json_body!(req) ? |_| Connect.error(InvalidArgument, "AddBook expects { title, author, year }")
-    id = Req.reserved_id!(req)?
+    fields = Req.json_body!(req) ? |_| InvalidArgument("AddBook expects { title, author, year }")
+    id = Req.reserved_id!(req) ? |_| Internal("id reservation failed")
     book : Book
     book = { id: id, title: fields.title, author: fields.author, year: fields.year }
     Ok(
@@ -133,13 +124,9 @@ add_book_attempt! = |req| {
 }
 
 ## DeleteBook({ id }) -> {}. A DbWrite mutation; purges cached reads of `books`.
-delete_book! : Request => Response
-delete_book! = |req| Res.from_try(delete_book_attempt!(req))
-
-delete_book_attempt! : Request => Try(Response, Response)
-delete_book_attempt! = |req| {
+delete_book! = |req| {
     request : { id : I64 }
-    request = Req.json_body!(req) ? |_| Connect.error(InvalidArgument, "DeleteBook expects { \"id\": <integer> }")
+    request = Req.json_body!(req) ? |_| InvalidArgument("DeleteBook expects { \"id\": <integer> }")
     Ok(
         Res.fx(
             DbWrite({
