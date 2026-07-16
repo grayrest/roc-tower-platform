@@ -95,7 +95,7 @@ run app="examples/hello/main.roc": (build app)
 check-examples: glue
     #!/usr/bin/env bash
     set -euo pipefail
-    for ex in hello e2e ctxmemo realworld; do
+    for ex in hello e2e ctxmemo realworld connect; do
         "{{ roc }}" check "examples/$ex/main.roc"
     done
 

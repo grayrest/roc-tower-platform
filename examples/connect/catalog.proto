@@ -1,0 +1,55 @@
+// Schema of record for the Connect demo (examples/connect).
+//
+// The JSON-first implementation in main.roc speaks the Connect UNARY + JSON
+// wire protocol against these message shapes by hand (no generated codec).
+// The .proto is kept as the source of truth for a future protobuf pass: a
+// codegen step (a wire-format analog to sqlgen) would emit encoders/decoders
+// from this file, and the connectrpc/conformance suite would exercise the
+// server for spec compliance.
+//
+// Wire mapping used by the JSON implementation:
+//   POST /tower.connect.v1.CatalogService/<Method>
+//   Content-Type: application/json   (+ Connect-Protocol-Version: 1)
+//   request body  = the request message as JSON
+//   200 response  = the response message as JSON
+//   error         = mapped HTTP status + { "code", "message" } JSON body
+
+syntax = "proto3";
+
+package tower.connect.v1;
+
+service CatalogService {
+  // Read-only (cacheable): a query is a POST whose body is the request, so the
+  // response cache keys on the body hash. GetBook fragments per id; ListBooks
+  // takes no input, so all calls share one cache entry.
+  rpc GetBook(GetBookRequest) returns (GetBookResponse) {}
+  rpc ListBooks(ListBooksRequest) returns (ListBooksResponse) {}
+
+  // Mutations: each emits a DbWrite, which poisons its own response (never
+  // cached) and purges every cached read of the books table it touched.
+  rpc AddBook(AddBookRequest) returns (AddBookResponse) {}
+  rpc DeleteBook(DeleteBookRequest) returns (DeleteBookResponse) {}
+}
+
+message Book {
+  int64 id = 1;
+  string title = 2;
+  string author = 3;
+  int64 year = 4;
+}
+
+message GetBookRequest { int64 id = 1; }
+message GetBookResponse { Book book = 1; }
+
+message ListBooksRequest {}
+message ListBooksResponse { repeated Book books = 1; }
+
+message AddBookRequest {
+  string title = 1;
+  string author = 2;
+  int64 year = 3;
+}
+message AddBookResponse { Book book = 1; }
+
+message DeleteBookRequest { int64 id = 1; }
+message DeleteBookResponse {}
