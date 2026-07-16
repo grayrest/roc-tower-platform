@@ -22,11 +22,24 @@ CREATE TABLE IF NOT EXISTS articles (id INTEGER PRIMARY KEY, slug TEXT NOT NULL 
 CREATE TABLE IF NOT EXISTS article_tags (article_id INTEGER NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (article_id, tag));
 CREATE TABLE IF NOT EXISTS favorites (user_id INTEGER NOT NULL, article_id INTEGER NOT NULL, PRIMARY KEY (user_id, article_id));
 CREATE TABLE IF NOT EXISTS comments (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REFERENCES articles(id), author_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+-- Host-owned reserved-id sequence (crates/host/src/cursor.rs reserve_next_id,
+-- backing Req.reserved_id!). The host lazily creates this at 0, which would
+-- hand new users/articles/comments ids 1.. — colliding with the seeded rows.
+-- Seed it past the largest seeded id (comments, 10000) so a register/create
+-- against this DB gets a fresh id. One monotonic sequence feeds all three
+-- tables, so a single high row covers every write.
+CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_articles_author ON articles(author_id);
 CREATE INDEX IF NOT EXISTS idx_article_tags_tag ON article_tags(tag);
 CREATE INDEX IF NOT EXISTS idx_favorites_article ON favorites(article_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_comments_article ON comments(article_id);
 """)
+
+# Start the reserved-id sequence well past every seeded id (max is N_COMMENTS).
+# The host's ON CONFLICT DO NOTHING seed leaves this row untouched.
+RESERVED_ID_START = 1_000_000
+assert RESERVED_ID_START > max(N_USERS, N_ARTICLES, N_COMMENTS)
+c.execute("INSERT INTO counters (name, v) VALUES ('reserved_id', ?)", (RESERVED_ID_START,))
 
 TS = "2026-01-01T00:00:00.000Z"
 c.executemany("INSERT INTO users VALUES (?,?,?,?,?,?)",
