@@ -24,7 +24,16 @@ Decision log (the why, the review arc, all accepted trade-offs):
 >   into `bypass_headers` (config adds, never removes); never cache a request
 >   with a non-empty body. This is the RFC 9111 origin contract every
 >   CDN/Varnish deployment already imposes — header-variance-without-`Vary`
->   becomes the app's bug, not a platform hole.
+>   becomes the app's bug, not a platform hole. *Amended by D13 (in scope):*
+>   the `cookie` half of the hard-default bypass is superseded — `Cookie` is
+>   stripped from the raw header record and exposed only as a coeffect
+>   (`Req.cookie`), whose reads self-report cookie *names* to the ctx; the
+>   cache matches **variants** (the same machinery `Vary` support requires:
+>   entry records its cookie-names + varied-headers spec; lookup matches the
+>   request's values of exactly those). Routes reading no cookies cache fully
+>   even for cookie-laden browser traffic. `authorization` bypass stays.
+>   Phase impact: Req coeffect + header strip land in Phase 2; variant-capable
+>   entries in Phase 3; variant lookup in Phase 4.
 > - **R2 — read-path writes purge, not just poison (×2):** `sql_begin` accepts
 >   DML; `ReadSet.wrote` making only *this* response uncacheable leaves every
 >   existing entry on that table silently stale. On `wrote`, feed the derived

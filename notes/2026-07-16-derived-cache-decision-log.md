@@ -182,6 +182,29 @@ effect tiers carry the whole distinction:
   alike) — structurally the only place that can see a request the handler
   never ran for.
 
+**D13 — Cookies become a coeffect; precise variant keying replaces the
+cookie bypass (in scope).** The missing cookie coeffect was an oversight, and
+its absence is what forced R1's blunt cookie-presence bypass. In scope for
+this build:
+- `Cookie` is **stripped from the raw header record** the handler receives —
+  this is what makes the guarantee structural rather than advisory (a handler
+  can no longer parse it by hand invisibly). Small breaking change to the
+  request shape; accepted.
+- Cookie access is host-mediated (`Req.cookie("name")`-shaped coeffect); each
+  read self-reports the cookie *name* to the ctx alongside the SQL deps.
+- The cache stores/matches **variants**, the same machinery R1's `Vary`
+  support already requires: an entry records which cookie names (and varied
+  headers) it depends on; lookup finds the base `(method, target)` entry,
+  reads its variant spec, and matches on the request's values of exactly
+  those cookies. A route that reads a `theme` cookie fragments only on
+  `theme`; a route reading no cookies caches fully even for cookie-laden
+  browser traffic — a real hit-rate win over the bypass (most anonymous
+  browser requests carry analytics/consent cookies). A session-cookie read
+  keys per-session: correct, low-value, same story as `authorization`.
+- The hard-default `cookie` bypass is superseded by this; the
+  `authorization` bypass stays (raw headers remain visible for everything
+  except `Cookie`).
+
 ## Review-arc ledger
 
 | Round | Proposal | Verdict then | Standing now |
