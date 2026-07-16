@@ -1,6 +1,39 @@
-# Compiler SIGSEGV: a generic nominal-module method forwarding a value to a platform generic (`Res.json`)
+# Compiler crash: a generic nominal-module method forwarding a value to a platform generic (`Res.json`)
 
 **Date:** 2026-07-16 · **roc:** local dev build at `~/Repositories/roc` · macOS aarch64
+
+> ## Re-check 2026-07-16 (after upstream `main` update) — STILL BROKEN, now a clean panic
+>
+> On the updated compiler the crash is no longer a raw SIGSEGV; it's a Zig
+> panic with a message:
+>
+> ```
+> thread panic: postcheck invariant violated: erroneous checked type reached
+> Monotype instantiation
+>   src/postcheck/monotype/lower.zig:8611  instNodeContent  (.err => Common.invariant(...))
+> ```
+>
+> An **erroneous checked type** (a type-error node) survives `roc check`
+> silently and then trips `constrainKnownType` → `constrainTypeToMono` →
+> `instNode` in monotype lowering. Two constructs hit the SAME panic, so they're
+> one bug:
+> 1. `Connect.ok = |value| Res.json(200, value)` called with a record (the
+>    generic-forward case below).
+> 2. **Annotating** the error helper `error : Connect.Code, Str -> Res.Response`
+>    (naming the platform `Res.Response`, whose `effects` is a cross-module
+>    inline union, in an example-module signature). Unannotated + a local
+>    `text : Str` pin builds.
+>
+> Both workarounds from the original writeup still apply (inline `Res.json`;
+> leave the helper unannotated). **The fold-over-`Try` crash — a separate note,
+> `2026-07-15-compiler-fold-nested-try-segfault.md` — is FIXED**: `decode_books`
+> now folds a `Try` accumulator and both builds and runs correctly.
+>
+> Unrelated regression noticed in the same update: **`roc test` crashes on every
+> file** (hello / realworld / platform / connect all abort in
+> `cli/main.zig:lowerPlannedTestModule`), so `just test-roc` and any `expect`
+> evaluation are currently broken independent of app code. `roc check` / `roc
+> build` are unaffected.
 
 ## Symptom
 

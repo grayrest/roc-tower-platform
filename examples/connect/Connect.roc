@@ -20,21 +20,19 @@ Connect := [].{
         Internal,
     ]
 
-    # NOTE: there is no `Connect.ok` wrapper. A Connect unary success is just
-    # HTTP 200 with the response message as JSON, i.e. exactly `Res.json(200,
-    # msg)` — handlers call that directly. A generic pass-through method here
-    # (`ok = |value| Res.json(200, value)`) currently segfaults the compiler's
-    # codegen when specialized across the module boundary (see the note in the
-    # compiler-bug file); `Res.json` called directly is unaffected.
+    # NOTE: no `Connect.ok` wrapper — a generic pass-through method forwarding
+    # to `Res.json` still crashes lowering on the current compiler (postcheck
+    # invariant: erroneous checked type reached Monotype instantiation). Handlers
+    # call `Res.json(200, msg)` directly.
 
     ## A Connect error: the code's mapped HTTP status and a `{ code, message }`
     ## JSON body — the shape a Connect client decodes into a typed error.
     ## Unannotated (like realworld's `Api.field_error`): naming the `Res.Response`
-    ## return type would force the effect union across a module boundary an
-    ## annotation can't reference, so the empty `effects: []` is left to unify.
+    ## return type still crashes lowering across the module boundary (same
+    ## postcheck invariant as the `Connect.ok` case), so the empty `effects: []`
+    ## is left to unify.
     error = |code, message| {
-        # Pin `message` to Str locally (the signature is left off to avoid
-        # naming the effect union across the boundary), so `Json.to_utf8` can
+        # Pin `message` to Str locally (no signature), so `Json.to_utf8` can
         # resolve an encoder for the `{ code, message }` record.
         text : Str
         text = message

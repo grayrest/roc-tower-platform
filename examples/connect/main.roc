@@ -6,16 +6,14 @@ import pf.Req
 import pf.Sql
 import Connect
 
-# A Connect-protocol RPC service (unary, JSON) on the tower-platform — a
-# deliberately different SHAPE from the REST realworld demo, over the SAME
-# platform primitives (coeffect reads, DbWrite effects, the derived response
-# cache). Every method is `POST /{service}/{Method}` with the request message
-# as the JSON body and the response message as the JSON body; there are no path
-# params, no REST verbs, and errors are Connect envelopes, not bare statuses.
+# A Connect-protocol RPC service (unary, JSON) on the tower-platform —  Every method is `POST
+# /{service}/{Method}` with the request message as the JSON body and the response message as the
+# JSON body; there are no path params, no REST verbs, and errors are Connect envelopes, not bare
+# statuses.
 #
 # The interesting property: read-only methods are cached automatically. A query
 # is a POST whose body IS the request message, so the cache keys on the body
-# hash (D14) — `GetBook` fragments per id, `ListBooks` takes no input so every
+# hash — `GetBook` fragments per id, `ListBooks` takes no input so every
 # call shares one entry. A mutation (`AddBook`/`DeleteBook`) emits a `DbWrite`,
 # which poisons its own response (never cached) and purges every cached read of
 # the `books` table it touched.
@@ -170,23 +168,18 @@ decode_book = |row| Ok({
     year: row.i64("year")?,
 })
 
-## Decode every row, short-circuiting on the first failure. Recurses by index
-## (the pattern `Sql.roc` uses) rather than folding over a `Try` accumulator,
-## which crashes the compiler's codegen.
+## Decode every row, short-circuiting on the first failure. Folds over a `Try`
+## accumulator — a form that used to crash the compiler's codegen but builds
+## since the 2026-07-16 upstream update (see the compiler-bug note).
 decode_books : List(Sql.Row) -> Try(List(Book), Sql.Err)
-decode_books = |rows| decode_books_from(rows, 0, [])
-
-decode_books_from : List(Sql.Row), U64, List(Book) -> Try(List(Book), Sql.Err)
-decode_books_from = |rows, index, acc|
-    if index >= List.len(rows) {
-        Ok(acc)
-    } else {
-        match rows.get(index) {
-            Err(_) => Ok(acc)
-            Ok(row) =>
+decode_books = |rows|
+    rows.fold(Ok([]), |acc, row|
+        match acc {
+            Err(error) => Err(error)
+            Ok(books) =>
                 match decode_book(row) {
-                    Ok(book) => decode_books_from(rows, index + 1, acc.append(book))
+                    Ok(book) => Ok(books.append(book))
                     Err(error) => Err(error)
                 }
         }
-    }
+    )

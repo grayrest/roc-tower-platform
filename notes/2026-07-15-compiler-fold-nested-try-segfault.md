@@ -2,6 +2,12 @@
 
 **Date:** 2026-07-15 · **roc:** local dev build at `~/Repositories/roc` · macOS aarch64
 
+> **FIXED as of the 2026-07-16 upstream `main` update.** A `fold` over a `Try`
+> accumulator (`examples/connect` `decode_books`, using `match` inside) now
+> builds and runs correctly. The `match`-not-`?` workaround is no longer
+> required, though existing recursion-by-index rewrites are harmless. Re-check
+> details in `2026-07-16-compiler-generic-nominal-method-forward-segfault.md`.
+
 ## Symptom
 
 `roc check` / `roc build` on `examples/realworld/main.roc` crashed:
