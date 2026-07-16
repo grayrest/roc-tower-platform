@@ -33,9 +33,20 @@ pub struct HostConfig {
 
 /// The in-memory response cache policy, opted into by the app. `methods` and
 /// `bypass_headers` make the cache scope EXPLICIT: only the listed methods are
-/// cached, and a request carrying any `bypass_headers` header (e.g.
-/// `authorization`) skips the cache entirely — so a personalized response never
-/// enters a shared entry.
+/// cached, and a request carrying any `bypass_headers` header skips the cache
+/// entirely — lookup AND store — so a personalized response is never served
+/// from, or written into, a shared entry.
+///
+/// A credentialed request must be excluded on BOTH sides: an `authorization`
+/// request must not be served a cached anonymous body (it would see the wrong
+/// personalization), and its own response must not be stored (a later
+/// anonymous request would see it). Only a pre-handler, request-shape predicate
+/// can gate the lookup side — the handler (and any coeffect it runs) executes
+/// AFTER the lookup, so it cannot influence whether a hit is served. That is
+/// why cacheability keys off the request here, not off what the handler does.
+/// `authorization` is therefore hard-defaulted into the bypass set (see
+/// `apply_setting`): an app's list ADDS to it and can never drop it, so a
+/// missing entry can't silently leak credentials into the shared cache.
 #[derive(Clone, Debug)]
 pub struct ResponseCacheConfig {
     pub ttl: Duration,
@@ -171,7 +182,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
                         .map_err(|_| format!("ResponseCache: invalid method {raw:?}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let bypass_headers = payload
+            let app_bypass = payload
                 .bypass_headers
                 .as_slice()
                 .iter()
@@ -181,6 +192,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
                         .map_err(|_| format!("ResponseCache: invalid header name {raw:?}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
+            let bypass_headers = with_authorization_bypass(app_bypass);
             config.response_cache = Some(ResponseCacheConfig {
                 ttl: Duration::from_millis(payload.ttl_ms),
                 max_entries,
@@ -190,4 +202,45 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
         }
     }
     Ok(())
+}
+
+/// Ensure `authorization` is in the bypass set — the hard-default that keeps a
+/// credentialed request out of the shared cache on both lookup and store (see
+/// [`ResponseCacheConfig`]). The app's list adds to this and can never drop it.
+fn with_authorization_bypass(
+    mut headers: Vec<http::HeaderName>,
+) -> Vec<http::HeaderName> {
+    if !headers.contains(&http::header::AUTHORIZATION) {
+        headers.push(http::header::AUTHORIZATION);
+    }
+    headers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// authorization is bypassed even when the app declares no bypass headers
+    #[test]
+    fn authorization_is_hard_defaulted_when_app_list_empty() {
+        let bypass = with_authorization_bypass(vec![]);
+        assert!(bypass.contains(&http::header::AUTHORIZATION));
+    }
+
+    /// the app's own bypass headers are kept, with authorization added
+    #[test]
+    fn app_bypass_headers_are_preserved_alongside_the_default() {
+        let bypass = with_authorization_bypass(vec![http::header::COOKIE]);
+        assert!(bypass.contains(&http::header::COOKIE));
+        assert!(bypass.contains(&http::header::AUTHORIZATION));
+    }
+
+    /// an app that lists authorization itself gets no duplicate
+    #[test]
+    fn authorization_is_not_duplicated() {
+        let bypass = with_authorization_bypass(vec![http::header::AUTHORIZATION]);
+        let count =
+            bypass.iter().filter(|h| **h == http::header::AUTHORIZATION).count();
+        assert_eq!(count, 1);
+    }
 }

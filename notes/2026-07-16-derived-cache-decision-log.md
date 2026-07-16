@@ -69,11 +69,34 @@ for the same reason this isn't done in any other framework."
 
 **D5 — Credential safety is structural, not hash-strength.** The round-2
 "implicit cacheability routes a credential into the cache" finding
-(`GET /api/user` returns `{email, token}`) is resolved by the shipped
-`bypass_headers: ["authorization"]` rule: any request bearing credentials
-bypasses the cache entirely, so a credential-bearing response can never enter
-a shared entry. Authed caching (per-token fragments) stays out of scope —
-low cross-user hit rate, real leak surface, no need.
+(`GET /api/user` returns `{email, token}`) is resolved by the `bypass_headers`
+rule: any request bearing credentials bypasses the cache entirely, so a
+credential-bearing response can never enter a shared entry. Authed caching
+(per-token fragments) stays out of scope — low cross-user hit rate, real leak
+surface, no need.
+
+*Refinement (2026-07-16, post-ship): the bypass is the RIGHT mechanism, and
+it can't be replaced by a coeffect.* Cacheability has two sides — LOOKUP
+(may this request be SERVED a cached entry?) and STORE (may this response be
+WRITTEN to the cache?). A credentialed request must be excluded on BOTH: an
+authed `GET /slug` must not be served the cached anonymous body (it would see
+the wrong personalization — the `favorited:false` bug), and its own response
+must not be stored. Execution-time poison (a coeffect calling an
+`uncacheable!` primitive) runs INSIDE the handler, which executes AFTER the
+lookup — so it can only gate STORE, never LOOKUP. A poison-only design ships
+the authed-served-anon bug. The considered alternative — an auth coeffect
+declaring the response VARIES on the credential (reusing the Vary machinery) —
+is correct on both sides but opens a cache-pollution DoS: an attacker sending
+unique `Authorization` values mints a distinct cache entry per value, evicting
+the shared anonymous entries the cache exists to protect. Only a pre-handler,
+request-shape predicate can gate lookup safely, and `bypass_headers` is exactly
+that (skip lookup AND store on credential presence, no per-request storage to
+pollute). So the correct improvement is **R1's hard-default, now implemented**:
+`config.rs::with_authorization_bypass` forces `authorization` into every
+cache's bypass set (app list adds, never removes), closing the leak-by-omission
+without new machinery. RealWorld drops its explicit `["authorization"]` →
+`[]`. `bench/cache-check.sh` step 6b asserts the lookup side directly (an
+authed favoriter is never served the cached anon `favorited:false`).
 
 **D6 — Write-path completeness as a precondition (SHIPPED, `987de9d`).**
 Invalidation completeness assumes every mutation flows through the `effect.rs`

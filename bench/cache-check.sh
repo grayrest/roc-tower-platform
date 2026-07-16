@@ -78,6 +78,20 @@ curl -s -X POST "$B/api/articles/$SLUG/favorite" "${auth[@]}" >/dev/null
 A4=$(curl -s "$B/api/articles/$SLUG")
 echo "$A4" | grep -q '"favoritesCount":1' || fail "article NOT invalidated after favorite (favorites dep / trigger cascade): $A4"
 
+# 6b) Credentialed requests are excluded from the shared cache on the LOOKUP
+#     side, not just the store side — with the app declaring NO bypass_headers,
+#     relying on the platform's hard-defaulted `authorization` bypass. The anon
+#     read above cached favorited:false; cacheuser (who just favorited) must NOT
+#     be served that cached anon body — it must see favorited:true. This is the
+#     direction execution-time poison can't cover: the lookup runs before the
+#     handler.
+AUTHED=$(curl -s "$B/api/articles/$SLUG" "${auth[@]}")
+echo "$AUTHED" | grep -q '"favorited":true' \
+  || fail "authed read served the cached ANON body (favorited:false); authorization bypass broken: $AUTHED"
+# And the shared anon entry is untouched by the authed read (still anon view).
+A5=$(curl -s "$B/api/articles/$SLUG")
+echo "$A5" | grep -q '"favorited":false' || fail "anon read no longer anonymous after an authed read: $A5"
+
 # 7) Comments derive their own deps: cache the anon comment list, add a
 #    comment (INSERT comments), the re-read must show it.
 curl -s "$B/api/articles/$SLUG/comments" >/dev/null
