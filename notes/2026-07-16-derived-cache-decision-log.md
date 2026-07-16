@@ -125,6 +125,13 @@ zero cost on the request hot path after warmup.
 read side → the request is uncacheable; write side → conservative purge
 (legacy table parse, else full cache flush) + log. Never silent
 under-invalidation. (Round-3's fail-closed-attribution finding, generalized.)
+*Round-4 correction:* "never silent staleness" was overclaimed — the
+read-then-store vs write-then-purge race (a miss computed pre-write, inserted
+post-purge) is inherited byte-identically from the shipped cache and is
+silent, TTL-bounded staleness. Closed by the plan's R13: per-table generation
+counters checked at insert (also closes torn multi-statement reads). Two
+further silent-staleness holes found and closed: read-path DML must *purge*
+not just poison (R2), and runtime DDL must flush the shadow + memos (R4).
 
 **D10 — Automatic storage; delete the opt-in surface.** Deps ride the request
 ctx and reach the middleware as a response extension; `Res.cacheable`, the
@@ -134,14 +141,21 @@ ctx and reach the middleware as a response extension; `Res.cacheable`, the
 (TTL backstop, max entries, methods, bypass_headers) remains the master
 switch.
 
-**D11 — Accepted regression: `follows` re-enters by-slug deps.** The shipped
+**D11 — Accepted regression: `follows` re-enters derived deps.** The shipped
 hand-pruning dropped `follows` on a semantic argument (anon `following` is
 constant-false) that a MAY-analysis of SQL can't reach. Derivation honestly
-re-adds it wherever the SQL reads `follows` → a follow write purges those
-entries. Accepted per the platform lens. The idiomatic recovery is an app-side
-anon query variant with no `following` subquery (the list already has one) —
-then derivation *itself* proves the precision. `bench/cache-check.sh`'s
-"follow does NOT invalidate" assertion must be updated accordingly.
+re-adds it wherever the SQL reads `follows`. Accepted per the platform lens.
+*Round-4 correction — the honest scope is ~3× the original claim:* not just
+by-slug but **profile** and **comments** too (both carry `following` EXISTS),
+and comments additionally gain an `articles` dep (the `article_meta` pre-read)
+— so a follow flushes all cached profiles + comment lists, and an article
+INSERT flushes comment lists. The good news the original claim missed:
+**list and tags derive *identically* to the hand-tuned lists** (the anon list
+variant genuinely reads no `favorites`/`follows` — the materialized columns
+carry them via trigger-expanded write sets instead). Idiomatic recovery is
+anon variants of *three* queries (by-slug, profile, comments), out of scope
+here. `bench/cache-check.sh` must flip the follow assertion AND assert the
+profile/comments purge behavior explicitly.
 
 ## Review-arc ledger
 
@@ -150,6 +164,7 @@ then derivation *itself* proves the precision. `bench/cache-check.sh`'s
 | 1 | Coeffect memoization (row tokens, key threading, authed keys) | Rejected (4/4) | Model kept (D1); row tokens dropped (D3); authed out (D5); keys deferred to compiler API (D2) |
 | 2 | Derived deps, no compiler API (runtime parsers, token-in-key) | Rejected (3 reviewers) | Baseline objection overturned; parsers superseded by authorizer (D7); credential fix structural (D5); survivor lint subsumed by full derivation |
 | 3 | Column-scoped backward cascade closure | "Buildable, not worth it yet" | "Inert on demo" = wrong baseline (overturned); authorizer finding promoted from gem to foundation (D7, D8); closure itself made unnecessary by write-side expansion |
+| 4 | This design (authorizer + shadow, automatic) | **Build with revisions** (4 reviewers) | Foundation source-verified (prepare fires trigger sub-programs, rusqlite 0.32.1 + SQLite 3.46.0); 16 mandated revisions R1–R16 in the plan banner — 3 soundness holes (shared-cache HTTP posture, read-path writes must purge, effectful GETs must poison), 1 dead-wiring fix (deps via oneshot), D9/D11 corrected below |
 
 ## Deferred (explicitly, do not fold into the build)
 

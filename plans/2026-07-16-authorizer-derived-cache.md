@@ -3,6 +3,99 @@
 Decision log (the why, the review arc, all accepted trade-offs):
 `notes/2026-07-16-derived-cache-decision-log.md`.
 
+> **Round-4 independent adversarial review, 2026-07-16 (4 reviewers: authorizer
+> feasibility, concurrency/lifecycle, caching semantics, worth-it/effort).
+> Verdict: BUILD WITH REVISIONS.** No fatal to the architecture — the
+> load-bearing assumption (prepare-time authorizer callbacks fire through
+> trigger sub-programs, trigger name in `AuthContext.accessor`) was **verified
+> in the pinned sources** (rusqlite 0.32.1 `hooks/mod.rs:405`; bundled SQLite
+> 3.46.0 `codeRowTrigger` sets the auth context at sqlite3.c:152974). But the
+> plan as first written is unsound in three ways and dead in one; build only
+> with the revisions below. Three findings were independently converged on by
+> 2–3 reviewers each (marked ×N).
+>
+> **Soundness revisions (before the Phase 5 surface deletion):**
+> - **R1 — spec-compliant shared cache** (semantics reviewer, FATAL as specced):
+>   handlers read request headers as pure record fields — invisible to key,
+>   deps, and poison — so automatic caching serves one client's
+>   header-variant response to another (cookies; cache poisoning). Fix: honor
+>   response `Vary` in key matching; treat `Cache-Control: private` (not just
+>   `no-store`) as store-suppressing; hard-default `cookie` + `authorization`
+>   into `bypass_headers` (config adds, never removes); never cache a request
+>   with a non-empty body. This is the RFC 9111 origin contract every
+>   CDN/Varnish deployment already imposes — header-variance-without-`Vary`
+>   becomes the app's bug, not a platform hole.
+> - **R2 — read-path writes purge, not just poison (×2):** `sql_begin` accepts
+>   DML; `ReadSet.wrote` making only *this* response uncacheable leaves every
+>   existing entry on that table silently stale. On `wrote`, feed the derived
+>   write actions to `purge_write`. (Rejecting non-readonly statements at
+>   `ctx != 0` is the eventual posture, blocked on hello/e2e's mid-request
+>   `migrate!` use → the deferred read-after-write design.)
+> - **R3 — effectful responses poison (×2):** `run_effects` executes inside
+>   `call_handler`, so a GET with a `Must DbWrite` stores its own pre-write
+>   read after its own purge, and a later cache HIT skips the handler —
+>   silently dropping its effects. Any `DbWrite`/`HttpSend` in the effects
+>   list (or an `err_handler` rewrite) poisons the ctx; `Log` stays neutral.
+>   The only true *regression* vs the shipped opt-in cache; one clause fixes it.
+> - **R4 — runtime DDL flushes the analysis:** a `CREATE TRIGGER`/`ALTER TABLE`
+>   carried in a `DbWrite` never reaches the shadow and the stale memoized
+>   derivations keep passing. Schema-change authorizer actions in a write set
+>   → execute the DDL on the shadow, clear both memos, `purge_all()`.
+> - **R5 — shadow + memos keyed per database name** (feasibility F1): a global
+>   shadow mixes multi-db DDL; a colliding `CREATE TABLE IF NOT EXISTS`
+>   silently no-ops, dropping the second db's triggers → under-purge.
+>   Realworld is single-db so no test here catches it.
+> - **R6 — `PRAGMA foreign_keys=ON` on the shadow** (feasibility F2): FK
+>   cascade writes are only compiled (hence reported) when the pragma is on;
+>   unconditional ON is a sound over-approximation.
+> - **R7 — nondeterministic SQL functions poison** (feasibility F3): the
+>   authorizer reports `Function{name}` at prepare — denylist `random`,
+>   `randomblob`, and the date/time family (args invisible → over-approximate).
+>   Documented exclusion: bare `CURRENT_TIMESTAMP` is a keyword, fires no
+>   callback — not catchable via the authorizer.
+> - **R8 — poison `reserve_id!`/`reserve_runs!`** (process-global counters)
+>   and the debug gauges; `env_var!` neutral rests on "host never setenvs
+>   post-init" — document it.
+>
+> **Wiring corrections:**
+> - **R9 — deps are taken INSIDE the blocking closure** right after
+>   `call_handler`, threaded through the oneshot with the response parts. The
+>   plan's "router, after the call" reads the ctx after the reaper dropped it
+>   (router.rs:229–233) — deps always `None`, feature dead on arrival while
+>   every poison test passes.
+> - **R10 — no RAII `CURRENT_CTX` guard (×3):** a Roc panic skips drops in
+>   intervening frames (router.rs's own documented model; why arena
+>   install/uninstall is explicit). Set before `catch_unwind`, clear
+>   unconditionally after, mirroring the arena.
+> - **R11 — shadow derivation hygiene:** never `prepare_cached` on the shadow
+>   (a cached hit fires zero callbacks → empty dep set memoized as truth);
+>   NULL-column `SQLITE_READ` arrives as `AuthAction::Unknown`, and
+>   `AuthAction` is non_exhaustive — the wildcard arm maps to `All`, never
+>   ignore; the hook is `FnMut + Send + 'static` → collect via
+>   `Arc<Mutex<…>>`, uninstall with the turbofish `None::<fn(...)>`.
+> - **R12 — `migrate!` hardcodes ctx 0** (drop its ctx arg): `ctx == 0` as the
+>   mirror trigger is app convention; a nonzero init ctx silently disables
+>   caching forever.
+>
+> **Claim corrections (decision log amended to match):**
+> - **R13 — D9 overclaimed:** the read-then-store vs write-then-purge race is
+>   inherited from the shipped cache (identical path), TTL-bounded, and IS
+>   silent staleness. Fix in Phase 3 with a per-table generation counter
+>   (`record_read!` captures gens; `purge_write` bumps; `insert` drops the
+>   entry if any gen moved) — also closes torn multi-statement reads.
+> - **R14 — D11 understated ~3×:** derivation re-adds `follows` to profile and
+>   comments too, and comments gain an `articles` dep — a follow flushes all
+>   cached profiles + comment lists; an article INSERT flushes comment lists.
+>   List/tags are *identical* to the hand lists (the anon variant genuinely
+>   reads no favorites/follows). Recovery = anon variants of three queries.
+>   cache-check must assert profile/comments behavior explicitly.
+> - **R15 — cap the derivation memos** (value-spliced `Sql.query!` SQL grows
+>   them unboundedly); don't memoize failed derivations.
+> - **R16 — named bench gate:** miss-path A/B on profile (most
+>   overhead-sensitive single-statement route) and list; merge gate ≥ baseline
+>   − 3%, hit path within noise of ~120k. Phase 2 is the highest-risk phase
+>   and realistically ~300+ lines (two engines + FFI unwind boundary), not 180.
+
 ## Summary
 
 Replace the hand-declared cache dependency surface (`Res.cacheable`,
