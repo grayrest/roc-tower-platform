@@ -120,17 +120,6 @@ fn emits_many_reader_returning_a_list() {
 }
 
 #[test]
-fn emits_table_deps_for_the_response_cache() {
-    let module = emit_module("Db", &scan_ok()).expect("emit");
-    // profile_select reads `users` and, via the EXISTS subquery, `follows`.
-    assert!(
-        module.contains(r#"all_profiles_tables = ["follows", "users"]"#),
-        "table deps (subqueries included, sorted):\n{module}"
-    );
-    assert!(module.contains("all_profiles_tables : List(Str)"));
-}
-
-#[test]
 fn emits_write_as_pure_builder() {
     let module = emit_module("Db", &scan_ok()).expect("emit");
     assert!(

@@ -39,11 +39,6 @@ use crate::router::RocRouter;
 /// every inner layer body-agnostic.
 pub type ReqBody = UnsyncBoxBody<Bytes, hyper::Error>;
 
-/// Internal header a handler sets (via `Res.cacheable`) to declare a response
-/// cacheable and name the tables its reads touched. The cache layer consumes it
-/// and strips it before the response leaves the process.
-const CACHE_TABLES_HEADER: HeaderName = HeaderName::from_static("x-tp-cache-tables");
-
 type ErringService = BoxCloneSyncService<Request<ReqBody>, Response<AppBody>, BoxError>;
 pub type AppService = BoxCloneSyncService<Request<ReqBody>, Response<AppBody>, Infallible>;
 
@@ -208,46 +203,22 @@ impl tower::Service<Request<ReqBody>> for CacheService {
         let mut inner = std::mem::replace(&mut self.inner, clone);
 
         Box::pin(async move {
-            // A stored spec that varies on the body (D14: the route extracts
-            // it) needs the body hashed BEFORE lookup. Buffer it — bounded
-            // exactly like the router would — and rebuild the request; plain
-            // traffic never touches this branch.
-            let (req, body_hash) = if cache.spec_of(&key).is_some_and(|spec| spec.body) {
-                let (parts, body) = req.into_parts();
-                let bytes = match Limited::new(body, policy.max_body_bytes).collect().await {
-                    Ok(collected) => collected.to_bytes(),
-                    Err(err) => {
-                        tracing::debug!("request body rejected at cache layer: {err}");
-                        let mut response = Response::new(AppBody::full("payload too large"));
-                        *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
-                        return Ok(response);
-                    }
-                };
-                let hash = cache::body_hash_of(&bytes);
-                let body: ReqBody =
-                    UnsyncBoxBody::new(Full::new(bytes).map_err(|never| match never {}));
-                (Request::from_parts(parts, body), Some(hash))
-            } else {
-                (req, None)
-            };
-
             // Hit: resolve the entry's variant from THIS request's values of
             // the recorded dimensions and serve without touching the inner
-            // stack (router, Roc, DB all skipped).
-            let jar = cache::parse_cookies(req.headers());
+            // stack (router, Roc, DB all skipped). Cookies are parsed only if
+            // the spec asks (`resolve_variant`), and a spec that varies on
+            // the body (D14) reports `needs_body` on the first pass instead
+            // of paying a second lock up front — plain traffic does ONE lock
+            // and touches nothing else.
+            let mut needs_body = false;
             if let Some(stored) = cache.lookup(
                 &key,
-                |spec| {
-                    cache::variant_hash(
-                        spec,
-                        |name| {
-                            jar.iter()
-                                .find(|(candidate, _)| candidate == name)
-                                .map(|(_, value)| value.clone())
-                        },
-                        body_hash,
-                        |name| header_value_of(req.headers(), name),
-                    )
+                |spec| match resolve_variant(spec, req.headers(), None) {
+                    resolved @ Some(_) => resolved,
+                    None => {
+                        needs_body = spec.body;
+                        None
+                    }
                 },
                 Instant::now(),
             ) {
@@ -259,6 +230,40 @@ impl tower::Service<Request<ReqBody>> for CacheService {
                 return Ok(response);
             }
 
+            // Body-varying entry: buffer the body — bounded exactly like the
+            // router would — hash it, rebuild the request, and retry once.
+            let req = if needs_body {
+                let (parts, body) = req.into_parts();
+                let bytes = match Limited::new(body, policy.max_body_bytes).collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(err) => {
+                        tracing::debug!("request body rejected at cache layer: {err}");
+                        let mut response = Response::new(AppBody::full("payload too large"));
+                        *response.status_mut() = StatusCode::PAYLOAD_TOO_LARGE;
+                        return Ok(response);
+                    }
+                };
+                let body_hash = Some(cache::body_hash_of(&bytes));
+                let body: ReqBody =
+                    UnsyncBoxBody::new(Full::new(bytes).map_err(|never| match never {}));
+                let req = Request::from_parts(parts, body);
+                if let Some(stored) = cache.lookup(
+                    &key,
+                    |spec| resolve_variant(spec, req.headers(), body_hash),
+                    Instant::now(),
+                ) {
+                    let response = if none_match(&req, &stored.etag) {
+                        not_modified(&stored.etag)
+                    } else {
+                        serve_stored(&stored)
+                    };
+                    return Ok(response);
+                }
+                req
+            } else {
+                req
+            };
+
             let revalidate_etag = req
                 .headers()
                 .get(header::IF_NONE_MATCH)
@@ -269,10 +274,40 @@ impl tower::Service<Request<ReqBody>> for CacheService {
             // here (cookie values and the body hash ride the CacheDeps
             // extension, recorded host-side).
             let req_headers = req.headers().clone();
+            // Tell the router this request is store-eligible, so the handler
+            // thread records attribution (bypassed traffic skips it).
+            let mut req = req;
+            req.extensions_mut().insert(cache::CacheEligible);
             let response = inner.ready().await?.call(req).await?;
             Ok(maybe_store(&cache, key, response, revalidate_etag, &req_headers).await)
         })
     }
+}
+
+/// Resolve a request's variant id under `spec` from its live headers (cookies
+/// parsed only when the spec names any) and an optional pre-computed body
+/// hash. `None` = unresolvable (body-varying spec without a hash) or a plain
+/// mismatch — both are misses.
+fn resolve_variant(
+    spec: &cache::VariantSpec,
+    headers: &http::HeaderMap,
+    body_hash: Option<u64>,
+) -> Option<u64> {
+    let jar = if spec.cookies.is_empty() {
+        Vec::new()
+    } else {
+        cache::parse_cookies(headers)
+    };
+    cache::variant_hash(
+        spec,
+        |name| {
+            jar.iter()
+                .find(|(candidate, _)| candidate == name)
+                .map(|(_, value)| value.clone())
+        },
+        body_hash,
+        |name| header_value_of(headers, name),
+    )
 }
 
 /// The first value of `name` in `headers`, for `Vary` variant dimensions.
@@ -323,9 +358,6 @@ async fn maybe_store(
     req_headers: &http::HeaderMap,
 ) -> Response<AppBody> {
     let (mut parts, body) = response.into_parts();
-    // Transitional hygiene until DC5 deletes `Res.cacheable`: the legacy
-    // header is stripped but its content is no longer consulted.
-    parts.headers.remove(&CACHE_TABLES_HEADER);
     let deps = parts.extensions.remove::<cache::CacheDeps>();
 
     let vary = vary_names(&parts.headers);

@@ -189,7 +189,7 @@ Articles := [].{
     ## Cacheable: anonymous GETs hit the response cache (authenticated requests
     ## carry `authorization` and bypass it).
     get : { id : I64, author_id : I64, article : Db.Article } -> Res.Response
-    get = |loaded| Res.cacheable(Res.json(200, { article: loaded.article }), Db.article_read_tables)
+    get = |loaded| Res.json(200, { article: loaded.article })
 
     ## `update` bound to its coeffects (owner gate, patch, instant).
     update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch!, Req.now!, Articles.update))
@@ -288,7 +288,7 @@ Articles := [].{
     ## PURE handler: serialize the typed page envelope (summaries OMIT the body
     ## the spec forbids in list items) as `{articles, articlesCount}` in Roc.
     page : { articles : List(Db.ArticleSummary), articlesCount : I64 } -> Res.Response
-    page = |data| Res.cacheable(Res.json(200, data), Db.list_read_tables)
+    page = |data| Res.json(200, data)
 
     ## `favorite` bound to its coeffects.
     favorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite))

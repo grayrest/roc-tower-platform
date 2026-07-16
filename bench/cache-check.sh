@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Response-cache correctness regression test. Proves, against a freshly-built
-# `./main`: anonymous reads cache; ETag/304 works; and an authenticated write
-# purges exactly the entries whose reads it invalidated — table-scoped, including
-# the materialized `tag_list`/`favorites_count` columns maintained by triggers,
-# and the `users`-bio dep — while a follow leaves the anonymous view correct
-# (confirming the `follows` dep can be pruned from the anon dep sets). Exit
-# non-zero on any failure. Runs on either engine (build `main` with `just build`
-# or `just build-turso` first).
+# `./main`: anonymous reads cache AUTOMATICALLY (no handler opt-in — deps are
+# DERIVED per statement by the analysis shadow); ETag/304 works; and an
+# authenticated write purges exactly the entries whose derived reads it
+# invalidated — column-scoped, including the trigger-maintained materialized
+# `tag_list`/`favorites_count` columns (the write set is trigger-expanded at
+# prepare time, no hand-declared cascade) — while anonymous views stay correct
+# under follow writes. Exit non-zero on any failure. Runs on either engine
+# (build `main` with `just build` or `just build-turso` first).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 DB=/tmp/tower-platform-realworld.db
@@ -49,8 +50,9 @@ echo "$T2" | grep -q '"yyy"' || fail "tags NOT invalidated after write (missing 
 echo "$T2" | grep -q '"zzz"' || fail "tags lost zzz after invalidation: $T2"
 
 # 4) Materialized-tag edge: cache the by-slug article, then edit its tags
-#    (article_tags write -> trigger updates articles.tag_list). The declared
-#    article_tags dep must purge the by-slug entry.
+#    (article_tags write -> trigger updates articles.tag_list). The DERIVED
+#    write set carries the trigger-expanded articles.tag_list update, which
+#    must purge the by-slug entry (it reads that column).
 A1=$(curl -s "$B/api/articles/$SLUG")
 echo "$A1" | grep -q '"zzz"' || fail "byslug missing zzz: $A1"
 curl -s -X PUT "$B/api/articles/$SLUG" "${auth[@]}" -H 'content-type: application/json' \
@@ -76,10 +78,22 @@ curl -s -X POST "$B/api/articles/$SLUG/favorite" "${auth[@]}" >/dev/null
 A4=$(curl -s "$B/api/articles/$SLUG")
 echo "$A4" | grep -q '"favoritesCount":1' || fail "article NOT invalidated after favorite (favorites dep / trigger cascade): $A4"
 
-# 7) pruning is sound: an anonymous view's `following` is always false, so a
-#    follow can't change a cached anon body — dropping `follows` from the dep
-#    sets is correct. Register a follower, follow cacheuser, anon profile stays
-#    correct (still following:false), proving we didn't break correctness.
+# 7) Comments derive their own deps: cache the anon comment list, add a
+#    comment (INSERT comments), the re-read must show it.
+curl -s "$B/api/articles/$SLUG/comments" >/dev/null
+curl -s -X POST "$B/api/articles/$SLUG/comments" "${auth[@]}" -H 'content-type: application/json' \
+  -d '{"comment":{"body":"first-comment-abc"}}' >/dev/null
+C2=$(curl -s "$B/api/articles/$SLUG/comments")
+echo "$C2" | grep -q 'first-comment-abc' || fail "comments NOT invalidated after comment write: $C2"
+
+# 8) Follow behavior under DERIVED deps (decision log D11/R14): the anon
+#    profile/by-slug/comments reads carry a `following` EXISTS over `follows`,
+#    so derivation honestly re-adds the dep — a follow DOES purge those
+#    entries now (accepted hit-rate cost vs the old hand-pruned lists; the
+#    recomputed anon body is identical, so correctness is unaffected). Assert
+#    the correctness half: anon `following` stays false after a follow.
+#    (Precision recovery = anon query variants without the EXISTS; app-side,
+#    out of scope here.)
 TOK2=$(curl -s -X POST "$B/api/users" -H 'content-type: application/json' \
   -d '{"user":{"username":"follower1","email":"f@e.com","password":"password"}}' \
   | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
@@ -87,5 +101,6 @@ curl -s -X POST "$B/api/profiles/cacheuser/follow" -H "authorization: Token $TOK
 P3=$(curl -s "$B/api/profiles/cacheuser")
 echo "$P3" | grep -q '"following":false' || fail "anon profile following should stay false after a follow: $P3"
 
-echo "PASS: cache hits, ETag/304, table-scoped invalidation (materialized tag_list,"
-echo "      users bio, favorites+trigger cascade), and follows-pruning soundness all work"
+echo "PASS: automatic caching, ETag/304, derived column-scoped invalidation"
+echo "      (trigger-expanded tag_list/favorites_count, users bio, comments),"
+echo "      and anon correctness under follow writes"

@@ -79,6 +79,14 @@ impl VariantSpec {
 /// The variant id of a plain (no-variance) entry.
 pub const PLAIN_VARIANT: u64 = 0;
 
+/// Request-extension marker the cache middleware attaches when a request is
+/// store-eligible (method + bypass rules passed). The router threads it into
+/// the handler thread's tracking flag, so BYPASSED traffic (authorization,
+/// wrong method, cache disabled) skips dependency attribution entirely —
+/// zero extra locks on that path.
+#[derive(Clone, Copy)]
+pub struct CacheEligible;
+
 /// The variant id for a request under `spec`. The same function computes the
 /// id at store time (values from the recorded `CacheDeps`) and at lookup time
 /// (values from the incoming request), so the two always agree. `None` when
@@ -245,13 +253,6 @@ impl ResponseCache {
             }
             None => None,
         }
-    }
-
-    /// The variant spec under `base`, if any (the middleware uses this to
-    /// decide whether a lookup needs the request body buffered first).
-    pub fn spec_of(&self, base: &Key) -> Option<VariantSpec> {
-        let inner = self.inner.lock().unwrap();
-        inner.map.get(base).map(|set| set.spec.clone())
     }
 
     /// Insert an entry under `(base, variant)` with variance `spec` and its

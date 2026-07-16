@@ -50,35 +50,6 @@ Db := [].{
     ## of a coeffect that reads.
     of = |req| Box.unbox(req.model).db
 
-    # --- response-cache dependency sets (see `Res.cacheable`) ---------------
-    # The set of tables whose mutation must purge the cached response. These are
-    # HAND-DECLARED rather than taken straight from `DbGen.*_tables` because the
-    # cache only stores ANONYMOUS responses (authed requests carry `authorization`
-    # and bypass it), and for an anonymous viewer the `favorited`/`following`
-    # flags are constant-false: the reads touch `follows` (and the viewer's
-    # `favorites` rows) but the RESULT never varies with those tables, so `follows`
-    # can't change a cached body. Dropping it stops every follow/unfollow from
-    # needlessly purging most of the cache. `favorites`/`article_tags` STAY — they
-    # feed the materialized `favorites_count`/`tag_list` columns the anon response
-    # DOES show, maintained by triggers, so a favorite or tag write must invalidate.
-    # (If authed caching is ever added, `follows` becomes a real dep again.)
-
-    ## Tables a by-slug article read depends on (drops `follows`; keeps the
-    ## materialized-column sources `favorites` + `article_tags`).
-    article_read_tables = ["articles", "users", "favorites", "article_tags"]
-
-    ## Tables the list/feed page depends on — the dynamic `Sql.query!` path.
-    list_read_tables = ["articles", "users", "favorites", "article_tags"]
-
-    ## Tables a profile read depends on (only `users`; anon `following` is false).
-    profile_read_tables = ["users"]
-
-    ## Tables a comments read depends on (drops `follows`).
-    comment_read_tables = ["comments", "users"]
-
-    ## Tables the tag list depends on.
-    tags_read_tables = DbGen.tags_q_tables
-
     ## A NullableStr as a SQL parameter (Val -> TEXT, Null -> NULL).
     to_sql : NullableStr -> Host.SqlValue
     to_sql = |nullable| match nullable {

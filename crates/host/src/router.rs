@@ -159,6 +159,9 @@ impl RouterInner {
     ) -> Result<Response<AppBody>, BoxError> {
         let dispatch_start = crate::profile::now();
         let (parts, body) = req.into_parts();
+        // Store-eligible per the cache middleware (absent = bypassed or no
+        // cache): controls whether this request pays dependency attribution.
+        let track_cache = parts.extensions.get::<crate::cache::CacheEligible>().is_some();
 
         let collected = match Limited::new(body, self.max_body_bytes).collect().await {
             Ok(collected) => collected.to_bytes(),
@@ -220,7 +223,7 @@ impl RouterInner {
             // Current-ctx for hosted fns that take no ctx argument (poison).
             // Explicit install/clear like the arena: a panic unwinding out of
             // a hosted fn skips intervening drops, so no RAII guard.
-            crate::effects::install_current_ctx(ctx);
+            crate::effects::install_current_ctx(ctx, track_cache);
             let handler_start = crate::profile::now();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 call_handler(handler, model, request_parts, ctx)
@@ -235,7 +238,8 @@ impl RouterInner {
                     // Take the cache attribution HERE, on the handler thread:
                     // the reaper below drops the ctx entry before the oneshot
                     // resolves, so reading it router-side would always miss (R9).
-                    let cache_deps = crate::effects::take_cache_attribution(ctx);
+                    let cache_deps =
+                        track_cache.then(|| crate::effects::take_cache_attribution(ctx)).flatten();
                     (out, deferred, cache_deps)
                 }
                 Err(payload) => std::panic::resume_unwind(payload),

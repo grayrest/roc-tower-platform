@@ -418,31 +418,36 @@ struct CacheAttribution {
 }
 
 thread_local! {
-    /// The ctx whose handler is running on THIS blocking-pool thread. Hosted
-    /// fns that take no ctx argument (`now_ms!`, `random_bytes!`, …) use it
-    /// to poison their request's cacheability. Explicit install/clear, NOT an
-    /// RAII guard: a panic unwinding out of a hosted fn skips Rust drops in
-    /// intervening frames (router.rs documents this), so the router clears it
-    /// unconditionally after `catch_unwind`.
-    static CURRENT_CTX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The ctx whose handler is running on THIS blocking-pool thread, plus
+    /// whether the request is store-eligible (the middleware's
+    /// `CacheEligible` marker — bypassed traffic never pays attribution).
+    /// Hosted fns that take no ctx argument (`now_ms!`, `random_bytes!`, …)
+    /// use it to poison their request's cacheability. Explicit
+    /// install/clear, NOT an RAII guard: a panic unwinding out of a hosted
+    /// fn skips Rust drops in intervening frames (router.rs documents this),
+    /// so the router clears it unconditionally after `catch_unwind`.
+    static CURRENT_CTX: std::cell::Cell<(u64, bool)> = const { std::cell::Cell::new((0, false)) };
 }
 
-pub fn install_current_ctx(id: u64) {
-    CURRENT_CTX.with(|cell| cell.set(id));
+pub fn install_current_ctx(id: u64, track_cache: bool) {
+    CURRENT_CTX.with(|cell| cell.set((id, track_cache)));
 }
 
 pub fn clear_current_ctx() {
-    CURRENT_CTX.with(|cell| cell.set(0));
+    CURRENT_CTX.with(|cell| cell.set((0, false)));
 }
 
-/// Mark the current thread's request uncacheable. Cheap no-op when no
-/// response cache is installed or off a request thread (ctx 0).
+/// Does the request on THIS thread record cache attribution? Zero locks —
+/// the gate `sql_begin` checks before touching the shadow or any registry.
+pub(crate) fn current_ctx_tracks() -> bool {
+    CURRENT_CTX.with(|cell| cell.get().1)
+}
+
+/// Mark the current thread's request uncacheable. Zero-lock no-op unless the
+/// request is store-eligible.
 pub(crate) fn poison_current_ctx() {
-    if crate::cache::global().is_none() {
-        return;
-    }
-    let ctx = CURRENT_CTX.with(|cell| cell.get());
-    if ctx != 0 {
+    let (ctx, track) = CURRENT_CTX.with(|cell| cell.get());
+    if track && ctx != 0 {
         poison_ctx(ctx);
     }
 }

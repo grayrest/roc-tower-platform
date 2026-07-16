@@ -17,5 +17,5 @@ Tags := [].{
     ## PURE handler: serialize the tag list as `{tags}` in Roc. Cacheable —
     ## purged whenever `article_tags` is written.
     get : List(Str) -> Res.Response
-    get = |tag_list| Res.cacheable(Res.json(200, { tags: tag_list }), Db.tags_read_tables)
+    get = |tag_list| Res.json(200, { tags: tag_list })
 }

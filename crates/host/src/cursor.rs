@@ -196,7 +196,7 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
         if crate::shadow::looks_like_ddl(&sql) {
             crate::shadow::mirror_schema(&db, &sql);
         }
-    } else if crate::cache::global().is_some() {
+    } else if crate::effects::current_ctx_tracks() {
         match crate::shadow::analyze(&db, &sql) {
             Ok(analysis) => crate::effects::record_read(ctx, &analysis),
             Err(err) => {
