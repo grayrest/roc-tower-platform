@@ -157,6 +157,31 @@ anon variants of *three* queries (by-slug, profile, comments), out of scope
 here. `bench/cache-check.sh` must flip the follow assertion AND assert the
 profile/comments purge behavior explicitly.
 
+**D12 — Instrumentation neutrality (user constraint, post-round-4).** Logs
+and instrumentation/tracing must never invalidate the cache. This narrows
+round-4's R3 from "any `DbWrite`/`HttpSend` in the effects list poisons" to
+"any **Must** `DbWrite`/`HttpSend` poisons", and the platform's existing
+effect tiers carry the whole distinction:
+- `Log` effects and `Host.log!` are always neutral — no poison, no purge, at
+  either tier.
+- `Must` non-Log effects poison: "this effect must run" is incompatible with
+  a cache hit that skips the handler, so Must-effectful responses stay
+  uncacheable and their effects always fire.
+- `Opt` effects never poison: they are best-effort by contract, so a hit
+  skipping them is consistent with semantics the app already accepted.
+  Soundness needs no poison because the write side covers them — a dedicated
+  metrics/audit table is **cache-inert by derivation** (no cached entry reads
+  it, so its purge is a no-op), while an Opt write into a cached table (a
+  view counter on `articles`) self-invalidates through its derived write-set
+  purge + the R13 generation check: the entry never survives insert, the
+  route is effectively uncacheable, and its effects always fire. Both cases
+  fall out of the machinery; no instrumentation allowlist exists.
+- Documented trade: handler-level `Opt`/`Log` instrumentation does not
+  observe cache hits. Per-request observability that must see hits belongs to
+  the host layer (middleware tracing/access logging fires on hits and misses
+  alike) — structurally the only place that can see a request the handler
+  never ran for.
+
 ## Review-arc ledger
 
 | Round | Proposal | Verdict then | Standing now |

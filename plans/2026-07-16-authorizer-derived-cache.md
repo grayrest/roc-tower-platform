@@ -31,12 +31,23 @@ Decision log (the why, the review arc, all accepted trade-offs):
 >   write actions to `purge_write`. (Rejecting non-readonly statements at
 >   `ctx != 0` is the eventual posture, blocked on hello/e2e's mid-request
 >   `migrate!` use → the deferred read-after-write design.)
-> - **R3 — effectful responses poison (×2):** `run_effects` executes inside
->   `call_handler`, so a GET with a `Must DbWrite` stores its own pre-write
->   read after its own purge, and a later cache HIT skips the handler —
->   silently dropping its effects. Any `DbWrite`/`HttpSend` in the effects
->   list (or an `err_handler` rewrite) poisons the ctx; `Log` stays neutral.
->   The only true *regression* vs the shipped opt-in cache; one clause fixes it.
+> - **R3 — Must-effectful responses poison (×2, narrowed by D12):**
+>   `run_effects` executes inside `call_handler`, so a GET with a
+>   `Must DbWrite` stores its own pre-write read after its own purge, and a
+>   later cache HIT skips the handler — silently dropping its effects. Poison
+>   rule: any **Must** `DbWrite`/`HttpSend` (or an `err_handler` rewrite)
+>   poisons the ctx — "must run" is incompatible with hits that skip the
+>   handler. **`Log` never poisons at either level, and `Opt` effects never
+>   poison** (instrumentation-neutrality constraint, D12): telemetry belongs
+>   in `Opt`/`Log` and must not defeat caching. Soundness holds without the
+>   blanket poison because the write side already covers Opt writes — a
+>   dedicated metrics/audit table is cache-inert by derivation (no cached
+>   entry reads it → its purge is a no-op), while an Opt write into a cached
+>   table (view counter on `articles`) self-invalidates via its write-set
+>   purge + the R13 generation check, so that route never holds an entry and
+>   its effects always fire. Documented trade: Opt/Log effects do not observe
+>   cache hits; hit-visible observability is the host layer's (middleware
+>   tracing/access logs fire on hits and misses alike).
 > - **R4 — runtime DDL flushes the analysis:** a `CREATE TRIGGER`/`ALTER TABLE`
 >   carried in a `DbWrite` never reaches the shadow and the stale memoized
 >   derivations keep passing. Schema-change authorizer actions in a write set
