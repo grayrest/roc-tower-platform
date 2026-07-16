@@ -136,63 +136,26 @@ Req := [].{
     ## the SAME instant (re-frame's canonical coeffect). Never rejects.
     now! = |req| Ok(Cofx.get!(req.ctx, "coeffect.now_ms", |{}| Host.now_ms!()))
 
-    ## A freshly reserved, non-idempotent id — the canonical memoized
-    ## coeffect. Bumps a per-name counter in a DB sequence table
-    ## (`UPDATE ... RETURNING` via `Sql.query!`), creating the table on
-    ## first use. Resolves THROUGH `Cofx.get!`, so several slots requesting it
-    ## in one request share ONE reservation. The counter lives in the app's
-    ## database, read from the model's `db : Str` field (any app using this
-    ## coeffect must expose one).
-    reserved_id! = |req| Cofx.get!(req.ctx, "coeffect.reserved_id", |{}| reserve_fresh_id!(req))
+    ## A freshly reserved, non-idempotent id — the canonical memoized coeffect.
+    ## Delegates to the host's persistent per-database sequence (`Host.next_id!`),
+    ## so no app-visible SQL write happens during resolution — the read/write
+    ## split stays clean. Resolves THROUGH `Cofx.get!`, so several slots
+    ## requesting it in one request share ONE reservation. The counter lives in
+    ## the app's database, named by the model's `db : Str` field (any app using
+    ## this coeffect must expose one).
+    reserved_id! = |req|
+        Cofx.get!(req.ctx, "coeffect.reserved_id", |{}| Ok(Host.next_id!(Box.unbox(req.model).db)))
 
 }
 
 import Host
 import Cofx
-import Sql
 
 # --- module-private helpers ---
 #
 # Top-level defs outside the nominal block are unreachable from other
 # modules (module access goes through the type's associated items), so
 # this is the platform's real privacy boundary.
-
-## Internal: one un-memoized reservation (the `reserved_id!` cache miss).
-## Fast path first: after the very first reservation the counter row always
-## exists, so the increment is ONE statement; only a miss (fresh database)
-## pays the create-table/seed-row setup. The `UPDATE ... RETURNING` runs on the
-## cursor path (a write that yields a row), keyed to the request ctx.
-reserve_fresh_id! = |req| {
-    ctx = req.ctx
-    db = Box.unbox(req.model).db
-    match Sql.query!(ctx, db, "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", []) {
-        Ok(rows) => match read_reserved_id(rows) {
-            Ok(reserved) => Ok(reserved)
-            Err(_) => reserve_first_id!(ctx, db)
-        }
-        Err(_) => reserve_first_id!(ctx, db)
-    }
-}
-
-## Internal: the fresh-database path — create the sequence table and its
-## row, then take the first reservation.
-reserve_first_id! = |ctx, db| {
-    _ = Sql.exec!(ctx, db, "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)", [])
-    _ = Sql.exec!(ctx, db, "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING", [])
-    rows = Sql.query!(ctx, db, "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v", [])
-        ? |message| reject(500, "reserved id: ${message}")
-    reserved = read_reserved_id(rows) ? |_| reject(500, "reserved id: sequence returned no value")
-    Ok(reserved)
-}
-
-## Internal: read the single INTEGER cell an `UPDATE ... RETURNING v`
-## produces.
-read_reserved_id : List(Sql.Row) -> Try(I64, [NoValue])
-read_reserved_id = |rows| {
-    row = Sql.first(rows) ? |_| NoValue
-    value = row.i64("v") ? |_| NoValue
-    Ok(value)
-}
 
 ## Internal: a plain-text rejection response for coeffect failures.
 ## Left unannotated: naming the 4-field effectful Response type would need

@@ -97,10 +97,15 @@ Sql := [].{
         collected
     }
 
-    ## Run a statement for effect only (DDL, or a write with no rows worth
-    ## reading), draining any result rows. Finishes the cursor on every path.
-    exec! : U64, Str, Str, List(Host.SqlValue) => Try({}, Str)
-    exec! = |ctx, db, sql, params| {
+    ## Apply a schema statement (DDL) at startup — `CREATE TABLE/INDEX/TRIGGER`
+    ## from `init!`. Runs the statement for effect, draining any result rows and
+    ## finishing the cursor on every path. This is the ONLY blessed way to run
+    ## raw SQL for effect: it names the intent (schema/migration, before the
+    ## server accepts requests) rather than a general "exec anything" hatch, so
+    ## the request-time read/write split stays analysable. Runtime writes go
+    ## through `DbWrite` effects; runtime reads through `query!`.
+    migrate! : U64, Str, Str, List(Host.SqlValue) => Try({}, Str)
+    migrate! = |ctx, db, sql, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: sql, params: params })?
         drained = drain_rows!(handle)
         Host.sql_finish!(handle)

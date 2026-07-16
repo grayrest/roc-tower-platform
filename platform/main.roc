@@ -90,6 +90,7 @@ platform ""
         "roc_sql_col_str": Host.sql_col_str!,
         "roc_sql_col_blob": Host.sql_col_blob!,
         "roc_sql_finish": Host.sql_finish!,
+        "roc_next_id": Host.next_id!,
         "roc_reserve_id": Host.reserve_id!,
         "roc_reserve_runs": Host.reserve_runs!,
         "roc_memo_get": Host.memo_get!,

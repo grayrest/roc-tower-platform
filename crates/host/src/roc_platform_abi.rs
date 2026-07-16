@@ -2229,6 +2229,15 @@ pub struct HostMemoPutArgs {
     pub arg2: RocErasedCallable,
 }
 
+/// Arguments for Host.next_id!
+/// Roc signature: Str => I64
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostNextIdArgs {
+    pub arg0: RocStr,
+}
+
 /// Arguments for Host.password_hash!
 /// Roc signature: Str => Str
 /// Refcounted fields are owned by the hosted function.
@@ -3375,6 +3384,10 @@ unsafe extern "C" {
     /// Hosted symbol for Host.memo_put!
     /// Roc signature: U64, Str, Box({} => rigid) => {}
     pub fn roc_memo_put(arg0: u64, arg1: RocStr, arg2: RocErasedCallable);
+
+    /// Hosted symbol for Host.next_id!
+    /// Roc signature: Str => I64
+    pub fn roc_next_id(arg0: RocStr) -> i64;
 
     /// Hosted symbol for Host.now_ms!
     /// Roc signature: {} => U64

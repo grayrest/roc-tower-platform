@@ -462,3 +462,34 @@ pub fn run_autocommit(db: &str, sql: &str, params: &[SqlValue]) -> Result<(), Db
     let pooled = checkout(db).map_err(DbError::Other)?;
     exec_write(pooled.conn(), sql, params).map_err(|err| classify(&err))
 }
+
+/// Reserve the next monotonic id for `db` (backs `Req.reserved_id!`). Mirrors the
+/// rusqlite `reserve_next_id`: bump a host-owned `counters` row, lazily creating
+/// it. Only runs on reservations (writes).
+pub fn reserve_next_id(db: &str) -> Result<i64, String> {
+    const BUMP: &str = "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v";
+    let pooled = checkout(db)?;
+    let conn = pooled.conn();
+    // The CREATE/INSERT are idempotent and cheap; run them up front so the BUMP
+    // always finds its row (reservations are rare writes, not the hot path).
+    exec_raw(
+        conn,
+        "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL)",
+    )
+    .map_err(|err| format!("{err:?}"))?;
+    exec_write(
+        conn,
+        "INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING",
+        &[],
+    )
+    .map_err(|err| format!("{err:?}"))?;
+    let mut stmt = conn.prepare_cached(BUMP).map_err(|err| format!("{err:?}"))?;
+    match stmt.step(None) {
+        Ok(TursoStatusCode::Row) => {
+            let value = stmt.row_value(0).map_err(|err| format!("{err:?}"))?;
+            Ok(value.to_float_or_zero() as i64)
+        }
+        Ok(other) => Err(format!("reserved_id RETURNING yielded {other:?}")),
+        Err(err) => Err(format!("{err:?}")),
+    }
+}

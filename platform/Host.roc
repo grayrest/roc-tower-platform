@@ -80,10 +80,17 @@ Host := [].{
     ## second finish, or a finish of an unknown handle, is a no-op.
     sql_finish! : U64 => {}
 
-    ## A non-idempotent effect used by the coeffect layer's tests and the
-    ## `ReservedId`-style coeffect: each call increments a process-global
-    ## counter and returns the new value. Stands in for a "reserve an id" style
-    ## coeffect that must run exactly once per request.
+    ## Reserve the next persistent monotonic id for the named database — the
+    ## real "reserve an id" primitive backing `Req.reserved_id!`. The host owns a
+    ## per-database sequence (a `counters` row it lazily creates); each call bumps
+    ## and returns it. A DB failure panics the request (→ 500). No app-visible SQL
+    ## write, so the read/write split stays clean.
+    next_id! : Str => I64
+
+    ## A non-idempotent in-memory counter used by the coeffect layer's tests: each
+    ## call increments a process-global counter and returns the new value. Kept
+    ## distinct from `next_id!` (which is persistent + per-database) so the memo
+    ## tests can assert exact injector run counts via `reserve_runs!`.
     reserve_id! : () => U64
 
     ## How many times `reserve_id!` has actually run, process-wide. Used by the

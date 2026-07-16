@@ -52,7 +52,7 @@ main = |{}| {
 init! : () => Try(Model, Str)
 init! = || {
     Host.log!("initializing hello app")
-    _ = Sql.exec!(0, db_path, "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", [])
+    _ = Sql.migrate!(0, db_path, "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", [])
     greeting = match Host.env_var!("GREETING") {
         Ok(value) => value
         Err(_) => "Hello"
@@ -115,7 +115,7 @@ proxy! = |_req| {
 ## Read-modify-read is naturally imperative — a good escape-hatch case.
 db! : Request => Response
 db! = |req| {
-    _ = Sql.exec!(req.ctx, db_path, "INSERT INTO visits (at_ms) VALUES (?)", [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())])
+    _ = Sql.migrate!(req.ctx, db_path, "INSERT INTO visits (at_ms) VALUES (?)", [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())])
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM visits", []) {
         Ok(rows) => {
             count = match Sql.first(rows) {

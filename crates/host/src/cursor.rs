@@ -425,6 +425,28 @@ pub fn run_write_txn(db: &str, writes: &[Write]) -> Result<(), (usize, DbError)>
     tx.commit().map_err(|err| (last, classify(&err)))
 }
 
+/// Reserve the next monotonic id for `db` — the persistent host-side sequence
+/// backing `Req.reserved_id!`. Bumps a per-database `counters` row and returns
+/// the new value; lazily creates the sequence table on the first reservation
+/// against a fresh database. Runs only on writes (reservations), never on a
+/// read; the `counters` table is host-owned and read by nothing else.
+pub fn reserve_next_id(db: &str) -> Result<i64, String> {
+    const BUMP: &str = "UPDATE counters SET v = v + 1 WHERE name = 'reserved_id' RETURNING v";
+    let conn = checkout_sqlite(db)?;
+    // Fast path: after the first reservation the row always exists.
+    if let Ok(v) = conn.query_row(BUMP, [], |row| row.get::<_, i64>(0)) {
+        return Ok(v);
+    }
+    // Cold path (fresh database): create the sequence table and seed its row.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, v INTEGER NOT NULL);\
+         INSERT INTO counters (name, v) VALUES ('reserved_id', 0) ON CONFLICT(name) DO NOTHING;",
+    )
+    .map_err(|err| err.to_string())?;
+    conn.query_row(BUMP, [], |row| row.get::<_, i64>(0))
+        .map_err(|err| err.to_string())
+}
+
 /// Run one write outside a transaction (autocommit) — the `Opt` DbWrite path.
 pub fn run_autocommit(db: &str, sql: &str, params: &[SqlValue]) -> Result<(), DbError> {
     let connection = checkout_sqlite(db).map_err(DbError::Other)?;

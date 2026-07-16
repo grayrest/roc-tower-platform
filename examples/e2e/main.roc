@@ -99,8 +99,8 @@ db! : Request => Response
 db! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
-    _ = Sql.exec!(req.ctx, db_path, "INSERT INTO hits DEFAULT VALUES", [])
+    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
+    _ = Sql.migrate!(req.ctx, db_path, "INSERT INTO hits DEFAULT VALUES", [])
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM hits", []) {
         Ok(rows) => text(200, "hits=${count_of(rows)}")
         Err(message) => text(500, "db error: ${message}")
@@ -158,7 +158,7 @@ helper_combo = |id, query_pairs, model| {
 # --- Phase 3 effect fixtures ---
 #
 # These handlers return a Must/Opt effect list the host executes AFTER the
-# handler. DDL runs inline via Sql.exec! (autocommit, before the
+# handler. DDL runs inline via Sql.migrate! (autocommit, before the
 # effect transaction); the actual write is the returned Must(DbWrite).
 
 ## Must(DbWrite) into a UNIQUE column. First insert of a tag succeeds and the
@@ -172,7 +172,7 @@ effects_insert! = |req| {
         Ok(value) => value
         Err(_) => "x"
     }
-    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", [])
+    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", [])
     Res.fx_err(
             DbWrite({ db: db_path, sql: "INSERT INTO effect_users (email) VALUES (?)", params: [Host.SqlValue.Text(tag)] }),
             |err| match err {
@@ -198,9 +198,9 @@ effects_rollback! : Request => Response
 effects_rollback! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", [])
-    _ = Sql.exec!(req.ctx, db_path, "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", [])
-    _ = Sql.exec!(req.ctx, db_path, "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", [])
+    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", [])
+    _ = Sql.migrate!(req.ctx, db_path, "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", [])
+    _ = Sql.migrate!(req.ctx, db_path, "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", [])
     on_dup = |err| match err {
         UniqueViolation(_) => {
             status: 409,
@@ -235,7 +235,7 @@ effects_opt! : Request => Response
 effects_opt! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Sql.exec!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
+    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
     Res.fx_opt(Log("optional log fired"))
         .opt(DbWrite({ db: db_path, sql: "INSERT INTO effect_opt DEFAULT VALUES", params: [] }))
         .text(200, "opt ok")

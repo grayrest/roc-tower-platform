@@ -107,6 +107,17 @@ pub extern "C" fn roc_env_var(arg0: abi::RocStr) -> abi::HostEnvVarResult {
     }
 }
 
+/// `Host.next_id! : Str => I64` — reserve the next persistent monotonic id for
+/// the named database (backs `Req.reserved_id!`). A reservation failure is a
+/// catastrophic DB error; panic (`C-unwind`, caught by the router's
+/// `catch_unwind` → 500) rather than hand back a colliding id.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_next_id(db: abi::RocStr) -> i64 {
+    let db = db.as_str();
+    crate::cursor::reserve_next_id(db)
+        .unwrap_or_else(|err| panic!("next_id!({db:?}): {err}"))
+}
+
 /// `Host.now_ms! : () => U64`
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_now_ms() -> u64 {
