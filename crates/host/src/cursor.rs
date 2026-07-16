@@ -189,6 +189,23 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
         args.sql.decref(host);
     }
 
+    // Response-cache attribution. Init-time (ctx 0) DDL mirrors the schema
+    // into the analysis shadow; request-time statements record their derived
+    // read set onto the ctx, failing CLOSED (poison) when underivable.
+    if ctx == 0 {
+        if crate::shadow::looks_like_ddl(&sql) {
+            crate::shadow::mirror_schema(&db, &sql);
+        }
+    } else if crate::cache::global().is_some() {
+        match crate::shadow::analyze(&db, &sql) {
+            Ok(analysis) => crate::effects::record_read(ctx, &analysis),
+            Err(err) => {
+                tracing::debug!(%err, sql, "sql_begin: underivable read; response uncacheable");
+                crate::effects::poison_ctx(ctx);
+            }
+        }
+    }
+
     let conn = match checkout_sqlite(&db) {
         Ok(conn) => conn,
         Err(message) => return begin_err(&message),

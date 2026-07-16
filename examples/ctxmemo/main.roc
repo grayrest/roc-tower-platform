@@ -15,7 +15,6 @@ Request : {
     params : List({ name : Str, value : Str }),
     query : Str,
     headers : List({ name : Str, value : Str }),
-    body : List(U8),
     model : Box(Model),
 }
 

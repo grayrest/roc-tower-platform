@@ -16,6 +16,11 @@ platform ""
             routes : List({
                 method : Str,
                 path : Str,
+                # The request record carries only routing-pure data. The body
+                # and the Cookie header are NOT fields: they are extracted via
+                # host-mediated coeffects (Host.request_body!/cookie!) so the
+                # response cache knows exactly which routes vary on them
+                # (decision log D13/D14).
                 handler : Box({
                     ctx : U64,
                     method : Str,
@@ -23,7 +28,6 @@ platform ""
                     params : List({ name : Str, value : Str }),
                     query : Str,
                     headers : List({ name : Str, value : Str }),
-                    body : List(U8),
                     model : Box(model),
                 } => {
                     status : U16,
@@ -91,6 +95,8 @@ platform ""
         "roc_sql_col_blob": Host.sql_col_blob!,
         "roc_sql_finish": Host.sql_finish!,
         "roc_next_id": Host.next_id!,
+        "roc_request_body": Host.request_body!,
+        "roc_cookie": Host.cookie!,
         "roc_reserve_id": Host.reserve_id!,
         "roc_reserve_runs": Host.reserve_runs!,
         "roc_memo_get": Host.memo_get!,

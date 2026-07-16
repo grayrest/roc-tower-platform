@@ -26,14 +26,14 @@ Comments := [].{
         })
 
     ## Coeffect: the decoded, validated comment text. Pure.
-    comment_body = |req| {
+    comment_body! = |req| {
         body : { comment : { body : Str } }
-        body = Req.json_body(req) ? |_| Api.error(422, "invalid comment body")
+        body = Req.json_body!(req) ? |_| Api.error(422, "invalid comment body")
         Api.nonblank("body", body.comment.body)
     }
 
     ## `add` bound to its coeffects (auth, article, text, id, instant).
-    add_h! = Box.box(Cofx.with5(Auth.current_user!, Comments.article_id!, Comments.comment_body, Req.reserved_id!, Req.now!, Comments.add))
+    add_h! = Box.box(Cofx.with5(Auth.current_user!, Comments.article_id!, Comments.comment_body!, Req.reserved_id!, Req.now!, Comments.add))
 
     ## PURE handler: INSERT the comment, answer the comment object as its
     ## author sees it.

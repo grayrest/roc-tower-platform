@@ -180,6 +180,29 @@ fn remove_key(inner: &mut Inner, key: &Key) {
     inner.order.retain(|k| k != key);
 }
 
+/// What a request's reads and coeffect extractions contribute to caching.
+/// Produced by `effects::take_cache_attribution` ON THE HANDLER THREAD (the
+/// reaper drops the ctx entry before the router's oneshot resolves — R9),
+/// threaded through the join result, and carried to the cache middleware as
+/// a response extension.
+// TODO(DC4): drop the allow once maybe_store consumes the fields.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub struct CacheDeps {
+    /// Derived (table, columns-read) dependency set from the shadow analyzer.
+    pub deps: Vec<(Box<str>, crate::shadow::Cols)>,
+    /// False when the request touched a nondeterministic host primitive, a
+    /// Must DbWrite/HttpSend effect, an underivable statement, or read-path
+    /// DML — the response must not be stored.
+    pub cacheable: bool,
+    /// (name, value) of each cookie the route READ, in first-read order —
+    /// the D13 variant dimension. `None` = the cookie was absent (distinct
+    /// from present-but-empty).
+    pub cookies: Vec<(String, Option<String>)>,
+    /// Hash of the raw body bytes IF the route extracted the body (D14).
+    pub body_hash: Option<u64>,
+}
+
 // --- process-global handle -------------------------------------------------
 
 static GLOBAL: OnceLock<Arc<ResponseCache>> = OnceLock::new();

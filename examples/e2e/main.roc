@@ -16,7 +16,6 @@ Request : {
     params : List({ name : Str, value : Str }),
     query : Str,
     headers : List({ name : Str, value : Str }),
-    body : List(U8),
     model : Box(Model),
 }
 
@@ -39,8 +38,8 @@ main = |{}| {
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(Cofx.with1(Req.json_body, helper_greet)) },
-        { method: "POST", path: "/helper/form", handler: Box.box(Cofx.with1(Req.form_body, helper_form)) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Cofx.with1(Req.json_body!, helper_greet)) },
+        { method: "POST", path: "/helper/form", handler: Box.box(Cofx.with1(Req.form_body!, helper_form)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
         { method: "GET", path: "/helper/header", handler: Box.box(Cofx.with1(Req.header("x-custom"), helper_header)) },
@@ -77,7 +76,9 @@ echo! : Request => Response
 echo! = |req| {
     status: 200,
     headers: [{ name: "content-type", value: "application/octet-stream" }],
-    body: req.body,
+    # The body is not a request-record field — extract it via the host
+    # (which also tells the response cache this route varies on it, D14).
+    body: Host.request_body!(req.ctx),
     effects: [],
 }
 
@@ -99,8 +100,8 @@ db! : Request => Response
 db! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
-    _ = Sql.migrate!(req.ctx, db_path, "INSERT INTO hits DEFAULT VALUES", [])
+    _ = Sql.migrate!(db_path, "CREATE TABLE IF NOT EXISTS hits (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
+    _ = Sql.migrate!(db_path, "INSERT INTO hits DEFAULT VALUES", [])
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM hits", []) {
         Ok(rows) => text(200, "hits=${count_of(rows)}")
         Err(message) => text(500, "db error: ${message}")
@@ -172,7 +173,7 @@ effects_insert! = |req| {
         Ok(value) => value
         Err(_) => "x"
     }
-    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", [])
+    _ = Sql.migrate!(db_path, "CREATE TABLE IF NOT EXISTS effect_users (email TEXT UNIQUE NOT NULL)", [])
     Res.fx_err(
             DbWrite({ db: db_path, sql: "INSERT INTO effect_users (email) VALUES (?)", params: [Host.SqlValue.Text(tag)] }),
             |err| match err {
@@ -198,9 +199,9 @@ effects_rollback! : Request => Response
 effects_rollback! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", [])
-    _ = Sql.migrate!(req.ctx, db_path, "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", [])
-    _ = Sql.migrate!(req.ctx, db_path, "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", [])
+    _ = Sql.migrate!(db_path, "CREATE TABLE IF NOT EXISTS effect_rollback (val TEXT UNIQUE NOT NULL)", [])
+    _ = Sql.migrate!(db_path, "DELETE FROM effect_rollback WHERE val = 'rollback_fresh'", [])
+    _ = Sql.migrate!(db_path, "INSERT OR IGNORE INTO effect_rollback (val) VALUES ('rollback_dup')", [])
     on_dup = |err| match err {
         UniqueViolation(_) => {
             status: 409,
@@ -235,7 +236,7 @@ effects_opt! : Request => Response
 effects_opt! = |req| {
     model = Box.unbox(req.model)
     db_path = model.db_path
-    _ = Sql.migrate!(req.ctx, db_path, "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
+    _ = Sql.migrate!(db_path, "CREATE TABLE IF NOT EXISTS effect_opt (id INTEGER PRIMARY KEY AUTOINCREMENT)", [])
     Res.fx_opt(Log("optional log fired"))
         .opt(DbWrite({ db: db_path, sql: "INSERT INTO effect_opt DEFAULT VALUES", params: [] }))
         .text(200, "opt ok")

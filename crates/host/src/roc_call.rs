@@ -1,8 +1,6 @@
 //! Conversion between host HTTP types and Roc records, plus invocation of
 //! boxed Roc handlers through the erased-callable ABI.
 
-use bytes::Bytes;
-
 use crate::abi;
 use crate::roc_host;
 use crate::types::{RocKeyValue, RocRequest, RocResponse};
@@ -23,13 +21,16 @@ pub struct RocModel(pub(crate) abi::RocBox);
 unsafe impl Send for RocModel {}
 unsafe impl Sync for RocModel {}
 
+/// The routing-pure request data handed to Roc. The BODY and the Cookie
+/// header are deliberately absent: they live in the ctx registry and are
+/// extracted via `Host.request_body!`/`Host.cookie!`, which is what lets the
+/// response cache know which routes vary on them (D13/D14).
 pub struct RequestParts {
     pub method: String,
     pub path: String,
     pub params: Vec<(String, String)>,
     pub query: String,
     pub headers: Vec<(String, String)>,
-    pub body: Bytes,
 }
 
 pub struct ResponseParts {
@@ -112,7 +113,6 @@ pub fn call_handler(
     let args = Args {
         arg0: RocRequest {
             ctx,
-            body: unsafe { abi::RocListWith::<u8, false>::from_slice(&parts.body, host) },
             headers: roc_kv_list(&parts.headers),
             method: roc_str(&parts.method),
             model: model.0,

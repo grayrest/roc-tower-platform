@@ -30,8 +30,6 @@ mod router;
 mod server;
 // The analysis shadow is ALWAYS rusqlite (turso has no authorizer); it
 // derives cache deps for whichever engine `cursor` is.
-// TODO(DC2): drop the allow once request attribution consumes the module.
-#[allow(dead_code)]
 mod shadow;
 mod types;
 

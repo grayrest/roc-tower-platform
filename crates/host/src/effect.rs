@@ -128,6 +128,15 @@ pub fn run_effects(
                     action: read_action(&payload._0),
                     err_handler: payload._1,
                 };
+                // D12: a Must DbWrite/HttpSend is incompatible with a cache
+                // hit that skips the handler ("must run" would silently stop
+                // firing), and a Must DbWrite would store this response's own
+                // pre-write read — poison. Must Log stays neutral; Opt
+                // effects never poison (best-effort contract; their writes
+                // are covered by the write-set purge below).
+                if matches!(item.action, Action::Db { .. } | Action::Http { .. }) {
+                    crate::effects::poison_current_ctx();
+                }
                 if matches!(item.action, Action::Db { .. }) {
                     db_musts.push(item);
                 } else {

@@ -55,7 +55,7 @@ Users := [].{
     ## handler).
     registration! = |req| {
         body : { user : Users.Registration }
-        body = Req.json_body(req) ? |_| Api.error(422, "invalid registration body")
+        body = Req.json_body!(req) ? |_| Api.error(422, "invalid registration body")
         Ok({
             username: Api.nonblank("username", body.user.username)?,
             email: Api.nonblank("email", body.user.email)?,
@@ -104,7 +104,7 @@ Users := [].{
     ## email or password is 401 credentials/invalid, without leaking which.
     credentials! = |req| {
         body : { user : Users.Credentials }
-        body = Req.json_body(req) ? |_| Api.error(422, "invalid login body")
+        body = Req.json_body!(req) ? |_| Api.error(422, "invalid login body")
         email = Api.nonblank("email", body.user.email)?
         password = Api.nonblank("password", body.user.password)?
         rows = Sql.query!(
@@ -150,7 +150,7 @@ Users := [].{
     ## NULL to keep (COALESCE).
     user_patch! = |req| {
         body : { user : Users.UserPatch }
-        body = Req.json_body(req) ? |_| Api.error(422, "invalid update body")
+        body = Req.json_body!(req) ? |_| Api.error(422, "invalid update body")
         Ok({
             email: Api.nonblank_opt("email", body.user.email)?,
             username: Api.nonblank_opt("username", body.user.username)?,

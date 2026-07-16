@@ -171,6 +171,11 @@ impl RouterInner {
             }
         };
 
+        // D13: the Cookie header is host-mediated — parse it for the cookie
+        // coeffect and STRIP it from the Roc-visible header list, so a handler
+        // cannot read cookies invisibly to the response cache's variant key.
+        // D14: same for the body — it rides the ctx registry, not the record.
+        let cookies = Self::parse_cookies(&parts.headers);
         let request_parts = RequestParts {
             method: parts.method.as_str().to_owned(),
             path: parts.uri.path().to_owned(),
@@ -179,6 +184,7 @@ impl RouterInner {
             headers: parts
                 .headers
                 .iter()
+                .filter(|(name, _)| *name != http::header::COOKIE)
                 .map(|(name, value)| {
                     (
                         name.as_str().to_owned(),
@@ -186,7 +192,6 @@ impl RouterInner {
                     )
                 })
                 .collect(),
-            body: collected,
         };
 
         let model = self.model;
@@ -208,10 +213,14 @@ impl RouterInner {
         // documents this), so a scope guard here is unreliable — catch_unwind,
         // clear the slot on every path, then resume the unwind.
         let arena = crate::arena::RequestArena::new();
-        let ctx_guard = crate::effects::mint_ctx(arena.clone());
+        let ctx_guard = crate::effects::mint_ctx(arena.clone(), collected, cookies);
         let ctx = ctx_guard.id();
         let join = tokio::task::spawn_blocking(move || {
             crate::arena::install(arena);
+            // Current-ctx for hosted fns that take no ctx argument (poison).
+            // Explicit install/clear like the arena: a panic unwinding out of
+            // a hosted fn skips intervening drops, so no RAII guard.
+            crate::effects::install_current_ctx(ctx);
             let handler_start = crate::profile::now();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 call_handler(handler, model, request_parts, ctx)
@@ -219,9 +228,16 @@ impl RouterInner {
             if let Some(t) = handler_start {
                 crate::profile::record_handler(t.elapsed().as_nanos() as u64);
             }
+            crate::effects::clear_current_ctx();
             crate::arena::uninstall();
             match result {
-                Ok(out) => out,
+                Ok((out, deferred)) => {
+                    // Take the cache attribution HERE, on the handler thread:
+                    // the reaper below drops the ctx entry before the oneshot
+                    // resolves, so reading it router-side would always miss (R9).
+                    let cache_deps = crate::effects::take_cache_attribution(ctx);
+                    (out, deferred, cache_deps)
+                }
                 Err(payload) => std::panic::resume_unwind(payload),
             }
         });
@@ -231,7 +247,8 @@ impl RouterInner {
             drop(ctx_guard);
             let _ = tx.send(outcome);
         });
-        let (roc_response, deferred) = rx.await.map_err(|_| "handler reaper vanished")??;
+        let (roc_response, deferred, cache_deps) =
+            rx.await.map_err(|_| "handler reaper vanished")??;
 
         let status = StatusCode::from_u16(roc_response.status).unwrap_or_else(|_| {
             tracing::error!("Roc handler returned invalid status {}", roc_response.status);
@@ -251,6 +268,12 @@ impl RouterInner {
             }
         }
 
+        // Hand the request's cache attribution to the cache middleware as a
+        // response extension (consumed by `maybe_store`).
+        if let Some(deps) = cache_deps {
+            response.extensions_mut().insert(deps);
+        }
+
         // Fire-and-forget `Opt` effects (B3): run them detached on the blocking
         // pool, concurrent with hyper writing this response's body, so they add
         // no latency to the client. Failures are logged inside `run`; the
@@ -263,6 +286,26 @@ impl RouterInner {
             crate::profile::record_dispatch(t.elapsed().as_nanos() as u64);
         }
         Ok(response)
+    }
+
+    fn parse_cookies(headers: &http::HeaderMap) -> Vec<(String, String)> {
+        let mut cookies = Vec::new();
+        for value in headers.get_all(http::header::COOKIE) {
+            let Ok(text) = value.to_str() else { continue };
+            for pair in text.split(';') {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                match pair.split_once('=') {
+                    Some((name, value)) => {
+                        cookies.push((name.trim().to_owned(), value.trim().to_owned()));
+                    }
+                    None => cookies.push((pair.to_owned(), String::new())),
+                }
+            }
+        }
+        cookies
     }
 
     async fn serve_file(

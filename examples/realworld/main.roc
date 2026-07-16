@@ -130,7 +130,7 @@ ddl_trg_tag_delete =
 
 init! : () => Try(Model, Str)
 init! = || {
-    exec! = |sql| match Sql.migrate!(0, Db.db_path, sql, []) {
+    exec! = |sql| match Sql.migrate!(Db.db_path, sql, []) {
         Ok(_) => Ok({})
         Err(message) => Err("schema: ${message}")
     }

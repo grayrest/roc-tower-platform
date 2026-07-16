@@ -53,12 +53,37 @@ impl Cols {
 
     /// Does a write of `self` columns touch a read of `other` columns?
     /// `All` on either side always intersects.
+    // TODO(DC3): drop the allow once purge_write consumes it.
+    #[allow(dead_code)]
     pub fn intersects(&self, other: &Cols) -> bool {
         match (self, other) {
             (Cols::All, _) | (_, Cols::All) => true,
             (Cols::Named(a), Cols::Named(b)) => a.iter().any(|c| b.contains(c)),
         }
     }
+
+    /// Union `other` into self (MAY-analysis: widening only).
+    pub fn union(&mut self, other: &Cols) {
+        match (&mut *self, other) {
+            (Cols::All, _) => {}
+            (_, Cols::All) => *self = Cols::All,
+            (Cols::Named(mine), Cols::Named(theirs)) => {
+                mine.extend(theirs.iter().cloned());
+            }
+        }
+    }
+}
+
+/// Keyword gate for schema MIRRORING only (analysis-side DDL detection uses
+/// the authorizer). A mid-request `migrate!` runs under ctx 0; without this
+/// gate its DML would replay into the shadow, growing it with data rows. A
+/// missed exotic DDL shape degrades safely: the shadow lacks the schema, the
+/// derivation fails, the read is uncacheable (fail closed).
+pub fn looks_like_ddl(sql: &str) -> bool {
+    let head = sql.trim_start();
+    ["CREATE", "ALTER", "DROP"]
+        .iter()
+        .any(|kw| head.len() >= kw.len() && head[..kw.len()].eq_ignore_ascii_case(kw))
 }
 
 /// Everything the authorizer reported about one SQL text, interpreted.

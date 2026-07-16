@@ -13,7 +13,7 @@ import Db
 ## the small coeffects it needs with `withN` — slots run left to right, so
 ## 401 (viewer) precedes 404 (load) precedes 422 (body validation).
 Articles := [].{
-    ## A new article as POSTed. Validation lives in the `new_article`
+    ## A new article as POSTed. Validation lives in the `new_article!`
     ## coeffect; the handler sees this shape with fields already checked.
     NewArticle : {
         title : Str,
@@ -107,9 +107,9 @@ Articles := [].{
         })
 
     ## Coeffect: the decoded, validated POST body. Pure.
-    new_article = |req| {
+    new_article! = |req| {
         body : { article : Articles.NewArticle }
-        body = Req.json_body(req) ? |_| Api.error(422, "invalid article body")
+        body = Req.json_body!(req) ? |_| Api.error(422, "invalid article body")
         Ok({
             title: Api.nonblank("title", body.article.title)?,
             description: Api.nonblank("description", body.article.description)?,
@@ -120,9 +120,9 @@ Articles := [].{
 
     ## Coeffect: the decoded PUT patch, present fields validated non-blank.
     ## Pure.
-    article_patch = |req| {
+    article_patch! = |req| {
         body : { article : Articles.ArticlePatch }
-        body = Req.json_body(req) ? |_| Api.error(422, "invalid article body")
+        body = Req.json_body!(req) ? |_| Api.error(422, "invalid article body")
         Ok({
             title: Api.nonblank_opt("title", body.article.title)?,
             description: Api.nonblank_opt("description", body.article.description)?,
@@ -132,7 +132,7 @@ Articles := [].{
     }
 
     ## `create` bound to its coeffects, boxed for the route table.
-    create_h! = Box.box(Cofx.with4(Auth.current_user!, Articles.new_article, Req.reserved_id!, Req.now!, Articles.create))
+    create_h! = Box.box(Cofx.with4(Auth.current_user!, Articles.new_article!, Req.reserved_id!, Req.now!, Articles.create))
 
     ## PURE handler: INSERT the article and its tags in ONE transaction
     ## (any failure rolls the whole group back), answer the article as the
@@ -192,7 +192,7 @@ Articles := [].{
     get = |loaded| Res.cacheable(Res.json(200, { article: loaded.article }), Db.article_read_tables)
 
     ## `update` bound to its coeffects (owner gate, patch, instant).
-    update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch, Req.now!, Articles.update))
+    update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch!, Req.now!, Articles.update))
 
     ## PURE handler: merge the patch, re-slug when the title changed (the
     ## id keeps it unique), UPDATE row and tags in one Must group, answer

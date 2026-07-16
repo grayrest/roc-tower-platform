@@ -280,7 +280,7 @@ mod tests {
         let (list, _) = arena_body(32 * 1024);
         let body = unsafe { ResponseBody::from_roc(list, arena.clone()) };
         assert!(matches!(body, ResponseBody::Roc(_)), "test needs the borrow path");
-        let ctx = crate::effects::mint_ctx(arena.clone());
+        let ctx = crate::effects::mint_ctx(arena.clone(), bytes::Bytes::new(), Vec::new());
         crate::arena::uninstall();
 
         // Drop the dispatch-local reference; now only the ctx guard and the body

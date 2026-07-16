@@ -87,6 +87,21 @@ Host := [].{
     ## write, so the read/write split stays clean.
     next_id! : Str => I64
 
+    ## The raw request body bytes for the request ctx. The body is NOT a
+    ## field of the request record: extraction is host-mediated so the
+    ## response cache knows which routes vary on the body — an extracting
+    ## route gains a body-hash variant dimension; a non-extracting route
+    ## caches regardless of what a client sent (decision log D14). ctx 0
+    ## (init time) has no body: returns empty.
+    request_body! : U64 => List(U8)
+
+    ## The named request cookie's value for the request ctx (RFC 6265
+    ## request-cookie parsing; first match wins). The Cookie header is
+    ## STRIPPED from the request record's header list: cookie access is
+    ## host-mediated so cached responses can vary on exactly the cookie
+    ## names a route reads (decision log D13).
+    cookie! : U64, Str => Try(Str, [NoCookie])
+
     ## A non-idempotent in-memory counter used by the coeffect layer's tests: each
     ## call increments a process-global counter and returns the new value. Kept
     ## distinct from `next_id!` (which is persistent + per-database) so the memo

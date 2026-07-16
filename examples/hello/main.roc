@@ -15,7 +15,6 @@ Request : {
     params : List({ name : Str, value : Str }),
     query : Str,
     headers : List({ name : Str, value : Str }),
-    body : List(U8),
     model : Box(Model),
 }
 
@@ -52,7 +51,7 @@ main = |{}| {
 init! : () => Try(Model, Str)
 init! = || {
     Host.log!("initializing hello app")
-    _ = Sql.migrate!(0, db_path, "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", [])
+    _ = Sql.migrate!(db_path, "CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY AUTOINCREMENT, at_ms INTEGER)", [])
     greeting = match Host.env_var!("GREETING") {
         Ok(value) => value
         Err(_) => "Hello"
@@ -73,11 +72,11 @@ user_h! = Box.box(Cofx.with1(Req.param("id"), user))
 user : Str -> Response
 user = |id| Res.text(200, "user ${id}")
 
-echo_h! = Box.box(Cofx.with1(Req.body, echo))
+echo_h! = Box.box(Cofx.with1(Req.body!, echo))
 echo : List(U8) -> Response
 echo = |bytes| Res.bytes(200, "application/octet-stream", bytes)
 
-greet_h! = Box.box(Cofx.with2(Req.json_body, Req.model, greet))
+greet_h! = Box.box(Cofx.with2(Req.json_body!, Req.model, greet))
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
 greet : { name : Str }, Model -> Response
 greet = |body, model|
@@ -115,7 +114,7 @@ proxy! = |_req| {
 ## Read-modify-read is naturally imperative — a good escape-hatch case.
 db! : Request => Response
 db! = |req| {
-    _ = Sql.migrate!(req.ctx, db_path, "INSERT INTO visits (at_ms) VALUES (?)", [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())])
+    _ = Sql.migrate!(db_path, "INSERT INTO visits (at_ms) VALUES (?)", [Host.SqlValue.Integer(Host.now_ms!().to_i64_wrap())])
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM visits", []) {
         Ok(rows) => {
             count = match Sql.first(rows) {

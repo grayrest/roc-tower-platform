@@ -27,26 +27,27 @@ Req := [].{
         Ok(entry.value)
     }
 
-    ## The request body as UTF-8 text.
-    body_str : { body : List(U8), .. } -> Try(Str, [InvalidUtf8])
-    body_str = |req| {
-        text = Str.from_utf8(req.body) ? |_| InvalidUtf8
+    ## Body bytes as UTF-8 text. (The body is not a request-record field —
+    ## get the bytes from the `body!` coeffect / `Host.request_body!`.)
+    body_str : List(U8) -> Try(Str, [InvalidUtf8])
+    body_str = |bytes| {
+        text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         Ok(text)
     }
 
-    ## Decode the request body as JSON into any parseable type. The
-    ## `InvalidJson` error carries the parse error (bare-tag `?` applies the
-    ## mapping tag WITH the original error as its payload).
-    json = |req| {
-        text = Str.from_utf8(req.body) ? |_| InvalidUtf8
+    ## Decode body bytes as JSON into any parseable type. The `InvalidJson`
+    ## error carries the parse error (bare-tag `?` applies the mapping tag
+    ## WITH the original error as its payload).
+    json = |bytes| {
+        text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         value = Json.parse(text) ? InvalidJson
         Ok(value)
     }
 
-    ## Parse an application/x-www-form-urlencoded body.
-    form : { body : List(U8), .. } -> Try(List({ name : Str, value : Str }), [InvalidUtf8])
-    form = |req| {
-        text = Str.from_utf8(req.body) ? |_| InvalidUtf8
+    ## Parse application/x-www-form-urlencoded body bytes.
+    form : List(U8) -> Try(List({ name : Str, value : Str }), [InvalidUtf8])
+    form = |bytes| {
+        text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         Ok(parse_pairs(text))
     }
 
@@ -69,26 +70,28 @@ Req := [].{
     ## and several slots in one request share ONE reservation. Pure resolvers
     ## are unmarked; effectful ones carry the compiler-enforced `!`.
 
-    ## The raw request body bytes. Never rejects.
-    body = |req| Ok(req.body)
+    ## The raw request body bytes, fetched from the host (the body is not a
+    ## request-record field — extraction is what tells the response cache
+    ## this route varies on the body, decision log D14). Never rejects.
+    body! = |req| Ok(Host.request_body!(req.ctx))
 
     ## The request body as UTF-8 text. Rejects with 400 on invalid UTF-8.
-    text_body = |req| {
-        text = Req.body_str(req) ? |_| reject(400, "request body is not valid UTF-8")
+    text_body! = |req| {
+        text = Req.body_str(Host.request_body!(req.ctx)) ? |_| reject(400, "request body is not valid UTF-8")
         Ok(text)
     }
 
     ## The request body decoded as JSON into the handler argument's type.
     ## Rejects with 400 when the body is not valid JSON for that shape.
-    json_body = |req| {
-        decoded = Req.json(req) ? |_| reject(400, "request body is not valid JSON for the expected shape")
+    json_body! = |req| {
+        decoded = Req.json(Host.request_body!(req.ctx)) ? |_| reject(400, "request body is not valid JSON for the expected shape")
         Ok(decoded)
     }
 
     ## The request body parsed as application/x-www-form-urlencoded pairs.
     ## Rejects with 400 on invalid UTF-8.
-    form_body = |req| {
-        fields = Req.form(req) ? |_| reject(400, "request body is not a valid urlencoded form")
+    form_body! = |req| {
+        fields = Req.form(Host.request_body!(req.ctx)) ? |_| reject(400, "request body is not a valid urlencoded form")
         Ok(fields)
     }
 
@@ -129,6 +132,15 @@ Req := [].{
     query_or = |name, default| |req| match Req.get_query(req, name) {
         Ok(value) => Ok(value)
         Err(_) => Ok(default)
+    }
+
+    ## Coeffect factory: the named request cookie. Rejects with 400 on a
+    ## miss. The Cookie header is STRIPPED from `req.headers`; cookie access
+    ## goes through the host so cached responses vary on exactly the cookie
+    ## names a route reads (decision log D13).
+    cookie = |name| |req| match Host.cookie!(req.ctx, name) {
+        Ok(value) => Ok(value)
+        Err(_) => Err(reject(400, "missing cookie ${name}"))
     }
 
     ## The request's timestamp in milliseconds since the Unix epoch, memoized
@@ -295,43 +307,36 @@ expect percent_decode("%zz") == "%zz"
 
 expect percent_decode("%2F%2f") == "//"
 
-expect Req.body_str({ body: [104, 105] }) == Ok("hi")
+## body_str decodes UTF-8 body bytes
+expect Req.body_str([104, 105]) == Ok("hi")
 
-expect Req.body_str({ body: [255, 254] }) == Err(InvalidUtf8)
+## body_str reports InvalidUtf8 on bad bytes
+expect Req.body_str([255, 254]) == Err(InvalidUtf8)
 
-expect Req.form({ body: "a=1&b=%2B".to_utf8() }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "+" }])
+## form parses urlencoded body bytes with percent-decoding
+expect Req.form("a=1&b=%2B".to_utf8()) == Ok([{ name: "a", value: "1" }, { name: "b", value: "+" }])
 
+## json decodes body bytes into the target shape
 expect {
     decoded : Try({ id : U64 }, _)
-    decoded = Req.json({ body: "{\"id\":7}".to_utf8() })
+    decoded = Req.json("{\"id\":7}".to_utf8())
     decoded == Ok({ id: 7 })
+}
+
+## json rejects bytes that are not JSON for the shape
+expect {
+    decoded : Try({ id : U64 }, _)
+    decoded = Req.json("nope".to_utf8())
+    decoded != Ok({ id: 7 })
 }
 
 # --- coeffect resolvers ---
 #
-# The built-ins are pure projections, so they are directly testable here.
-# `reserved_id!` memoizes through the effectful `Cofx.get!` (which `expect`
-# rejects); its run-once semantics are covered end to end by the e2e suite.
-
-expect Req.body({ body: [104, 105] }) == Ok([104, 105])
-
-expect Req.text_body({ body: [104, 105] }) == Ok("hi")
-
-expect Req.text_body({ body: [255, 254] }) == Err(reject(400, "request body is not valid UTF-8"))
-
-expect {
-    decoded : Try({ id : U64 }, _)
-    decoded = Req.json_body({ body: "{\"id\":7}".to_utf8() })
-    decoded == Ok({ id: 7 })
-}
-
-expect {
-    decoded : Try({ id : U64 }, _)
-    decoded = Req.json_body({ body: "nope".to_utf8() })
-    decoded == Err(reject(400, "request body is not valid JSON for the expected shape"))
-}
-
-expect Req.form_body({ body: "a=1&b=x+y".to_utf8() }) == Ok([{ name: "a", value: "1" }, { name: "b", value: "x y" }])
+# The pure built-ins are directly testable here. The body coeffects
+# (`body!`/`text_body!`/`json_body!`/`form_body!`) and `cookie` resolve
+# through effectful host calls (which `expect` rejects); their pure decode
+# cores are the `body_str`/`json`/`form` expects above, and the end-to-end
+# behavior is covered by the e2e suite.
 
 expect Req.headers({ headers: [{ name: "X-Custom", value: "abc" }] }) == Ok([{ name: "X-Custom", value: "abc" }])
 

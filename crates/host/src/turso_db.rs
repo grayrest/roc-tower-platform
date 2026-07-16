@@ -264,6 +264,23 @@ pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBegi
         args.sql.decref(host);
     }
 
+    // Response-cache attribution — identical to the rusqlite backend: the
+    // analysis shadow is ALWAYS rusqlite (turso has no authorizer), so
+    // derivation works the same regardless of the live engine.
+    if ctx == 0 {
+        if crate::shadow::looks_like_ddl(&sql) {
+            crate::shadow::mirror_schema(&db, &sql);
+        }
+    } else if crate::cache::global().is_some() {
+        match crate::shadow::analyze(&db, &sql) {
+            Ok(analysis) => crate::effects::record_read(ctx, &analysis),
+            Err(err) => {
+                tracing::debug!(%err, sql, "sql_begin: underivable read; response uncacheable");
+                crate::effects::poison_ctx(ctx);
+            }
+        }
+    }
+
     let pooled = match checkout(&db) {
         Ok(pooled) => pooled,
         Err(message) => return begin_err(&message),

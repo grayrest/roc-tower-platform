@@ -7,7 +7,7 @@
 
 use crate::abi;
 
-pub type RocRequest = abi::AnonStructAbbb89a8d6948757;
+pub type RocRequest = abi::AnonStruct99a9039501750314;
 /// Handler return record: `{ status, headers, body, effects }` (4-field, the
 /// Phase 3 effectful response). Changed from the old 3-field response hash.
 pub type RocResponse = abi::AnonStructC56ced036812b588;

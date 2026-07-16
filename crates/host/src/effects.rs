@@ -113,6 +113,7 @@ pub extern "C" fn roc_env_var(arg0: abi::RocStr) -> abi::HostEnvVarResult {
 /// `catch_unwind` → 500) rather than hand back a colliding id.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_next_id(db: abi::RocStr) -> i64 {
+    poison_current_ctx();
     let db = db.as_str();
     crate::cursor::reserve_next_id(db)
         .unwrap_or_else(|err| panic!("next_id!({db:?}): {err}"))
@@ -121,6 +122,7 @@ pub extern "C-unwind" fn roc_next_id(db: abi::RocStr) -> i64 {
 /// `Host.now_ms! : () => U64`
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_now_ms() -> u64 {
+    poison_current_ctx();
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
@@ -130,6 +132,7 @@ pub extern "C" fn roc_now_ms() -> u64 {
 /// `Host.random_bytes! : U64 => List(U8)`
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_random_bytes(count: u64) -> abi::RocListWith<u8, false> {
+    poison_current_ctx();
     let count = count.min(MAX_RANDOM_BYTES) as usize;
     let mut buffer = vec![0u8; count];
     if let Err(err) = getrandom::fill(&mut buffer) {
@@ -145,6 +148,7 @@ pub extern "C" fn roc_random_bytes(count: u64) -> abi::RocListWith<u8, false> {
 /// `password_verify` can never match.
 #[unsafe(no_mangle)]
 pub extern "C" fn password_hash(arg0: abi::RocStr) -> abi::RocStr {
+    poison_current_ctx();
     use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
 
     let password = arg0.as_slice().to_vec();
@@ -186,6 +190,7 @@ pub extern "C" fn password_verify(arg0: abi::RocStr, arg1: abi::RocStr) -> bool 
 /// `Host.http_send!` — send an HTTP request, driven on the server's runtime.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_http_send(args: abi::HostHttpSendArgs) -> abi::HostHttpSendResult {
+    poison_current_ctx();
     let host = roc_host();
     let method = String::from_utf8_lossy(args.method.as_slice()).into_owned();
     let url = String::from_utf8_lossy(args.url.as_slice()).into_owned();
@@ -382,6 +387,134 @@ struct RequestState {
     /// key -> raw erased-callable payload pointer. The store holds exactly
     /// one reference to each thunk (the one transferred by `memo_put!`).
     memo: HashMap<String, usize>,
+    /// The raw request body. NOT a request-record field: Roc extracts it via
+    /// `Host.request_body!`, which is what tells the cache this route varies
+    /// on the body (D14). `Bytes` clone is a refcount bump.
+    body: bytes::Bytes,
+    /// Parsed request cookies, in header order. The Cookie header is stripped
+    /// from the Roc-visible header list; `Host.cookie!` serves reads from
+    /// here and records each name (D13).
+    cookies: Vec<(String, String)>,
+    /// What this request contributes to the response cache.
+    attribution: CacheAttribution,
+}
+
+#[derive(Default)]
+struct CacheAttribution {
+    /// Derived (table -> columns-read) union across the request's statements.
+    deps: HashMap<Box<str>, crate::shadow::Cols>,
+    /// Cookie NAMES read, in first-read order (variant dimension).
+    cookies_read: Vec<String>,
+    /// The route extracted the body (variant dimension).
+    body_read: bool,
+    /// Uncacheable: nondeterministic host call, Must DbWrite/HttpSend,
+    /// underivable statement, or read-path DML.
+    poisoned: bool,
+}
+
+thread_local! {
+    /// The ctx whose handler is running on THIS blocking-pool thread. Hosted
+    /// fns that take no ctx argument (`now_ms!`, `random_bytes!`, …) use it
+    /// to poison their request's cacheability. Explicit install/clear, NOT an
+    /// RAII guard: a panic unwinding out of a hosted fn skips Rust drops in
+    /// intervening frames (router.rs documents this), so the router clears it
+    /// unconditionally after `catch_unwind`.
+    static CURRENT_CTX: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+pub fn install_current_ctx(id: u64) {
+    CURRENT_CTX.with(|cell| cell.set(id));
+}
+
+pub fn clear_current_ctx() {
+    CURRENT_CTX.with(|cell| cell.set(0));
+}
+
+/// Mark the current thread's request uncacheable. Cheap no-op when no
+/// response cache is installed or off a request thread (ctx 0).
+pub(crate) fn poison_current_ctx() {
+    if crate::cache::global().is_none() {
+        return;
+    }
+    let ctx = CURRENT_CTX.with(|cell| cell.get());
+    if ctx != 0 {
+        poison_ctx(ctx);
+    }
+}
+
+/// Mark `ctx`'s response uncacheable.
+pub(crate) fn poison_ctx(ctx: u64) {
+    let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+    if let Some(state) = registry.get_mut(&ctx) {
+        state.attribution.poisoned = true;
+    }
+}
+
+/// Union a statement's derived read set into the request's dep set (called
+/// by `sql_begin` when the response cache is enabled). Fail-closed flags
+/// poison. Observed WRITES — a "read" statement that mutates, escaping the
+/// effect choke point — poison AND purge immediately (R2), so existing
+/// entries on those tables can't go silently stale.
+pub(crate) fn record_read(ctx: u64, analysis: &crate::shadow::SqlAnalysis) {
+    {
+        let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+        let Some(state) = registry.get_mut(&ctx) else {
+            return;
+        };
+        let attribution = &mut state.attribution;
+        if analysis.opaque
+            || analysis.schema_change
+            || analysis.nondeterministic
+            || !analysis.writes.is_empty()
+        {
+            attribution.poisoned = true;
+        }
+        for (table, cols) in &analysis.reads {
+            attribution
+                .deps
+                .entry(table.clone())
+                .and_modify(|existing| existing.union(cols))
+                .or_insert_with(|| cols.clone());
+        }
+    }
+    for table in analysis.writes.keys() {
+        crate::cache::purge_table_global(table);
+    }
+}
+
+/// Move the request's cache attribution out of the registry — MUST run on
+/// the handler thread right after `call_handler` returns (the reaper drops
+/// the ctx entry before the router's oneshot resolves — R9). Returns `None`
+/// when no response cache is installed.
+pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps> {
+    crate::cache::global()?;
+    let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+    let state = registry.get_mut(&ctx)?;
+    let attribution = std::mem::take(&mut state.attribution);
+    let body_hash = attribution.body_read.then(|| {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        state.body.as_ref().hash(&mut hasher);
+        hasher.finish()
+    });
+    let cookies = attribution
+        .cookies_read
+        .into_iter()
+        .map(|name| {
+            let value = state
+                .cookies
+                .iter()
+                .find(|(candidate, _)| *candidate == name)
+                .map(|(_, value)| value.clone());
+            (name, value)
+        })
+        .collect();
+    Some(crate::cache::CacheDeps {
+        deps: attribution.deps.into_iter().collect(),
+        cacheable: !attribution.poisoned,
+        cookies,
+        body_hash,
+    })
 }
 
 /// Release one store-held thunk reference.
@@ -440,33 +573,112 @@ impl Drop for CtxGuard {
     }
 }
 
-/// Mint a fresh ctx id and insert its (empty) request store. The guard takes a
-/// reference to the request's arena so memo captures allocated in it outlive
-/// the memo teardown.
-pub fn mint_ctx(arena: Arc<crate::arena::RequestArena>) -> CtxGuard {
+/// Mint a fresh ctx id and insert its request store, carrying the request
+/// body and parsed cookies for the host-mediated coeffects. The guard takes
+/// a reference to the request's arena so memo captures allocated in it
+/// outlive the memo teardown.
+pub fn mint_ctx(
+    arena: Arc<crate::arena::RequestArena>,
+    body: bytes::Bytes,
+    cookies: Vec<(String, String)>,
+) -> CtxGuard {
     let id = NEXT_CTX.fetch_add(1, Ordering::SeqCst);
-    ctx_registry()
-        .lock()
-        .expect("ctx registry poisoned")
-        .insert(id, RequestState::default());
+    ctx_registry().lock().expect("ctx registry poisoned").insert(
+        id,
+        RequestState {
+            body,
+            cookies,
+            ..RequestState::default()
+        },
+    );
     CtxGuard { id, arena }
+}
+
+/// `Host.request_body! : U64 => List(U8)` — the raw request body bytes.
+/// Extraction is recorded: the route's cached responses gain a body-hash
+/// variant dimension (D14). ctx 0 (init) has no body: empty.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_request_body(ctx: u64) -> abi::RocListWith<u8, false> {
+    let body = {
+        let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+        match registry.get_mut(&ctx) {
+            Some(state) => {
+                state.attribution.body_read = true;
+                state.body.clone()
+            }
+            None => {
+                if ctx != 0 {
+                    tracing::error!("request_body!({ctx}): no registry entry for ctx");
+                }
+                bytes::Bytes::new()
+            }
+        }
+    };
+    unsafe { abi::RocListWith::<u8, false>::from_slice(&body, roc_host()) }
+}
+
+/// `Host.cookie! : U64, Str => Try(Str, [NoCookie])` — the named request
+/// cookie (first match wins). Each read is recorded by NAME so cached
+/// responses vary on exactly the cookies the route reads (D13).
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_cookie(ctx: u64, name: abi::RocStr) -> abi::HostCookieResult {
+    let host = roc_host();
+    let wanted = String::from_utf8_lossy(name.as_slice()).into_owned();
+    unsafe { name.decref(host) };
+
+    let found = {
+        let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+        match registry.get_mut(&ctx) {
+            Some(state) => {
+                if !state.attribution.cookies_read.contains(&wanted) {
+                    state.attribution.cookies_read.push(wanted.clone());
+                }
+                state
+                    .cookies
+                    .iter()
+                    .find(|(candidate, _)| *candidate == wanted)
+                    .map(|(_, value)| value.clone())
+            }
+            None => {
+                if ctx != 0 {
+                    tracing::error!("cookie!({ctx}, {wanted:?}): no registry entry for ctx");
+                }
+                None
+            }
+        }
+    };
+    match found {
+        Some(value) => abi::HostCookieResult {
+            tag: abi::HostCookieResultTag::Ok,
+            payload: abi::HostCookieResultPayload {
+                ok: ManuallyDrop::new(roc_str(&value)),
+            },
+        },
+        None => abi::HostCookieResult {
+            tag: abi::HostCookieResultTag::Err,
+            payload: abi::HostCookieResultPayload { err: [] },
+        },
+    }
 }
 
 /// `Host.reserve_id! : () => U64` — the non-idempotent injector effect.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_reserve_id() -> u64 {
+    poison_current_ctx();
     RESERVE_RUNS.fetch_add(1, Ordering::SeqCst) + 1
 }
 
 /// `Host.reserve_runs! : () => U64` — how many times `reserve_id!` has run.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_reserve_runs() -> u64 {
+    poison_current_ctx();
     RESERVE_RUNS.load(Ordering::SeqCst)
 }
 
 /// `Host.ctx_registry_size! : () => U64` — live request stores (debug).
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_ctx_registry_size() -> u64 {
+    poison_current_ctx();
     ctx_registry().lock().expect("ctx registry poisoned").len() as u64
 }
 
@@ -561,5 +773,6 @@ pub extern "C" fn roc_memo_put(ctx: u64, key: abi::RocStr, boxed: abi::RocErased
 /// teardown-balance assertions.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_memo_live_boxes() -> u64 {
+    poison_current_ctx();
     LIVE_MEMO_BOXES.load(Ordering::SeqCst)
 }

@@ -989,13 +989,12 @@ const _: () = assert!(core::mem::size_of::<AnonStruct5c679ee432c3d89b>() == 28, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct5c679ee432c3d89b>() == 4, "AnonStruct5c679ee432c3d89b alignment mismatch");
 
-/// Element type for __AnonStruct_abbb89a8d6948757
+/// Element type for __AnonStruct_99a9039501750314
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStructAbbb89a8d6948757 {
+pub struct AnonStruct99a9039501750314 {
     pub ctx: u64,
-    pub body: RocListWith<u8, false>,
     pub headers: RocList<AnonStruct82a96c5d55d63488>,
     pub method: RocStr,
     pub model: RocBox,
@@ -1004,13 +1003,12 @@ pub struct AnonStructAbbb89a8d6948757 {
     pub query: RocStr,
 }
 
-/// Element type for __AnonStruct_abbb89a8d6948757
+/// Element type for __AnonStruct_99a9039501750314
 #[cfg(not(target_pointer_width = "32"))]
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct AnonStructAbbb89a8d6948757 {
+pub struct AnonStruct99a9039501750314 {
     pub ctx: u64,
-    pub body: RocListWith<u8, false>,
     pub headers: RocList<AnonStruct82a96c5d55d63488>,
     pub method: RocStr,
     pub model: RocBox,
@@ -1020,13 +1018,13 @@ pub struct AnonStructAbbb89a8d6948757 {
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::size_of::<AnonStructAbbb89a8d6948757>() == 160, "AnonStructAbbb89a8d6948757 size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStruct99a9039501750314>() == 136, "AnonStruct99a9039501750314 size mismatch");
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(core::mem::align_of::<AnonStructAbbb89a8d6948757>() == 8, "AnonStructAbbb89a8d6948757 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStruct99a9039501750314>() == 8, "AnonStruct99a9039501750314 alignment mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::size_of::<AnonStructAbbb89a8d6948757>() == 88, "AnonStructAbbb89a8d6948757 size mismatch");
+const _: () = assert!(core::mem::size_of::<AnonStruct99a9039501750314>() == 72, "AnonStruct99a9039501750314 size mismatch");
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(core::mem::align_of::<AnonStructAbbb89a8d6948757>() == 8, "AnonStructAbbb89a8d6948757 alignment mismatch");
+const _: () = assert!(core::mem::align_of::<AnonStruct99a9039501750314>() == 8, "AnonStruct99a9039501750314 alignment mismatch");
 
 /// Element type for __AnonStruct_c56ced036812b588
 #[cfg(target_pointer_width = "32")]
@@ -1583,6 +1581,71 @@ const _: () = assert!(core::mem::align_of::<HostColType>() == 1, "HostColType al
 const _: () = assert!(core::mem::size_of::<HostColType>() == 1, "HostColType size mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<HostColType>() == 1, "HostColType alignment mismatch");
+
+/// Tag discriminant for Try.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCookieResultTag {
+    Err = 0,
+    Ok = 1,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub union HostCookieResultPayload {
+    pub err: [u8; 0],
+    pub ok: core::mem::ManuallyDrop<RocStr>,
+}
+
+#[cfg(target_pointer_width = "32")]
+#[repr(align(4))]
+#[derive(Clone, Copy)]
+pub struct HostCookieResultPayloadAlignment;
+
+/// Tag union: Try
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostCookieResult {
+    pub _payload_alignment: [HostCookieResultPayloadAlignment; 0],
+    pub payload: [u8; 12],
+    pub tag: HostCookieResultTag,
+}
+
+/// Tag union: Try
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostCookieResult {
+    pub payload: HostCookieResultPayload,
+    pub tag: HostCookieResultTag,
+}
+
+impl HostCookieResult {
+    #[cfg(target_pointer_width = "32")]
+    pub fn payload_ok(&self) -> RocStr {
+        unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    pub fn payload_ok(&self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    }
+
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<HostCookieResult>() == 32, "HostCookieResult size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<HostCookieResult>() == 8, "HostCookieResult alignment mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::offset_of!(HostCookieResult, tag) == 24, "HostCookieResult tag offset mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<HostCookieResult>() == 16, "HostCookieResult size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<HostCookieResult>() == 4, "HostCookieResult alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::offset_of!(HostCookieResult, tag) == 12, "HostCookieResult tag offset mismatch");
 
 /// Tag discriminant for Try.
 #[repr(u8)]
@@ -2153,6 +2216,16 @@ const _: () = assert!(core::mem::align_of::<InitForHostResult>() == 4, "InitForH
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(InitForHostResult, tag) == 12, "InitForHostResult tag offset mismatch");
 
+/// Arguments for Host.cookie!
+/// Roc signature: U64, Str => Try(Str, [NoCookie])
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostCookieArgs {
+    pub arg0: u64,
+    pub arg1: RocStr,
+}
+
 /// Arguments for Host.env_var!
 /// Roc signature: Str => Try(Str, [EnvVarNotFound])
 /// Refcounted fields are owned by the hosted function.
@@ -2263,6 +2336,15 @@ pub struct HostPasswordVerifyArgs {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HostRandomBytesArgs {
+    pub arg0: u64,
+}
+
+/// Arguments for Host.request_body!
+/// Roc signature: U64 => List(U8)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostRequestBodyArgs {
     pub arg0: u64,
 }
 
@@ -2739,6 +2821,41 @@ impl HostColType {
     }
 }
 
+impl HostCookieResult {
+    /// Recursively decrement Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted payload.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = roc_host;
+        match value.tag {
+            HostCookieResultTag::Err => {},
+            HostCookieResultTag::Ok => {
+                let payload = value.payload_ok();
+                unsafe { payload.decref(roc_host); }
+            },
+        }
+    }
+
+    /// Increment Roc-owned payloads.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = amount;
+        match value.tag {
+            HostCookieResultTag::Err => {},
+            HostCookieResultTag::Ok => {
+                let payload = value.payload_ok();
+                unsafe { payload.incref(amount); }
+            },
+        }
+    }
+}
+
 impl HostMemoGetResult {
     /// Recursively decrement Roc-owned payloads.
     ///
@@ -2840,14 +2957,13 @@ impl AnonStruct5c679ee432c3d89b {
     }
 }
 
-impl AnonStructAbbb89a8d6948757 {
+impl AnonStruct99a9039501750314 {
     /// Recursively decrement Roc-owned fields.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted field.
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
-        unsafe { value.body.decref(roc_host); }
         {
             let list = value.headers;
             if list.has_one_ref() {
@@ -2881,7 +2997,6 @@ impl AnonStructAbbb89a8d6948757 {
     /// be balanced by later decrefs.
     pub unsafe fn incref(self, amount: isize) {
         let value = self;
-        unsafe { value.body.incref(amount); }
         unsafe { value.headers.incref(amount); }
         unsafe { value.method.incref(amount); }
         unsafe { incref_box(value.model as RocBox, amount); }
@@ -3357,6 +3472,10 @@ unsafe extern "C" {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
+    /// Hosted symbol for Host.cookie!
+    /// Roc signature: U64, Str => Try(Str, [NoCookie])
+    pub fn roc_cookie(arg0: u64, arg1: RocStr) -> HostCookieResult;
+
     /// Hosted symbol for Host.ctx_registry_size!
     /// Roc signature: {} => U64
     pub fn roc_ctx_registry_size() -> u64;
@@ -3408,6 +3527,10 @@ unsafe extern "C" {
     /// Hosted symbol for Host.random_bytes!
     /// Roc signature: U64 => List(U8)
     pub fn roc_random_bytes(arg0: u64) -> RocListWith<u8, false>;
+
+    /// Hosted symbol for Host.request_body!
+    /// Roc signature: U64 => List(U8)
+    pub fn roc_request_body(arg0: u64) -> RocListWith<u8, false>;
 
     /// Hosted symbol for Host.reserve_id!
     /// Roc signature: {} => U64
