@@ -33,7 +33,15 @@ Decision log (the why, the review arc, all accepted trade-offs):
 >   request's values of exactly those). Routes reading no cookies cache fully
 >   even for cookie-laden browser traffic. `authorization` bypass stays.
 >   Phase impact: Req coeffect + header strip land in Phase 2; variant-capable
->   entries in Phase 3; variant lookup in Phase 4.
+>   entries in Phase 3; variant lookup in Phase 4. *Further amended by D14 (in
+>   scope):* the "never cache a non-empty-body request" clause is superseded —
+>   `body` is likewise stripped from the raw handler record and extracted only
+>   via `Req.body!`/`json_body!` coeffects; an extracting route gains a
+>   body-hash variant dimension (raw bytes, no canonicalization), a
+>   non-extracting route caches normally regardless of what the client sent.
+>   With the existing write-purge + Must-poison guards, `"POST"` in the
+>   methods config then gives sound automatic GraphQL/search read caching.
+>   Same phase placement as the cookie coeffect.
 > - **R2 — read-path writes purge, not just poison (×2):** `sql_begin` accepts
 >   DML; `ReadSet.wrote` making only *this* response uncacheable leaves every
 >   existing entry on that table silently stale. On `wrote`, feed the derived

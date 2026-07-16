@@ -205,6 +205,31 @@ this build:
   `authorization` bypass stays (raw headers remain visible for everything
   except `Cookie`).
 
+**D14 — Request body is a coeffect; it contributes to the key only when
+extracted (in scope).** Supersedes R1's "never cache non-empty-body requests"
+clause entirely. The body is pure request state, so *keying* on it is as
+sound as keying on the query string — but blanket hashing (or blanket
+exclusion) punishes routes that never look at the body for bytes a client
+happened to send. Instead, the body joins cookies as a self-reporting request
+coeffect on the D13 variant machinery:
+- `body` is **stripped from the raw handler record** (currently a plain
+  `body : List(U8)` field — invisible pure access); access is host-mediated
+  (`Req.body!`/`json_body!` resolve through the ctx), which is what makes
+  "didn't extract it" platform-known rather than convention.
+- An extracting read self-reports to the ctx; the entry's variant spec gains
+  a body dimension; lookup matches on the hash of the raw body bytes. No
+  canonicalization — `{"a":1,"b":2}` vs `{"b":2,"a":1}` fragment into two
+  entries, a miss cost with exact parity to the incumbent's raw query-string
+  keying, never staleness.
+- A route that never reads the body caches normally regardless of what the
+  client sent; a body-reading route fragments per distinct body. Combined
+  with the existing guards (a writing POST purges via its derived write set;
+  a Must-effectful POST poisons via D12), adding `"POST"` to the methods
+  config yields sound, automatically-invalidated **GraphQL/search read
+  caching** — the strongest single demo of caching-for-every-app, and
+  something blanket exclusion foreclosed.
+- `MaxBodyBytes` remains the size guard; an unread body is never hashed.
+
 ## Review-arc ledger
 
 | Round | Proposal | Verdict then | Standing now |
