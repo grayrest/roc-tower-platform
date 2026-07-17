@@ -96,6 +96,8 @@ platform ""
         "roc_sql_finish": Host.sql_finish!,
         "roc_next_id": Host.next_id!,
         "roc_request_body": Host.request_body!,
+        "roc_set_body_key": Host.set_body_key!,
+        "roc_hash_seed": Host.hash_seed!,
         "roc_cookie": Host.cookie!,
         "roc_reserve_id": Host.reserve_id!,
         "roc_reserve_runs": Host.reserve_runs!,

@@ -100,6 +100,15 @@ Req := [].{
             InvalidUtf8 => InvalidBody([InvalidJson("request body is not valid UTF-8")])
             InvalidJson(parse_err) => InvalidBody([parse_err])
         }
+        # Report the CANONICAL body key — the structural hash of the decoded
+        # value (derived `to_hash`, seeded per-process) — so the response
+        # cache keys this route's body variant on what the handler actually
+        # received: two raw spellings of one message (whitespace, key order,
+        # junk fields) share one cached entry instead of minting duplicates.
+        # Hashing goes through the BUILTIN `Hasher.hash_of` (like decoding
+        # goes through `Json.parse`): dispatching `to_hash` directly on the
+        # type variable here fails build-time lowering.
+        Host.set_body_key!(req.ctx, Hasher.hash_of(decoded, Host.hash_seed!()))
         Ok(decoded)
     }
 
@@ -429,3 +438,17 @@ expect {
 # which then fails to unify with the full request record in downstream apps
 # (compiler quirk, observed 2026-07-12). Composition over a factory is covered
 # by the realworld example's composed coeffects through the e2e gate.
+
+## the canonical-key idiom: derived to_hash over a record, seeded, finished
+expect {
+    seed : U64
+    seed = 7
+    { id: 1.I64, name: "x" }.to_hash(Hasher.new(seed)).finish() != seed
+}
+
+## equal decoded values produce equal canonical keys regardless of source spelling
+expect {
+    a = { id: 1.I64, title: "t" }.to_hash(Hasher.new(9)).finish()
+    b = { id: 1.I64, title: "t" }.to_hash(Hasher.new(9)).finish()
+    a == b
+}

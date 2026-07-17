@@ -162,6 +162,13 @@ pub struct CacheDeps {
     pub cookies: Vec<(String, Option<String>)>,
     /// Hash of the raw body bytes IF the route extracted the body (D14).
     pub body_hash: Option<u64>,
+    /// CANONICAL body key — the fold of the structural hashes of what the
+    /// route's typed decodes actually produced — present only when EVERY
+    /// body read was a typed decode. When set, the body variant keys on it
+    /// instead of `body_hash`, so raw spellings of one message share one
+    /// entry (the cache-DoS mitigation); `body_hash` then only feeds the
+    /// raw→canonical alias table lookups translate through.
+    pub body_key: Option<u64>,
 }
 
 struct Entry {
@@ -197,6 +204,12 @@ pub struct ResponseCache {
     ttl: Duration,
     max_entries: usize,
     inner: Mutex<Inner>,
+    /// raw-body-hash → canonical body key, so lookups (which run BEFORE any
+    /// decode exists) can translate an incoming raw hash to the canonical
+    /// variant stored entries key on. Bounded and cheap (u64 → u64): junk
+    /// raw spellings churn only these slots, never stored bodies. Cleared
+    /// wholesale at capacity — aliases re-establish on the next store.
+    aliases: Mutex<HashMap<u64, u64>>,
 }
 
 /// Hash of raw request-body bytes — the D14 variant dimension. ONE function
@@ -229,7 +242,25 @@ impl ResponseCache {
                 gens: HashMap::new(),
                 epoch: 0,
             }),
+            aliases: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Record that raw body hash `raw` decodes to canonical key `canonical`.
+    /// Bounded at 4× the entry cap; at capacity the table is cleared
+    /// wholesale (aliases re-establish on the next store of each spelling).
+    pub fn alias_body_key(&self, raw: u64, canonical: u64) {
+        let mut aliases = self.aliases.lock().unwrap();
+        if aliases.len() >= self.max_entries.saturating_mul(4) {
+            aliases.clear();
+        }
+        aliases.insert(raw, canonical);
+    }
+
+    /// Translate an incoming request's raw body hash to the canonical key
+    /// stored entries use, if a store recorded one.
+    pub fn body_key_for(&self, raw: u64) -> Option<u64> {
+        self.aliases.lock().unwrap().get(&raw).copied()
     }
 
     /// Look up a live entry. `resolve` maps the base key's variant spec to

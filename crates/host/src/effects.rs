@@ -410,8 +410,14 @@ struct CacheAttribution {
     epoch: Option<u64>,
     /// Cookie NAMES read, in first-read order (variant dimension).
     cookies_read: Vec<String>,
-    /// The route extracted the body (variant dimension).
-    body_read: bool,
+    /// How many times the route extracted the body (variant dimension when
+    /// > 0). A COUNT, not a flag: paired with `body_keys` it distinguishes
+    /// "every read was a typed decode" from "some consumer saw raw bytes".
+    body_reads: u32,
+    /// Canonical body keys reported by typed decodes (`Host.set_body_key!`),
+    /// one per decode, in call order. When every body read reported one, the
+    /// cache keys the body variant on their fold instead of the raw hash.
+    body_keys: Vec<u64>,
     /// Uncacheable: nondeterministic host call, Must DbWrite/HttpSend,
     /// underivable statement, or read-path DML.
     poisoned: bool,
@@ -521,9 +527,14 @@ pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps
     let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
     let state = registry.get_mut(&ctx)?;
     let mut attribution = std::mem::take(&mut state.attribution);
-    let body_hash = attribution
-        .body_read
+    let body_hash = (attribution.body_reads > 0)
         .then(|| crate::cache::body_hash_of(state.body.as_ref()));
+    // Canonical key only when EVERY body read was a typed decode that
+    // reported one — a raw consumer (Req.body!/text_body!/form_body!) saw
+    // actual bytes, so only byte-equality (the raw hash) is safe then.
+    let body_key = (attribution.body_reads > 0
+        && attribution.body_keys.len() == attribution.body_reads as usize)
+        .then(|| fold_body_keys(&attribution.body_keys));
     let cookies = attribution
         .cookies_read
         .into_iter()
@@ -550,7 +561,38 @@ pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps
         cacheable: !attribution.poisoned,
         cookies,
         body_hash,
+        body_key,
     })
+}
+
+/// Fold the per-decode canonical keys into one body-variant value (FNV-style
+/// chain — order-sensitive, deterministic).
+fn fold_body_keys(keys: &[u64]) -> u64 {
+    keys.iter().fold(0xcbf2_9ce4_8422_2325u64, |acc, key| {
+        (acc ^ key).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// `Host.set_body_key! : U64, U64 => {}` — a typed body decode reports the
+/// structural hash of the DECODED value. Recorded per call; the store side
+/// uses the fold of these as the body-variant key when every raw read was
+/// paired with one (see `take_cache_attribution`).
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_set_body_key(ctx: u64, key: u64) {
+    let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+    if let Some(state) = registry.get_mut(&ctx) {
+        state.attribution.body_keys.push(key);
+    }
+}
+
+/// `Host.hash_seed! : () => U64` — the process-wide random seed for canonical
+/// body-key hashing (collisions not offline-craftable; the in-memory cache
+/// only needs in-process stability).
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_hash_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher as _};
+    static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *SEED.get_or_init(|| std::collections::hash_map::RandomState::new().build_hasher().finish())
 }
 
 /// Release one store-held thunk reference.
@@ -639,7 +681,7 @@ pub extern "C" fn roc_request_body(ctx: u64) -> abi::RocListWith<u8, false> {
         let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
         match registry.get_mut(&ctx) {
             Some(state) => {
-                state.attribution.body_read = true;
+                state.attribution.body_reads += 1;
                 state.body.clone()
             }
             None => {

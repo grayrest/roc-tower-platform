@@ -95,6 +95,20 @@ Host := [].{
     ## (init time) has no body: returns empty.
     request_body! : U64 => List(U8)
 
+    ## Override the request's body-variant cache key with a CANONICAL key —
+    ## the structural hash of the DECODED body value, computed by the typed
+    ## body extractor (`Req.json_body!`). Two raw spellings of the same
+    ## message (whitespace, key order, junk fields) then share one cached
+    ## entry instead of minting duplicates (the cache-DoS mitigation). The
+    ## host applies it only when every `request_body!` read was paired with a
+    ## key (a RAW body read wins — byte-equality is all that's safe then).
+    set_body_key! : U64, U64 => {}
+
+    ## The process-wide random seed for canonical body-key hashing. Seeding
+    ## `to_hash` makes canonical-key collisions non-craftable offline; the
+    ## in-memory cache only needs in-process stability.
+    hash_seed! : () => U64
+
     ## The named request cookie's value for the request ctx (RFC 6265
     ## request-cookie parsing; first match wins). The Cookie header is
     ## STRIPPED from the request record's header list: cookie access is

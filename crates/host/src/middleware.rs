@@ -259,6 +259,24 @@ impl tower::Service<Request<ReqBody>> for CacheService {
                     };
                     return Ok(response);
                 }
+                // Raw-hash miss: stored entries for typed-decode routes key
+                // on the CANONICAL body key. If a prior store aliased this
+                // raw spelling, translate and retry once.
+                if let Some(canonical) = body_hash.and_then(|raw| cache.body_key_for(raw)) {
+                    if let Some(stored) = cache.lookup(
+                        &key,
+                        |spec| resolve_variant(spec, req.headers(), Some(canonical)),
+                        Instant::now(),
+                    ) {
+                        tracing::debug!("response cache: canonical body-key hit");
+                        let response = if none_match(&req, &stored.etag) {
+                            not_modified(&stored.etag)
+                        } else {
+                            serve_stored(&stored)
+                        };
+                        return Ok(response);
+                    }
+                }
                 req
             } else {
                 req
@@ -385,7 +403,10 @@ async fn maybe_store(
         body: deps.body_hash.is_some(),
         headers: vary,
     };
-    // `spec.body` implies `deps.body_hash` is Some, so this always resolves.
+    // The body-variant value is the CANONICAL key when every body read was a
+    // typed decode (raw spellings of one message collapse onto one variant),
+    // else the raw hash. `spec.body` implies one of them is Some.
+    let body_variant = deps.body_key.or(deps.body_hash);
     let variant = cache::variant_hash(
         &spec,
         |name| {
@@ -394,10 +415,18 @@ async fn maybe_store(
                 .find(|(candidate, _)| candidate == name)
                 .and_then(|(_, value)| value.clone())
         },
-        deps.body_hash,
+        body_variant,
         |name| header_value_of(req_headers, name),
     )
     .unwrap_or(cache::PLAIN_VARIANT);
+    // Teach lookups (which run before any decode exists) how to reach the
+    // canonical variant from this request's raw spelling.
+    if let (Some(raw), Some(canonical)) = (deps.body_hash, deps.body_key) {
+        if raw != canonical {
+            cache.alias_body_key(raw, canonical);
+        }
+        tracing::debug!("response cache: store under canonical body key");
+    }
 
     let etag = cache::etag_for(&bytes);
     let headers: Vec<(HeaderName, HeaderValue)> = parts
