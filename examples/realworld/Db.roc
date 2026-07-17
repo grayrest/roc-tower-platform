@@ -361,7 +361,7 @@ run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit
         .append(Integer(limit))
         .append(Integer(offset))
     rows = Sql.query!(ctx, db, page_sql, page_params)
-        ? |message| Api.error(500, "db error: ${message}")
+        ? |DbErr(message)| Api.error(500, "db error: ${message}")
     # Seed the accumulator at the row count so the per-row `append` never
     # reallocates the backing buffer (the page size is known up front).
     articles = rows.fold(Ok(List.with_capacity(List.len(rows))), |acc, row| match acc {
@@ -373,7 +373,7 @@ run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit
     })?
 
     count_rows = Sql.query!(ctx, db, count_sql, where_params)
-        ? |message| Api.error(500, "db error: ${message}")
+        ? |DbErr(message)| Api.error(500, "db error: ${message}")
     count_row = Sql.first(count_rows) ? |_| Api.error(500, "count returned no rows")
     count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
 

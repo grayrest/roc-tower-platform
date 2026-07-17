@@ -126,6 +126,6 @@ db! = |req| {
             }
             Res.text(200, "visits=${count}")
         }
-        Err(message) => Res.text(500, "db error: ${message}")
+        Err(DbErr(message)) => Res.text(500, "db error: ${message}")
     }
 }

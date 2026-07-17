@@ -36,12 +36,17 @@ Connect := [].{
     ]
 
     ## Render a handler error to its Connect wire response (the `render` a
-    ## `Res.mapped` route wrapper applies to the `Err` branch). Unannotated —
+    ## `Req.route` route wrapper applies to the `Err` branch). Coeffects
+    ## propagate UNinteresting errors with bare postfix `?`, so the union is
+    ## open — the wildcard maps anything that isn't a deliberate domain tag
+    ## (`DbErr`, `NoColumn`, `TypeMismatch`, ...) to an opaque internal error,
+    ## which also keeps engine error strings off the wire. Unannotated —
     ## naming the `Res.Response` return still crashes lowering (see the note).
     render = |error| match error {
         InvalidArgument(message) => Connect.error(InvalidArgument, message)
         NotFound(message) => Connect.error(NotFound, message)
         Internal(message) => Connect.error(Internal, message)
+        _ => Connect.error(Internal, "internal error")
     }
 
     ## A Connect error: the code's mapped HTTP status and a `{ code, message }`

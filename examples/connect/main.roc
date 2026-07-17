@@ -60,7 +60,7 @@ init! : () => Try(Model, Str)
 init! = || {
     exec! = |sql| match Sql.migrate!(db_path, sql, []) {
         Ok(_) => Ok({})
-        Err(message) => Err("schema: ${message}")
+        Err(DbErr(message)) => Err("schema: ${message}")
     }
     exec!("CREATE TABLE IF NOT EXISTS books (id INTEGER PRIMARY KEY, title TEXT NOT NULL, author TEXT NOT NULL, year INTEGER NOT NULL)")?
     Ok({ db: db_path })
@@ -68,10 +68,12 @@ init! = || {
 
 # --- coeffects ---------------------------------------------------------------
 # The read side of each RPC: a coeffect is a plain function `Request =>
-# Try(value, Connect.Error)` that either produces a handler input (decode the
-# request message, load rows) or rejects with a domain error via infix `?` —
-# `? |_| NotFound("...")` for a literal message, a bare constructor like
-# `? Internal` to wrap the underlying error. Reads flow through `Sql.query!`
+# Try(value, err)` that either produces a handler input (decode the request
+# message, load rows) or rejects. INTERESTING errors are raised as domain tags
+# (`? |_| NotFound("...")`); uninteresting ones just propagate with bare
+# postfix `?` — the platform's errors are open tag unions (`DbErr`, `NoColumn`,
+# `TypeMismatch`, ...), so they merge into the coeffect's inferred union and
+# fall to `Connect.render`'s wildcard (500). Reads flow through `Sql.query!`
 # (recorded for cache invalidation); decoding the body marks the body-variant
 # cache key.
 
@@ -80,16 +82,16 @@ init! = || {
 book! = |req| {
     request : { id : I64 }
     request = Req.json_body!(req) ? |_| InvalidArgument("GetBook expects { \"id\": <integer> }")
-    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Integer(request.id)]) ? Internal
+    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Integer(request.id)])?
     row = Sql.first(rows) ? |_| NotFound("book ${request.id.to_str()} not found")
-    book = decode_book(row) ? |_| Internal("corrupt book row")
+    book = decode_book(row)?
     Ok(book)
 }
 
 ## Coeffect: every book, ordered by id.
 books! = |req| {
-    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", []) ? Internal
-    books = decode_books(rows) ? |_| Internal("corrupt book row")
+    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", [])?
+    books = decode_books(rows)?
     Ok(books)
 }
 
@@ -116,10 +118,6 @@ target_id! = |req| {
 
 get_book_h! = Cofx.bind1(book!, get_book)
 
-## Annotated NOT for the binder's sake — a handler that JSON-encodes an
-## otherwise-unpinned argument needs its type at the definition site so
-## `Res.json` can resolve an encoder (`add_book`/`delete_book` below pin
-## their payloads in the body, so their typedefs are optional).
 get_book : Book -> Response
 get_book = |book| Res.json(200, {book: book})
 
@@ -163,7 +161,7 @@ delete_book = |id| {
 
 # --- module-private helpers --------------------------------------------------
 
-decode_book : Sql.Row -> Try(Book, Sql.Err)
+decode_book : Sql.Row -> Try(Book, [NoColumn(Str), TypeMismatch(Str), ..])
 decode_book = |row| Ok({
     id: row.i64("id")?,
     title: row.str("title")?,
@@ -174,7 +172,7 @@ decode_book = |row| Ok({
 ## Decode every row, short-circuiting on the first failure. Folds over a `Try`
 ## accumulator — a form that used to crash the compiler's codegen but builds
 ## since the 2026-07-16 upstream update (see the compiler-bug note).
-decode_books : List(Sql.Row) -> Try(List(Book), Sql.Err)
+decode_books : List(Sql.Row) -> Try(List(Book), [NoColumn(Str), TypeMismatch(Str), ..])
 decode_books = |rows|
     rows.fold(Ok([]), |acc, row|
         match acc {

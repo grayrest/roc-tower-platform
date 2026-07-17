@@ -135,7 +135,7 @@ init! : () => Try(Model, Str)
 init! = || {
     exec! = |sql| match Sql.migrate!(Db.db_path, sql, []) {
         Ok(_) => Ok({})
-        Err(message) => Err("schema: ${message}")
+        Err(DbErr(message)) => Err("schema: ${message}")
     }
     exec!(ddl_users)?
     exec!(ddl_tokens)?

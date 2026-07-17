@@ -104,7 +104,7 @@ db! = |req| {
     _ = Sql.migrate!(db_path, "INSERT INTO hits DEFAULT VALUES", [])
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM hits", []) {
         Ok(rows) => text(200, "hits=${count_of(rows)}")
-        Err(message) => text(500, "db error: ${message}")
+        Err(DbErr(message)) => text(500, "db error: ${message}")
     }
 }
 
@@ -226,7 +226,7 @@ effects_rollback_check! = |req| {
     db_path = model.db_path
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM effect_rollback WHERE val = 'rollback_fresh'", []) {
         Ok(rows) => text(200, "fresh_rows=${count_of(rows)}")
-        Err(message) => text(500, "db error: ${message}")
+        Err(DbErr(message)) => text(500, "db error: ${message}")
     }
 }
 
@@ -249,7 +249,7 @@ effects_opt_check! = |req| {
     db_path = model.db_path
     match Sql.query!(req.ctx, db_path, "SELECT COUNT(*) AS n FROM effect_opt", []) {
         Ok(rows) => text(200, "opt_rows=${count_of(rows)}")
-        Err(message) => text(500, "db error: ${message}")
+        Err(DbErr(message)) => text(500, "db error: ${message}")
     }
 }
 

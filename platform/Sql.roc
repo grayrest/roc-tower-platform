@@ -16,15 +16,18 @@
 ## layer — generated readers (sqlgen) skip the `Sql.Row` materialization and
 ## read cells positionally straight into records.
 Sql := [].{
-    ## Decode failure: the named column is absent from the result, or the
-    ## cell doesn't hold the requested type.
-    Err : [NoColumn(Str), TypeMismatch(Str)]
+    # NOTE: decode failures are the OPEN union `[NoColumn(Str),
+    # TypeMismatch(Str), ..]`, written inline in every decoder signature
+    # rather than behind a closed alias — an open tail is not allowed in a
+    # type declaration, and openness is the point: a `?` in a caller merges
+    # these tags into its own error union instead of walling them off (the
+    # same combinability contract as `query!`'s `DbErr`).
 
     ## One result row paired with the result's column names, so cells can be
     ## fetched by name instead of position.
     Row := { columns : List(Str), cells : List(Host.SqlValue) }.{
         ## The raw cell under a column name.
-        cell : Sql.Row, Str -> Try(Host.SqlValue, Sql.Err)
+        cell : Sql.Row, Str -> Try(Host.SqlValue, [NoColumn(Str), TypeMismatch(Str), ..])
         cell = |row, name| {
             index = row.columns.find_first_index(|column| column == name) ? |_| NoColumn(name)
             value = row.cells.get(index) ? |_| NoColumn(name)
@@ -32,7 +35,7 @@ Sql := [].{
         }
 
         ## A TEXT cell as Str.
-        str : Sql.Row, Str -> Try(Str, Sql.Err)
+        str : Sql.Row, Str -> Try(Str, [NoColumn(Str), TypeMismatch(Str), ..])
         str = |row, name| {
             value = Sql.Row.cell(row, name)?
             match value {
@@ -42,7 +45,7 @@ Sql := [].{
         }
 
         ## An INTEGER cell as I64.
-        i64 : Sql.Row, Str -> Try(I64, Sql.Err)
+        i64 : Sql.Row, Str -> Try(I64, [NoColumn(Str), TypeMismatch(Str), ..])
         i64 = |row, name| {
             value = Sql.Row.cell(row, name)?
             match value {
@@ -52,7 +55,7 @@ Sql := [].{
         }
 
         ## A REAL cell as F64.
-        f64 : Sql.Row, Str -> Try(F64, Sql.Err)
+        f64 : Sql.Row, Str -> Try(F64, [NoColumn(Str), TypeMismatch(Str), ..])
         f64 = |row, name| {
             value = Sql.Row.cell(row, name)?
             match value {
@@ -63,7 +66,7 @@ Sql := [].{
 
         ## An INTEGER cell as Bool (SQLite booleans: 0 is False, anything
         ## else True) — the shape of EXISTS / COUNT flag columns.
-        bool : Sql.Row, Str -> Try(Bool, Sql.Err)
+        bool : Sql.Row, Str -> Try(Bool, [NoColumn(Str), TypeMismatch(Str), ..])
         bool = |row, name| {
             value = Sql.Row.cell(row, name)?
             match value {
@@ -74,7 +77,7 @@ Sql := [].{
 
         ## A nullable TEXT cell: NULL becomes `NullableStr.Null`, TEXT
         ## becomes `Val`, ready for JSON-null output.
-        nullable_str : Sql.Row, Str -> Try(NullableStr, Sql.Err)
+        nullable_str : Sql.Row, Str -> Try(NullableStr, [NoColumn(Str), TypeMismatch(Str), ..])
         nullable_str = |row, name| {
             value = Sql.Row.cell(row, name)?
             match value {
@@ -88,9 +91,14 @@ Sql := [].{
     ## Run a query and materialize every row for by-name decode. Opens a
     ## cursor under `ctx` (the request coeffect ctx, 0 at init time) against
     ## `db`, steps all rows, and finishes the cursor on every path.
-    query! : U64, Str, Str, List(Host.SqlValue) => Try(List(Sql.Row), Str)
+    ##
+    ## Fails with the TAG `DbErr(message)` (matching sqlgen's generated
+    ## queries), not a bare Str — a tag merges into a caller's open error
+    ## union, so a coeffect can propagate it with bare postfix `?` and leave
+    ## rendering to the route's error renderer.
+    query! : U64, Str, Str, List(Host.SqlValue) => Try(List(Sql.Row), [DbErr(Str), ..])
     query! = |ctx, db, sql, params| {
-        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: sql, params: params })?
+        handle = Host.sql_begin!({ ctx: ctx, db: db, sql: sql, params: params }) ? DbErr
         columns = Host.sql_columns!(handle)
         collected = collect_rows!(handle, columns, [])
         Host.sql_finish!(handle)
@@ -109,17 +117,20 @@ Sql := [].{
     ## host's init marker — statements run under it are mirrored into the
     ## response cache's analysis shadow, so the schema the cache derives
     ## dependencies against can't silently diverge from the app's (R12).
-    migrate! : Str, Str, List(Host.SqlValue) => Try({}, Str)
+    ## Fails with `DbErr(message)` (see `query!`).
+    migrate! : Str, Str, List(Host.SqlValue) => Try({}, [DbErr(Str), ..])
     migrate! = |db, sql, params| {
-        handle = Host.sql_begin!({ ctx: 0, db: db, sql: sql, params: params })?
+        handle = Host.sql_begin!({ ctx: 0, db: db, sql: sql, params: params }) ? DbErr
         drained = drain_rows!(handle)
         Host.sql_finish!(handle)
         drained
     }
 
     ## The first row of a materialized result (the single-row-query case:
-    ## lookups by key, COUNT/EXISTS aggregates).
-    first : List(Sql.Row) -> Try(Sql.Row, [NoRows])
+    ## lookups by key, COUNT/EXISTS aggregates). `NoRows` is open like every
+    ## Sql error, so it can propagate with bare `?` — though a miss is usually
+    ## an INTERESTING error worth remapping (`? |_| NotFound("...")`).
+    first : List(Sql.Row) -> Try(Sql.Row, [NoRows, ..])
     first = |rows| {
         row = rows.first() ? |_| NoRows
         Ok(row)
@@ -137,10 +148,10 @@ import NullableStr
 ## Step every remaining row into `acc`, decoding each cell by its live storage
 ## class. Returns the accumulated rows, or the first step error. Does NOT
 ## finish the cursor — `query!` owns that on every path.
-collect_rows! : U64, List(Str), List(Sql.Row) => Try(List(Sql.Row), Str)
+collect_rows! : U64, List(Str), List(Sql.Row) => Try(List(Sql.Row), [DbErr(Str), ..])
 collect_rows! = |handle, columns, acc| {
     match Host.sql_step!(handle) {
-        Err(message) => Err(message)
+        Err(message) => Err(DbErr(message))
         Ok(has_row) =>
             if has_row {
                 row = Sql.Row.{ columns: columns, cells: read_cells!(handle, 0, List.len(columns), []) }
@@ -174,10 +185,10 @@ read_cell! = |handle, index| {
 }
 
 ## Step to exhaustion, discarding rows (for statements run only for effect).
-drain_rows! : U64 => Try({}, Str)
+drain_rows! : U64 => Try({}, [DbErr(Str), ..])
 drain_rows! = |handle| {
     match Host.sql_step!(handle) {
-        Err(message) => Err(message)
+        Err(message) => Err(DbErr(message))
         Ok(has_row) => if has_row { drain_rows!(handle) } else { Ok({}) }
     }
 }
