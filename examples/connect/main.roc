@@ -47,18 +47,19 @@ main = |{}| {
     ],
     init!: init!,
     routes: [
-        { method: "POST", path: "/tower.connect.v1.CatalogService/GetBook", handler: route(get_book!) },
-        { method: "POST", path: "/tower.connect.v1.CatalogService/ListBooks", handler: route(list_books!) },
-        { method: "POST", path: "/tower.connect.v1.CatalogService/AddBook", handler: route(add_book!) },
-        { method: "POST", path: "/tower.connect.v1.CatalogService/DeleteBook", handler: route(delete_book!) },
+        route("POST", "/tower.connect.v1.CatalogService/GetBook", get_book!),
+        route("POST", "/tower.connect.v1.CatalogService/ListBooks", list_books!),
+        route("POST", "/tower.connect.v1.CatalogService/AddBook", add_book!),
+        route("POST", "/tower.connect.v1.CatalogService/DeleteBook", delete_book!),
     ],
 }
 
-## The route-table wrapper: bakes `Connect.render` into the generic platform
-## `Res.mapped`, so each handler is a bare `Request => Try(Response,
-## Connect.Error)` (using `?` over the domain error — no `from_try`, no
-## return-type annotation), rendered to a Connect response on the `Err` branch.
-route = |handler| Res.mapped(handler, Connect.render)
+## The route-table wrapper: bakes `Connect.render` into the platform's
+## `Req.route` entry builder, so each handler is a bare `Request =>
+## Try(Response, Connect.Error)` (using `?` over the domain error — no
+## `from_try`, no return-type annotation), rendered to a Connect response on
+## the `Err` branch.
+route = |method, path, handler| Req.route(method, path, handler, Connect.render)
 
 init! : () => Try(Model, Str)
 init! = || {
@@ -84,7 +85,7 @@ init! = || {
 get_book! = |req| {
     request : { id : I64 }
     request = Req.json_body!(req) ? |_| InvalidArgument("GetBook expects { \"id\": <integer> }")
-    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Host.SqlValue.Integer(request.id)]) ? Internal
+    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Integer(request.id)]) ? Internal
     row = Sql.first(rows) ? |_| NotFound("book ${request.id.to_str()} not found")
     book = decode_book(row) ? |_| Internal("corrupt book row")
     Ok(Res.json(200, { book: book }))
@@ -112,10 +113,10 @@ add_book! = |req| {
                 db: db_path,
                 sql: "INSERT INTO books (id, title, author, year) VALUES (?, ?, ?, ?)",
                 params: [
-                    Host.SqlValue.Integer(id),
-                    Host.SqlValue.Text(fields.title),
-                    Host.SqlValue.Text(fields.author),
-                    Host.SqlValue.Integer(fields.year),
+                    Integer(id),
+                    Text(fields.title),
+                    Text(fields.author),
+                    Integer(fields.year),
                 ],
             }),
         )
@@ -132,7 +133,7 @@ delete_book! = |req| {
             DbWrite({
                 db: db_path,
                 sql: "DELETE FROM books WHERE id = ?",
-                params: [Host.SqlValue.Integer(request.id)],
+                params: [Integer(request.id)],
             }),
         )
         .json(200, {}),

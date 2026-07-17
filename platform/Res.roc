@@ -212,15 +212,14 @@ Res := [].{
 
     ## Adapt a fallible handler whose error is a DOMAIN type into the boxed
     ## `Request => Response` the router registers: run it, pass `Ok` through,
-    ## and `render` the `Err` into a response. This is the route-table wrapper
-    ## that lets a handler use `?` over its own error union — no `from_try` in
-    ## the body, no per-`?` response building, and no return-type annotation on
-    ## the handler (its type is inferred from the `?` tags and `render`). Bake
-    ## the renderer once with a small app helper and register bare:
+    ## and `render` the `Err` into a response. This lets a handler use `?` over
+    ## its own error union — no `from_try` in the body, no per-`?` response
+    ## building, and no return-type annotation on the handler (its type is
+    ## inferred from the `?` tags and `render`). `Req.route` builds a whole
+    ## route-table entry on top of this; use `Res.mapped` directly only when
+    ## assembling the entry record yourself:
     ##
-    ##     route = |handler| Res.mapped(handler, my_render)
-    ##     ...
-    ##     { method: "POST", path: "/x", handler: route(show!) }
+    ##     { method: "POST", path: "/x", handler: Res.mapped(show!, my_render) }
     mapped : (req => Try(Res.Response, err)), (err -> Res.Response) -> Box(req => Res.Response)
     mapped = |handler, render| Box.box(|req| match handler(req) {
         Ok(response) => response

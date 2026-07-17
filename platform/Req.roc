@@ -158,10 +158,30 @@ Req := [].{
     reserved_id! = |req|
         Cofx.get!(req.ctx, "coeffect.reserved_id", |{}| Ok(Host.next_id!(Box.unbox(req.model).db)))
 
+    ## Build a route-table entry from a fallible handler: `Req.route(method,
+    ## path, handler, render)` runs the handler, passes `Ok(response)` through,
+    ## and `render`s a domain `Err` into a response (via `Res.mapped`), so
+    ## handlers are bare `request => Try(Response, err)` functions using `?`
+    ## over their own error union — no `from_try`, no return annotation. The
+    ## other handler shapes are the special cases: `err = Response` with
+    ## `render = |r| r` for `Try(Response, Response)`, and `Ok(...)` wrapping
+    ## for an infallible handler. Bake the renderer once in the app:
+    ##
+    ##     route = |method, path, handler| Req.route(method, path, handler, my_render)
+    ##     ...
+    ##     routes: [route("POST", "/x", show!), ...]
+    ##
+    ## Left unannotated: the entry's handler field is `Box(request =>
+    ## Res.Response)`, and naming a sibling platform module's type in an
+    ## annotation is unsupported (see `reject` below).
+    route = |method, path, handler, render|
+        { method: method, path: path, handler: Res.mapped(handler, render) }
+
 }
 
 import Host
 import Cofx
+import Res
 
 # --- module-private helpers ---
 #
