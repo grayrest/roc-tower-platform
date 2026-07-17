@@ -32,6 +32,8 @@
 ## the handler never runs, otherwise the handler is called with the RAW
 ## resolved values. The binder is effectful (`=>`); the handler is pure (`->`)
 ## and may only CONSTRUCT effects — the host runs the returned effect list.
+## `Cofx.bind1` … `Cofx.bind5` are the same idea for resolvers that reject
+## with a DOMAIN ERROR instead of a response — see the binder section below.
 ##
 ## Memoization is OPT-IN, for resolvers that must run at most once per request
 ## (non-idempotent reads like `Req.reserved_id!`) or that several resolvers
@@ -185,6 +187,89 @@ Cofx := [].{
                 }
             }
         }
+
+    ## --- Domain-error binders ------------------------------------------------
+    ##
+    ## `bindN` is `withN` for the DOMAIN-ERROR pipeline: resolvers reject with
+    ## an error VALUE (`req => Try(a, err)`) instead of a rendered response,
+    ## and the composed result is the fallible route-handler shape
+    ## `req => Try(resp, err)` that `Req.route(method, path, handler, render)`
+    ## renders. Because `err` is inferred as an open tag union, resolvers with
+    ## different error tags merge, and a resolver that never rejects (e.g.
+    ## `Req.reserved_id!`) stays polymorphic and binds bare:
+    ##
+    ##     show_h! = Cofx.bind2(book!, Req.reserved_id!, show)
+    ##     route("POST", "/x", show_h!)   # route = Req.route(..., my_render)
+    ##
+    ## The first rejection wins and the pure handler never runs; otherwise the
+    ## handler's response is the `Ok`. Left as straight code (no combinator
+    ## composition), so inference flows through unimpeded.
+
+    ## Bind one domain-fallible resolver to a 1-argument PURE handler.
+    bind1 = |resolve_a!, handler|
+        |req| match resolve_a!(req) {
+            Err(rejection) => Err(rejection)
+            Ok(a) => Ok(handler(a))
+        }
+
+    ## Bind two domain-fallible resolvers to a 2-argument PURE handler
+    ## (resolvers run left to right; the first rejection wins).
+    bind2 = |resolve_a!, resolve_b!, handler|
+        |req| match resolve_a!(req) {
+            Err(rejection) => Err(rejection)
+            Ok(a) => match resolve_b!(req) {
+                Err(rejection) => Err(rejection)
+                Ok(b) => Ok(handler(a, b))
+            }
+        }
+
+    ## Bind three domain-fallible resolvers to a 3-argument PURE handler.
+    bind3 = |resolve_a!, resolve_b!, resolve_c!, handler|
+        |req| match resolve_a!(req) {
+            Err(rejection) => Err(rejection)
+            Ok(a) => match resolve_b!(req) {
+                Err(rejection) => Err(rejection)
+                Ok(b) => match resolve_c!(req) {
+                    Err(rejection) => Err(rejection)
+                    Ok(c) => Ok(handler(a, b, c))
+                }
+            }
+        }
+
+    ## Bind four domain-fallible resolvers to a 4-argument PURE handler.
+    bind4 = |resolve_a!, resolve_b!, resolve_c!, resolve_d!, handler|
+        |req| match resolve_a!(req) {
+            Err(rejection) => Err(rejection)
+            Ok(a) => match resolve_b!(req) {
+                Err(rejection) => Err(rejection)
+                Ok(b) => match resolve_c!(req) {
+                    Err(rejection) => Err(rejection)
+                    Ok(c) => match resolve_d!(req) {
+                        Err(rejection) => Err(rejection)
+                        Ok(d) => Ok(handler(a, b, c, d))
+                    }
+                }
+            }
+        }
+
+    ## Bind five domain-fallible resolvers to a 5-argument PURE handler.
+    bind5 = |resolve_a!, resolve_b!, resolve_c!, resolve_d!, resolve_e!, handler|
+        |req| match resolve_a!(req) {
+            Err(rejection) => Err(rejection)
+            Ok(a) => match resolve_b!(req) {
+                Err(rejection) => Err(rejection)
+                Ok(b) => match resolve_c!(req) {
+                    Err(rejection) => Err(rejection)
+                    Ok(c) => match resolve_d!(req) {
+                        Err(rejection) => Err(rejection)
+                        Ok(d) => match resolve_e!(req) {
+                            Err(rejection) => Err(rejection)
+                            Ok(e) => Ok(handler(a, b, c, d, e))
+                        }
+                    }
+                }
+            }
+        }
 }
 
 import Host
@@ -261,4 +346,30 @@ expect {
 expect {
     combined = Cofx.map2(|_req| Err("a failed"), |req| Ok(req.m), |n, m| n + m)
     combined({ m: 2.U64 }) == Err("a failed")
+}
+
+# --- domain-error binders ---
+
+## bind1 wraps the pure handler's answer in Ok
+expect {
+    bound = Cofx.bind1(|req| Ok(req.n), |n| n + 1)
+    bound({ n: 41 }) == Ok(42.U64)
+}
+
+## bind1 passes a domain-error rejection through as Err
+expect {
+    bound = Cofx.bind1(|_req| Err(NotFound("nope")), |n| n + 1.U64)
+    bound({}) == Err(NotFound("nope"))
+}
+
+## bind2 resolves left to right and combines through the handler
+expect {
+    bound = Cofx.bind2(|req| Ok(req.n), |req| Ok(req.m), |n, m| n + m)
+    bound({ n: 40, m: 2 }) == Ok(42.U64)
+}
+
+## bind2's first rejection wins and the handler never runs
+expect {
+    bound = Cofx.bind2(|_req| Err(Boom), |req| Ok(req.m), |n, m| n + m)
+    bound({ m: 2.U64 }) == Err(Boom)
 }

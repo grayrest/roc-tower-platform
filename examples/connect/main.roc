@@ -7,6 +7,8 @@ import pf.Sql
 import pf.Cofx
 import Connect
 
+db_path = "/tmp/tower-platform-connect.db"
+
 # A Connect-protocol RPC service (unary, JSON) on the tower-platform —  Every method is `POST
 # /{service}/{Method}` with the request message as the JSON body and the response message as the
 # JSON body; there are no path params, no REST verbs, and errors are Connect envelopes, not bare
@@ -34,41 +36,25 @@ Response : Res.Response
 
 Book : { id : I64, title : Str, author : Str, year : I64 }
 
-db_path : Str
-db_path = "/tmp/tower-platform-connect.db"
+## The route table wrapper. The mapping of errors to error responses is app-specific.
+## Only one error handling strategy for this app so partial application makes for less
+## noise in the route definition.
+route = |method, path, handler| Req.route(method, path, handler, Connect.render)
 
 main = |{}| {
     settings: [
         TimeoutMs(10000),
         MaxBodyBytes(65536),
-        # Connect uses POST for every method, so the cache must include POST
-        # (and ttl_ms must be > 0 — the host rejects 0 at startup).
         ResponseCache({ ttl_ms: 30000, max_entries: 4096, methods: ["POST"], bypass_headers: [] }),
     ],
     init!: init!,
     routes: [
-        route("POST", "/tower.connect.v1.CatalogService/GetBook", bind1(book!, get_book)),
-        route("POST", "/tower.connect.v1.CatalogService/ListBooks", bind1(books!, list_books)),
-        route("POST", "/tower.connect.v1.CatalogService/AddBook", bind2(fields!, new_id!, add_book)),
-        route("POST", "/tower.connect.v1.CatalogService/DeleteBook", bind1(target_id!, delete_book)),
+        route("POST", "/tower.connect.v1.CatalogService/GetBook", get_book_h!),
+        route("POST", "/tower.connect.v1.CatalogService/ListBooks", list_books_h!),
+        route("POST", "/tower.connect.v1.CatalogService/AddBook", add_book_h!),
+        route("POST", "/tower.connect.v1.CatalogService/DeleteBook", delete_book_h!),
     ],
 }
-
-## The route table wrapper. The mapping of errors to error responses is app-specific.
-## This app uses Connect protocol JSON for it. Since most apps only have one error
-## mapping strategy, partially applying it makes route definition less noisy.
-route = |method, path, handler| Req.route(method, path, handler, Connect.render)
-
-## Bind domain-fallible coeffects to a PURE handler: `Cofx.withN` with each
-## rejection mapped into `Err(domain error)` and the handler's response into
-## `Ok`, yielding the fallible `Request => Try(Response, Connect.Error)` shape
-## `route` renders. Coeffects keep the bare `?`-over-domain-error style and
-## pure handlers return a plain `Response`; the adaptation lives here once.
-bind1 = |resolver!, handler|
-    Cofx.with1(Cofx.map_reject(resolver!, |e| Err(e)), |a| Ok(handler(a)))
-
-bind2 = |resolver_a!, resolver_b!, handler|
-    Cofx.with2(Cofx.map_reject(resolver_a!, |e| Err(e)), Cofx.map_reject(resolver_b!, |e| Err(e)), |a, b| Ok(handler(a, b)))
 
 init! : () => Try(Model, Str)
 init! = || {
@@ -107,18 +93,13 @@ books! = |req| {
     Ok(books)
 }
 
-## Coeffect: AddBook's request message.
-fields! = |req| {
-    fields : { title : Str, author : Str, year : I64 }
-    fields = Req.json_body!(req) ? |_| InvalidArgument("AddBook expects { title, author, year }")
-    Ok(fields)
-}
+NewBook : { title : Str, author : Str, year : I64 }
 
-## Coeffect: a freshly reserved book id (memoized — every slot in one request
-## shares the same reservation).
-new_id! = |req| {
-    id = Req.reserved_id!(req) ? |_| Internal("id reservation failed")
-    Ok(id)
+## Coeffect: AddBook's request message.
+new_book! = |req| {
+    fields : NewBook
+    fields = Req.json_body!(req) ? |_| InvalidArgument("Book creation expects { title, author, year }")
+    Ok(fields)
 }
 
 ## Coeffect: DeleteBook's target id from the request message.
@@ -133,24 +114,21 @@ target_id! = |req| {
 # response. They never see the request — and may only CONSTRUCT effects; the
 # host runs the returned effect list.
 
-## GetBook({ id }) -> { book }. Read-only, so cacheable — keyed on the request
-## body, so each id is a distinct cache entry.
-get_book = |book| {
-    # Pin the argument locally (the handler is unannotated), so `Res.json`
-    # can resolve a JSON encoder for the response record.
-    target : Book
-    target = book
-    Res.json(200, { book: target })
-}
+get_book_h! = Cofx.bind1(book!, get_book)
 
-## ListBooks({}) -> { books }. Read-only, so cacheable. It never reads the
-## request body, so it doesn't vary on it — every call shares one entry.
-list_books = |books| {
-    all : List(Book)
-    all = books
-    Res.json(200, { books: all })
-}
+## Annotated NOT for the binder's sake — a handler that JSON-encodes an
+## otherwise-unpinned argument needs its type at the definition site so
+## `Res.json` can resolve an encoder (`add_book`/`delete_book` below pin
+## their payloads in the body, so their typedefs are optional).
+get_book : Book -> Response
+get_book = |book| Res.json(200, {book: book})
 
+list_books_h! = Cofx.bind1(books!, list_books)
+
+list_books : List(Book) -> Response
+list_books = |books| Res.json(200, {books: books})
+
+add_book_h! = Cofx.bind2(new_book!, Req.reserved_id!, add_book)
 ## AddBook({ title, author, year }) -> { book }. A DbWrite mutation: the effect
 ## poisons this response (never cached) and purges every cached read of `books`.
 add_book = |fields, id| {
@@ -171,7 +149,7 @@ add_book = |fields, id| {
     .json(200, { book: book })
 }
 
-## DeleteBook({ id }) -> {}. A DbWrite mutation; purges cached reads of `books`.
+delete_book_h! = Cofx.bind1(target_id!, delete_book)
 delete_book = |id| {
     Res.fx(
         DbWrite({
