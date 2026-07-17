@@ -179,6 +179,45 @@ Req := [].{
         Err(_) => Ok(default)
     }
 
+    ## --- Typed extraction ---------------------------------------------------
+    ##
+    ## Scalar params parsed at the boundary, with the platform naming both
+    ## the parameter and the expectation in the rejection — the app's render
+    ## maps `InvalidQueryParam(name, expected)` / `InvalidParam(name,
+    ## expected)` like any other extractor tag. Scalars are factories rather
+    ## than a `parser_for` derive: queries only ever carry scalars, so the
+    ## derive's record/union power buys nothing here (a scalar ENCODING
+    ## through the format-generic `parser_for` — the `HttpHeaderEncoding`
+    ## precedent — remains the road if that ever changes).
+
+    ## Coeffect factory: the named query parameter as an I64. Rejects with
+    ## `MissingQueryParam(name)` when absent, `InvalidQueryParam(name,
+    ## expected)` when present but not an integer.
+    query_i64 = |name| |req| {
+        raw = Req.get_query(req, name) ? |_| MissingQueryParam(name)
+        value = I64.from_str(raw) ? |_| InvalidQueryParam(name, "an integer")
+        Ok(value)
+    }
+
+    ## Coeffect factory: the named query parameter as an I64, or `default`
+    ## when ABSENT. A present-but-malformed value still rejects — an explicit
+    ## wrong input is an error, not a silent default.
+    query_i64_or = |name, default| |req| match Req.get_query(req, name) {
+        Ok(raw) => {
+            value = I64.from_str(raw) ? |_| InvalidQueryParam(name, "an integer")
+            Ok(value)
+        }
+        Err(_) => Ok(default)
+    }
+
+    ## Coeffect factory: the named path parameter as an I64. Rejects with
+    ## `MissingParam(name)` / `InvalidParam(name, expected)`.
+    param_i64 = |name| |req| {
+        raw = Req.get_param(req, name) ? |_| MissingParam(name)
+        value = I64.from_str(raw) ? |_| InvalidParam(name, "an integer")
+        Ok(value)
+    }
+
     ## Coeffect factory: the named request cookie. Rejects with
     ## `MissingCookie(name)` on a miss. The Cookie header is STRIPPED from
     ## `req.headers`; cookie access goes through the host so cached responses
@@ -451,4 +490,48 @@ expect {
     a = { id: 1.I64, title: "t" }.to_hash(Hasher.new(9)).finish()
     b = { id: 1.I64, title: "t" }.to_hash(Hasher.new(9)).finish()
     a == b
+}
+
+# --- typed extraction factories ---
+
+## query_i64 parses a present integer parameter
+expect {
+    resolver = Req.query_i64("limit")
+    resolver({ query: "limit=25" }) == Ok(25)
+}
+
+## query_i64 rejects an absent parameter with its name
+expect {
+    resolver = Req.query_i64("limit")
+    resolver({ query: "" }) == Err(MissingQueryParam("limit"))
+}
+
+## query_i64 rejects a malformed value with the expectation
+expect {
+    resolver = Req.query_i64("limit")
+    resolver({ query: "limit=abc" }) == Err(InvalidQueryParam("limit", "an integer"))
+}
+
+## query_i64_or falls back only when the parameter is absent
+expect {
+    resolver = Req.query_i64_or("limit", 20)
+    resolver({ query: "" }) == Ok(20)
+}
+
+## query_i64_or still rejects a present-but-malformed value
+expect {
+    resolver = Req.query_i64_or("limit", 20)
+    resolver({ query: "limit=abc" }) == Err(InvalidQueryParam("limit", "an integer"))
+}
+
+## param_i64 parses and rejects with the parameter name
+expect {
+    resolver = Req.param_i64("id")
+    resolver({ params: [{ name: "id", value: "7" }] }) == Ok(7)
+}
+
+## param_i64 names the expectation on a malformed value
+expect {
+    resolver = Req.param_i64("id")
+    resolver({ params: [{ name: "id", value: "x" }] }) == Err(InvalidParam("id", "an integer"))
 }
