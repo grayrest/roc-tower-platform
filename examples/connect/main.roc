@@ -4,6 +4,7 @@ import pf.Host
 import pf.Res
 import pf.Req
 import pf.Sql
+import pf.Cofx
 import Connect
 
 # A Connect-protocol RPC service (unary, JSON) on the tower-platform —  Every method is `POST
@@ -40,26 +41,34 @@ main = |{}| {
     settings: [
         TimeoutMs(10000),
         MaxBodyBytes(65536),
-        # Connect uses POST for every method, so the cache must include POST.
-        # `bypass_headers` is left empty — the platform hard-defaults
-        # `authorization`, and this demo is unauthenticated anyway.
+        # Connect uses POST for every method, so the cache must include POST
+        # (and ttl_ms must be > 0 — the host rejects 0 at startup).
         ResponseCache({ ttl_ms: 30000, max_entries: 4096, methods: ["POST"], bypass_headers: [] }),
     ],
     init!: init!,
     routes: [
-        route("POST", "/tower.connect.v1.CatalogService/GetBook", get_book!),
-        route("POST", "/tower.connect.v1.CatalogService/ListBooks", list_books!),
-        route("POST", "/tower.connect.v1.CatalogService/AddBook", add_book!),
-        route("POST", "/tower.connect.v1.CatalogService/DeleteBook", delete_book!),
+        route("POST", "/tower.connect.v1.CatalogService/GetBook", bind1(book!, get_book)),
+        route("POST", "/tower.connect.v1.CatalogService/ListBooks", bind1(books!, list_books)),
+        route("POST", "/tower.connect.v1.CatalogService/AddBook", bind2(fields!, new_id!, add_book)),
+        route("POST", "/tower.connect.v1.CatalogService/DeleteBook", bind1(target_id!, delete_book)),
     ],
 }
 
-## The route-table wrapper: bakes `Connect.render` into the platform's
-## `Req.route` entry builder, so each handler is a bare `Request =>
-## Try(Response, Connect.Error)` (using `?` over the domain error — no
-## `from_try`, no return-type annotation), rendered to a Connect response on
-## the `Err` branch.
+## The route table wrapper. The mapping of errors to error responses is app-specific.
+## This app uses Connect protocol JSON for it. Since most apps only have one error
+## mapping strategy, partially applying it makes route definition less noisy.
 route = |method, path, handler| Req.route(method, path, handler, Connect.render)
+
+## Bind domain-fallible coeffects to a PURE handler: `Cofx.withN` with each
+## rejection mapped into `Err(domain error)` and the handler's response into
+## `Ok`, yielding the fallible `Request => Try(Response, Connect.Error)` shape
+## `route` renders. Coeffects keep the bare `?`-over-domain-error style and
+## pure handlers return a plain `Response`; the adaptation lives here once.
+bind1 = |resolver!, handler|
+    Cofx.with1(Cofx.map_reject(resolver!, |e| Err(e)), |a| Ok(handler(a)))
+
+bind2 = |resolver_a!, resolver_b!, handler|
+    Cofx.with2(Cofx.map_reject(resolver_a!, |e| Err(e)), Cofx.map_reject(resolver_b!, |e| Err(e)), |a, b| Ok(handler(a, b)))
 
 init! : () => Try(Model, Str)
 init! = || {
@@ -71,73 +80,107 @@ init! = || {
     Ok({ db: db_path })
 }
 
-# --- unary RPC handlers ------------------------------------------------------
-# Each handler is a bare `Request => Try(Response, Connect.Error)` — NO return
-# annotation (inferred from the `?` error tags and the `route`/`render` wiring),
-# NO `from_try`. Infix `?` unwraps `Ok` and, on `Err`, raises a domain error:
-# `? |_| NotFound("...")` for a literal message, or a bare constructor like
-# `? Internal` to wrap the underlying `Str` error. `route` (above) renders the
-# error to a Connect response. Reads flow through `Sql.query!` (recorded for
-# cache invalidation); decoding the body marks the body-variant cache key.
+# --- coeffects ---------------------------------------------------------------
+# The read side of each RPC: a coeffect is a plain function `Request =>
+# Try(value, Connect.Error)` that either produces a handler input (decode the
+# request message, load rows) or rejects with a domain error via infix `?` —
+# `? |_| NotFound("...")` for a literal message, a bare constructor like
+# `? Internal` to wrap the underlying error. Reads flow through `Sql.query!`
+# (recorded for cache invalidation); decoding the body marks the body-variant
+# cache key.
 
-## GetBook({ id }) -> { book }. Read-only, so cacheable — keyed on the request
-## body, so each id is a distinct cache entry.
-get_book! = |req| {
+## Coeffect: GetBook's target book — decode `{ id }` from the request message,
+## load and decode its row.
+book! = |req| {
     request : { id : I64 }
     request = Req.json_body!(req) ? |_| InvalidArgument("GetBook expects { \"id\": <integer> }")
     rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Integer(request.id)]) ? Internal
     row = Sql.first(rows) ? |_| NotFound("book ${request.id.to_str()} not found")
     book = decode_book(row) ? |_| Internal("corrupt book row")
-    Ok(Res.json(200, { book: book }))
+    Ok(book)
+}
+
+## Coeffect: every book, ordered by id.
+books! = |req| {
+    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", []) ? Internal
+    books = decode_books(rows) ? |_| Internal("corrupt book row")
+    Ok(books)
+}
+
+## Coeffect: AddBook's request message.
+fields! = |req| {
+    fields : { title : Str, author : Str, year : I64 }
+    fields = Req.json_body!(req) ? |_| InvalidArgument("AddBook expects { title, author, year }")
+    Ok(fields)
+}
+
+## Coeffect: a freshly reserved book id (memoized — every slot in one request
+## shares the same reservation).
+new_id! = |req| {
+    id = Req.reserved_id!(req) ? |_| Internal("id reservation failed")
+    Ok(id)
+}
+
+## Coeffect: DeleteBook's target id from the request message.
+target_id! = |req| {
+    request : { id : I64 }
+    request = Req.json_body!(req) ? |_| InvalidArgument("DeleteBook expects { \"id\": <integer> }")
+    Ok(request.id)
+}
+
+# --- pure handlers -----------------------------------------------------------
+# The write/answer side: pure functions from resolved coeffect values to a
+# response. They never see the request — and may only CONSTRUCT effects; the
+# host runs the returned effect list.
+
+## GetBook({ id }) -> { book }. Read-only, so cacheable — keyed on the request
+## body, so each id is a distinct cache entry.
+get_book = |book| {
+    # Pin the argument locally (the handler is unannotated), so `Res.json`
+    # can resolve a JSON encoder for the response record.
+    target : Book
+    target = book
+    Res.json(200, { book: target })
 }
 
 ## ListBooks({}) -> { books }. Read-only, so cacheable. It never reads the
 ## request body, so it doesn't vary on it — every call shares one entry.
-list_books! = |req| {
-    rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", []) ? Internal
-    books = decode_books(rows) ? |_| Internal("corrupt book row")
-    Ok(Res.json(200, { books: books }))
+list_books = |books| {
+    all : List(Book)
+    all = books
+    Res.json(200, { books: all })
 }
 
 ## AddBook({ title, author, year }) -> { book }. A DbWrite mutation: the effect
 ## poisons this response (never cached) and purges every cached read of `books`.
-add_book! = |req| {
-    fields : { title : Str, author : Str, year : I64 }
-    fields = Req.json_body!(req) ? |_| InvalidArgument("AddBook expects { title, author, year }")
-    id = Req.reserved_id!(req) ? |_| Internal("id reservation failed")
+add_book = |fields, id| {
     book : Book
     book = { id: id, title: fields.title, author: fields.author, year: fields.year }
-    Ok(
-        Res.fx(
-            DbWrite({
-                db: db_path,
-                sql: "INSERT INTO books (id, title, author, year) VALUES (?, ?, ?, ?)",
-                params: [
-                    Integer(id),
-                    Text(fields.title),
-                    Text(fields.author),
-                    Integer(fields.year),
-                ],
-            }),
-        )
-        .json(200, { book: book }),
+    Res.fx(
+        DbWrite({
+            db: db_path,
+            sql: "INSERT INTO books (id, title, author, year) VALUES (?, ?, ?, ?)",
+            params: [
+                Integer(id),
+                Text(fields.title),
+                Text(fields.author),
+                Integer(fields.year),
+            ],
+        }),
     )
+    .json(200, { book: book })
 }
 
 ## DeleteBook({ id }) -> {}. A DbWrite mutation; purges cached reads of `books`.
-delete_book! = |req| {
-    request : { id : I64 }
-    request = Req.json_body!(req) ? |_| InvalidArgument("DeleteBook expects { \"id\": <integer> }")
-    Ok(
-        Res.fx(
-            DbWrite({
-                db: db_path,
-                sql: "DELETE FROM books WHERE id = ?",
-                params: [Integer(request.id)],
-            }),
-        )
-        .json(200, {}),
+delete_book = |id| {
+    Res.fx(
+        DbWrite({
+            db: db_path,
+            sql: "DELETE FROM books WHERE id = ?",
+            params: [Integer(id)],
+        }),
     )
+    .json(200, {})
 }
 
 # --- module-private helpers --------------------------------------------------

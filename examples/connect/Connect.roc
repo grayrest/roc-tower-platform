@@ -25,10 +25,10 @@ Connect := [].{
     # invariant: erroneous checked type reached Monotype instantiation). Handlers
     # call `Res.json(200, msg)` directly.
 
-    ## The handler-side error: a Connect code paired with a message. Handlers
-    ## raise these with `?` — `? |_| NotFound("...")` for a literal, or a bare
-    ## constructor like `? Internal` to wrap the underlying `Str` error — and
-    ## the `route` wrapper renders them to responses via `Connect.render`.
+    ## The app-side domain error: a Connect code paired with a message.
+    ## Coeffects raise these with `?` — `? |_| NotFound("...")` for a literal,
+    ## or a bare constructor like `? Internal` to wrap the underlying `Str`
+    ## error — and the `route` wrapper renders them via `Connect.render`.
     Error : [
         InvalidArgument(Str),
         NotFound(Str),
