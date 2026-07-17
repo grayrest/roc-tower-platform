@@ -36,10 +36,28 @@ Response : Res.Response
 
 Book : { id : I64, title : Str, author : Str, year : I64 }
 
+NewBook : { title : Str, author : Str, year : I64 }
+
 ## The route table wrapper. The mapping of errors to error responses is app-specific.
 ## Only one error handling strategy for this app so partial application makes for less
 ## noise in the route definition.
-route = |method, path, handler| Req.route(method, path, handler, Connect.render)
+route = |method, path, handler| Req.route(method, path, handler, render)
+
+## Render a coeffect/handler error to its Connect wire response. Coeffects
+## propagate UNinteresting errors with bare postfix `?`, so the union is open —
+## the wildcard maps anything that isn't a deliberate domain tag (`DbErr`,
+## `NoColumn`, ...) to an opaque internal error, keeping engine strings off
+## the wire. `InvalidBody` is the platform body extractor's rejection: its
+## decode errors are formatted once, here, via `Req.explain` — no per-route
+## hints. (Lives here, not in Connect.roc: calling a platform function from
+## an app NOMINAL module crashes executable finalization — see the note.)
+render = |error| match error {
+    InvalidArgument(message) => Connect.error(InvalidArgument, message)
+    NotFound(message) => Connect.error(NotFound, message)
+    Internal(message) => Connect.error(Internal, message)
+    InvalidBody(errors) => Connect.error(InvalidArgument, Req.explain(errors))
+    _ => Connect.error(Internal, "internal error")
+}
 
 main = |{}| {
     settings: [
@@ -67,21 +85,14 @@ init! = || {
 }
 
 # --- coeffects ---------------------------------------------------------------
-# The read side of each RPC: a coeffect is a plain function `Request =>
-# Try(value, err)` that either produces a handler input (decode the request
-# message, load rows) or rejects. INTERESTING errors are raised as domain tags
-# (`? |_| NotFound("...")`); uninteresting ones just propagate with bare
-# postfix `?` — the platform's errors are open tag unions (`DbErr`, `NoColumn`,
-# `TypeMismatch`, ...), so they merge into the coeffect's inferred union and
-# fall to `Connect.render`'s wildcard (500). Reads flow through `Sql.query!`
-# (recorded for cache invalidation); decoding the body marks the body-variant
-# cache key.
 
 ## Coeffect: GetBook's target book — decode `{ id }` from the request message,
-## load and decode its row.
+## load and decode its row. The body decode propagates bare: an invalid
+## message rejects with the platform's `InvalidBody(errors)`, which `render`
+## formats via `Req.explain` — no hand-written hint.
 book! = |req| {
     request : { id : I64 }
-    request = Req.json_body!(req) ? |_| InvalidArgument("GetBook expects { \"id\": <integer> }")
+    request = Req.json_body!(req)?
     rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Integer(request.id)])?
     row = Sql.first(rows) ? |_| NotFound("book ${request.id.to_str()} not found")
     book = decode_book(row)?
@@ -93,22 +104,6 @@ books! = |req| {
     rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books ORDER BY id", [])?
     books = decode_books(rows)?
     Ok(books)
-}
-
-NewBook : { title : Str, author : Str, year : I64 }
-
-## Coeffect: AddBook's request message.
-new_book! = |req| {
-    fields : NewBook
-    fields = Req.json_body!(req) ? |_| InvalidArgument("Book creation expects { title, author, year }")
-    Ok(fields)
-}
-
-## Coeffect: DeleteBook's target id from the request message.
-target_id! = |req| {
-    request : { id : I64 }
-    request = Req.json_body!(req) ? |_| InvalidArgument("DeleteBook expects { \"id\": <integer> }")
-    Ok(request.id)
 }
 
 # --- pure handlers -----------------------------------------------------------
@@ -126,7 +121,10 @@ list_books_h! = Cofx.bind1(books!, list_books)
 list_books : List(Book) -> Response
 list_books = |books| Res.json(200, {books: books})
 
-add_book_h! = Cofx.bind2(new_book!, Req.reserved_id!, add_book)
+## AddBook binds the platform body extractor DIRECTLY — no wrap coeffect. The
+## handler's `NewBook` annotation IS the decode target; an invalid message
+## rejects with `InvalidBody(errors)` and renders through `Req.explain`.
+add_book_h! = Cofx.bind2(Req.json_body!, Req.reserved_id!, add_book)
 ## AddBook({ title, author, year }) -> { book }. A DbWrite mutation: the effect
 ## poisons this response (never cached) and purges every cached read of `books`.
 add_book = |fields, id| {
@@ -147,13 +145,17 @@ add_book = |fields, id| {
     .json(200, { book: book })
 }
 
-delete_book_h! = Cofx.bind1(target_id!, delete_book)
-delete_book = |id| {
+## DeleteBook also binds the extractor directly; the annotation pins the
+## message shape and the handler projects the field it wants.
+delete_book_h! = Cofx.bind1(Req.json_body!, delete_book)
+
+delete_book : { id : I64 } -> Response
+delete_book = |request| {
     Res.fx(
         DbWrite({
             db: db_path,
             sql: "DELETE FROM books WHERE id = ?",
-            params: [Integer(id)],
+            params: [Integer(request.id)],
         }),
     )
     .json(200, {})

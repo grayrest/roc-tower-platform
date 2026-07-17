@@ -74,6 +74,7 @@ Articles := [].{
     ## miss. Prefer `Db.load_article_meta!`-based coeffects when the
     ## response doesn't need the article body.
     loaded_article! = Req.param("slug")
+        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             viewer = Auth.optional_user!(req)?
             Db.load_article!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
@@ -83,6 +84,7 @@ Articles := [].{
     ## own — 401 anonymous, 404 unknown, 403 not-your-article. Full read,
     ## for the update flow (the response echoes the merged article).
     owned_article! = Req.param("slug")
+        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             user = Auth.current_user!(req)?
             loaded = Db.load_article!(req.ctx, Db.of(req), user.id, slug)?
@@ -96,6 +98,7 @@ Articles := [].{
     ## Coeffect: the same ownership gate, but via the LIGHT meta read —
     ## DELETE needs only the row id.
     owned_article_id! = Req.param("slug")
+        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             user = Auth.current_user!(req)?
             meta = Db.load_article_meta!(req.ctx, Db.of(req), slug)?

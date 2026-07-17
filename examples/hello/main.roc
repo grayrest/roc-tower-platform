@@ -63,11 +63,20 @@ init! = || {
 # Handlers receive the RAW resolved values — no wrapper types to destructure.
 
 
+## INTERIM withN adapter: the platform extractors reject TAGS now (bindN
+## convention); rebrand into the ready 400 response withN expects. Dies with
+## the bindN migration.
+or_400 = |resolver!| Cofx.map_reject(resolver!, |err| match err {
+    MissingParam(name) => Res.text(400, "missing path parameter ${name}")
+    InvalidBody(errors) => Res.text(400, Req.explain(errors))
+    _ => Res.text(400, "bad request")
+})
+
 home_h! = Box.box(Cofx.with1(Req.model, home))
 home : Model -> Response
 home = |model| Res.text(200, "${model.greeting}, world!")
 
-user_h! = Box.box(Cofx.with1(Req.param("id"), user))
+user_h! = Box.box(Cofx.with1(or_400(Req.param("id")), user))
 ## The `{id}` path parameter, resolved by the `Req.param("id")` factory.
 user : Str -> Response
 user = |id| Res.text(200, "user ${id}")
@@ -76,7 +85,7 @@ echo_h! = Box.box(Cofx.with1(Req.body!, echo))
 echo : List(U8) -> Response
 echo = |bytes| Res.bytes(200, "application/octet-stream", bytes)
 
-greet_h! = Box.box(Cofx.with2(Req.json_body!, Req.model, greet))
+greet_h! = Box.box(Cofx.with2(or_400(Req.json_body!), Req.model, greet))
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
 greet : { name : Str }, Model -> Response
 greet = |body, model|

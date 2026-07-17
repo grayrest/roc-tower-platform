@@ -29,7 +29,7 @@ Req := [].{
 
     ## Body bytes as UTF-8 text. (The body is not a request-record field —
     ## get the bytes from the `body!` coeffect / `Host.request_body!`.)
-    body_str : List(U8) -> Try(Str, [InvalidUtf8])
+    body_str : List(U8) -> Try(Str, [InvalidUtf8, ..])
     body_str = |bytes| {
         text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         Ok(text)
@@ -45,7 +45,7 @@ Req := [].{
     }
 
     ## Parse application/x-www-form-urlencoded body bytes.
-    form : List(U8) -> Try(List({ name : Str, value : Str }), [InvalidUtf8])
+    form : List(U8) -> Try(List({ name : Str, value : Str }), [InvalidUtf8, ..])
     form = |bytes| {
         text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         Ok(parse_pairs(text))
@@ -53,11 +53,18 @@ Req := [].{
 
     ## --- Coeffects -----------------------------------------------------------
     ##
-    ## A coeffect is a PLAIN FUNCTION — `req => Try(a, Response)` — bound to a
-    ## pure handler's positional arguments by `Cofx.withN`:
+    ## A coeffect is a PLAIN FUNCTION — `req => Try(a, err)` — bound to a
+    ## pure handler's positional arguments by `Cofx.bindN`, with the app's
+    ## error render (via `Req.route`) turning rejections into responses:
     ##
-    ##     { method: "POST", path: "/greet", handler: Box.box(Cofx.with2(Req.json_body, Req.model, greet)) }
+    ##     route("POST", "/greet", Cofx.bind2(Req.json_body!, Req.model, greet))
     ##     greet : { name : Str }, Model -> Response
+    ##
+    ## Rejections are OPEN TAGS (`InvalidBody(...)`, `MissingParam(name)`,
+    ## ...), so they merge into a pipeline's inferred error union alongside
+    ## the app's own domain tags; `Req.explain` renders `InvalidBody`'s
+    ## payload to a message. (The deprecated `Cofx.withN` binders expect
+    ## response-rejecting resolvers — remap with `Cofx.map_reject` there.)
     ##
     ## The handler receives the RAW resolved value — nothing to destructure.
     ## Parameterized coeffects are factories returning resolvers
@@ -75,24 +82,52 @@ Req := [].{
     ## this route varies on the body, decision log D14). Never rejects.
     body! = |req| Ok(Host.request_body!(req.ctx))
 
-    ## The request body as UTF-8 text. Rejects with 400 on invalid UTF-8.
+    ## The request body as UTF-8 text. Rejects with `InvalidUtf8`.
     text_body! = |req| {
-        text = Req.body_str(Host.request_body!(req.ctx)) ? |_| reject(400, "request body is not valid UTF-8")
+        text = Req.body_str(Host.request_body!(req.ctx))?
         Ok(text)
     }
 
     ## The request body decoded as JSON into the handler argument's type.
-    ## Rejects with 400 when the body is not valid JSON for that shape.
+    ## Rejects with `InvalidBody(errors)` — a list of the builtin
+    ## `Json.ParseErr`s — which the app's error render turns into a response
+    ## (`Req.explain` formats the list into the human message). The list is a
+    ## singleton today (the builtin decode stops at the first failure); when
+    ## the decoder learns to accumulate, the payload gets richer with no
+    ## change here or in apps.
     json_body! = |req| {
-        decoded = Req.json(Host.request_body!(req.ctx)) ? |_| reject(400, "request body is not valid JSON for the expected shape")
+        decoded = Req.json(Host.request_body!(req.ctx)) ? |err| match err {
+            InvalidUtf8 => InvalidBody([InvalidJson("request body is not valid UTF-8")])
+            InvalidJson(parse_err) => InvalidBody([parse_err])
+        }
         Ok(decoded)
     }
 
     ## The request body parsed as application/x-www-form-urlencoded pairs.
-    ## Rejects with 400 on invalid UTF-8.
+    ## Rejects with `InvalidUtf8`.
     form_body! = |req| {
-        fields = Req.form(Host.request_body!(req.ctx)) ? |_| reject(400, "request body is not a valid urlencoded form")
+        fields = Req.form(Host.request_body!(req.ctx))?
         Ok(fields)
+    }
+
+    ## Render `InvalidBody`'s payload — a list of builtin JSON decode errors —
+    ## to a human message, in one place for every app:
+    ##
+    ##     InvalidBody(errors) => my_error_response(400, Req.explain(errors))
+    ##
+    ## The wildcard keeps this total as the builtin `ParseErr` union grows
+    ## (e.g. per-field type mismatches); new variants render generically
+    ## until a specific branch is added here. (Call this from a PLAIN app
+    ## module — calling it from an app nominal module crashes executable
+    ## finalization, same family as the `Res.Response` annotation crash.)
+    explain : List(Json.ParseErr) -> Str
+    explain = |errors| {
+        parts = errors.map(|error| match error {
+            MissingRequiredField(field) => "missing required field \"${field}\""
+            InvalidJson(detail) => detail
+            _ => "invalid body"
+        })
+        if parts.is_empty() "invalid request body" else Str.join_with(parts, "; ")
     }
 
     ## All query parameters, percent-decoded, in order of appearance. Never
@@ -105,25 +140,26 @@ Req := [].{
     ## The app's shared model, unboxed. Never rejects.
     model = |req| Ok(Box.unbox(req.model))
 
-    ## Coeffect factory: the named path parameter. Rejects with 400 on a miss.
+    ## Coeffect factory: the named path parameter. Rejects with
+    ## `MissingParam(name)` on a miss.
     ##
-    ##     Cofx.with1(Req.param("id"), show_user)
+    ##     Cofx.bind1(Req.param("id"), show_user)
     param = |name| |req| {
-        value = Req.get_param(req, name) ? |_| reject(400, "missing path parameter ${name}")
+        value = Req.get_param(req, name) ? |_| MissingParam(name)
         Ok(value)
     }
 
     ## Coeffect factory: the named query parameter (first occurrence wins).
-    ## Rejects with 400 on a miss.
+    ## Rejects with `MissingQueryParam(name)` on a miss.
     query = |name| |req| {
-        value = Req.get_query(req, name) ? |_| reject(400, "missing query parameter ${name}")
+        value = Req.get_query(req, name) ? |_| MissingQueryParam(name)
         Ok(value)
     }
 
     ## Coeffect factory: the named request header (case-insensitive). Rejects
-    ## with 400 on a miss.
+    ## with `MissingHeader(name)` on a miss.
     header = |name| |req| {
-        value = Req.get_header(req, name) ? |_| reject(400, "missing header ${name}")
+        value = Req.get_header(req, name) ? |_| MissingHeader(name)
         Ok(value)
     }
 
@@ -134,13 +170,13 @@ Req := [].{
         Err(_) => Ok(default)
     }
 
-    ## Coeffect factory: the named request cookie. Rejects with 400 on a
-    ## miss. The Cookie header is STRIPPED from `req.headers`; cookie access
-    ## goes through the host so cached responses vary on exactly the cookie
-    ## names a route reads (decision log D13).
+    ## Coeffect factory: the named request cookie. Rejects with
+    ## `MissingCookie(name)` on a miss. The Cookie header is STRIPPED from
+    ## `req.headers`; cookie access goes through the host so cached responses
+    ## vary on exactly the cookie names a route reads (decision log D13).
     cookie = |name| |req| match Host.cookie!(req.ctx, name) {
         Ok(value) => Ok(value)
-        Err(_) => Err(reject(400, "missing cookie ${name}"))
+        Err(_) => Err(MissingCookie(name))
     }
 
     ## The request's timestamp in milliseconds since the Unix epoch, memoized
@@ -188,24 +224,6 @@ import Res
 # Top-level defs outside the nominal block are unreachable from other
 # modules (module access goes through the type's associated items), so
 # this is the platform's real privacy boundary.
-
-## Internal: a plain-text rejection response for coeffect failures.
-## Left unannotated: naming the 4-field effectful Response type would need
-## to reference a sibling platform module, which annotations can't do. The
-## empty `effects: []` unifies with whatever the app's Response pins. The
-## status is pinned to U16 explicitly — resolvers are top-level VALUES, so
-## an unpinned numeral would default to Dec under the value restriction
-## and poison their response type.
-reject = |status, message| {
-    code : U16
-    code = status
-    {
-        status: code,
-        headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
-        body: Str.to_utf8(message),
-        effects: [],
-    }
-}
 
 ## Internal: parse "a=1&b=two%20words" into decoded pairs.
 parse_pairs : Str -> List({ name : Str, value : Str })
@@ -371,11 +389,17 @@ expect {
 
 expect {
     resolver = Req.param("id")
-    match resolver({ params: [] }) {
-        Ok(_) => False
-        Err(response) => response.status == 400
-    }
+    resolver({ params: [] }) == Err(MissingParam("id"))
 }
+
+## explain names the missing field from the decode error
+expect Req.explain([MissingRequiredField("title")]) == "missing required field \"title\""
+
+## explain joins several decode errors into one message
+expect Req.explain([MissingRequiredField("a"), MissingRequiredField("b")]) == "missing required field \"a\"; missing required field \"b\""
+
+## explain falls back to a generic message for an empty error list
+expect Req.explain([]) == "invalid request body"
 
 expect {
     resolver = Req.query("q")

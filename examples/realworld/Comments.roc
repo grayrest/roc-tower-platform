@@ -20,6 +20,7 @@ Comments := [].{
     ## Coeffect: the target article's row id — the light existence check,
     ## 404 when the slug is unknown.
     article_id! = Req.param("slug")
+        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             meta = Db.load_article_meta!(req.ctx, Db.of(req), slug)?
             Ok(meta.id)

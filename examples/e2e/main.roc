@@ -32,18 +32,18 @@ main = |{}| {
     init!: init!,
     routes: [
         { method: "GET", path: "/", handler: Box.box(root!) },
-        { method: "GET", path: "/users/{id}", handler: Box.box(Cofx.with1(Req.param("id"), user)) },
+        { method: "GET", path: "/users/{id}", handler: Box.box(Cofx.with1(or_400(Req.param("id")), user)) },
         { method: "POST", path: "/echo", handler: Box.box(echo!) },
         { method: "GET", path: "/big", handler: Box.box(big!) },
         { method: "GET", path: "/model", handler: Box.box(model_route!) },
         { method: "GET", path: "/db", handler: Box.box(db!) },
         { method: "GET", path: "/query", handler: Box.box(query!) },
-        { method: "POST", path: "/helper/greet", handler: Box.box(Cofx.with1(Req.json_body!, helper_greet)) },
-        { method: "POST", path: "/helper/form", handler: Box.box(Cofx.with1(Req.form_body!, helper_form)) },
+        { method: "POST", path: "/helper/greet", handler: Box.box(Cofx.with1(or_400(Req.json_body!), helper_greet)) },
+        { method: "POST", path: "/helper/form", handler: Box.box(Cofx.with1(or_400(Req.form_body!), helper_form)) },
         { method: "GET", path: "/helper/q", handler: Box.box(helper_q!) },
         { method: "GET", path: "/helper/redirect", handler: Box.box(helper_redirect!) },
-        { method: "GET", path: "/helper/header", handler: Box.box(Cofx.with1(Req.header("x-custom"), helper_header)) },
-        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Cofx.with3(Req.param("id"), Req.query_pairs, Req.model, helper_combo)) },
+        { method: "GET", path: "/helper/header", handler: Box.box(Cofx.with1(or_400(Req.header("x-custom")), helper_header)) },
+        { method: "GET", path: "/helper/combo/{id}", handler: Box.box(Cofx.with3(or_400(Req.param("id")), Req.query_pairs, Req.model, helper_combo)) },
         # Phase 3: host-executed effects.
         { method: "GET", path: "/effects/insert/{tag}", handler: Box.box(effects_insert!) },
         { method: "GET", path: "/effects/rollback", handler: Box.box(effects_rollback!) },
@@ -110,6 +110,16 @@ db! = |req| {
 
 query! : Request => Response
 query! = |req| text(200, "query=${req.query}")
+
+## INTERIM withN adapter: rebrand the platform extractors' tag rejections
+## into the ready 400 responses `Cofx.withN` expects. `Req.explain` formats
+## body-decode errors. Dies with the bindN migration.
+or_400 = |resolver!| Cofx.map_reject(resolver!, |err| match err {
+    MissingParam(name) => text(400, "missing path parameter ${name}")
+    MissingHeader(name) => text(400, "missing header ${name}")
+    InvalidBody(errors) => text(400, Req.explain(errors))
+    _ => text(400, "bad request body")
+})
 
 text : U16, Str -> Response
 text = |status, message| {

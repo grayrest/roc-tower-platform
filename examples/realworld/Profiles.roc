@@ -2,6 +2,7 @@ import pf.Req
 import pf.Res
 import pf.Cofx
 import pf.JsonBool
+import Api
 import Auth
 import Db
 
@@ -18,6 +19,7 @@ Profiles := [].{
     ## Coeffect: the {username} profile with its user id (for follow
     ## writes), as the (possibly anonymous) viewer sees it; 404 unknown.
     target! = Req.param("username")
+        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter username"))
         ->Cofx.and_then(|username, req| {
             viewer = Auth.optional_user!(req)?
             Db.load_profile!(req.ctx, Db.of(req), Auth.viewer_id(viewer), username)

@@ -373,10 +373,9 @@ async fn extractor_rejection_returns_400_with_platform_message() {
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
-    assert_eq!(
-        response.text().await.unwrap(),
-        "request body is not valid JSON for the expected shape"
-    );
+    // The platform-rendered decode message (`Req.explain` over the builtin
+    // `Json.ParseErr`); today's parser reports a generic invalid-JSON detail.
+    assert_eq!(response.text().await.unwrap(), "Invalid JSON");
 }
 
 #[tokio::test]
