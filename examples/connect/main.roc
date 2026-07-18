@@ -41,17 +41,14 @@ NewBook : { title : Str, author : Str, year : I64 }
 ## The route table wrapper. The mapping of errors to error responses is app-specific.
 ## Only one error handling strategy for this app so partial application makes for less
 ## noise in the route definition.
-route = |method, path, handler| Req.route(method, path, handler, render)
+route = |method, path, handler| Req.route(method, path, handler, errorFormatter)
 
-## Render a coeffect/handler error to its Connect wire response. Coeffects
-## propagate UNinteresting errors with bare postfix `?`, so the union is open —
-## the wildcard maps anything that isn't a deliberate domain tag (`DbErr`,
+## Render an error to its Connect wire response. 
+## UNinteresting errors are propagated with bare postfix `?`, so the union is
+##  open —the wildcard maps anything that isn't a deliberate domain tag (`DbErr`,
 ## `NoColumn`, ...) to an opaque internal error, keeping engine strings off
-## the wire. `InvalidBody` is the platform body extractor's rejection: its
-## decode errors are formatted once, here, via `Req.explain` — no per-route
-## hints. (Lives here, not in Connect.roc: calling a platform function from
-## an app NOMINAL module crashes executable finalization — see the note.)
-render = |error| match error {
+## the wire.
+errorFormatter = |error| match error {
     InvalidArgument(message) => Connect.error(InvalidArgument, message)
     NotFound(message) => Connect.error(NotFound, message)
     Internal(message) => Connect.error(Internal, message)
@@ -89,10 +86,12 @@ init! = || {
 ## Coeffect: GetBook's target book — decode `{ id }` from the request message,
 ## load and decode its row. The body decode propagates bare: an invalid
 ## message rejects with the platform's `InvalidBody(errors)`, which `render`
-## formats via `Req.explain` — no hand-written hint.
+## formats via `Req.explain`
 book! = |req| {
     request : { id : I64 }
     request = Req.json_body!(req)?
+    # This platform also offers a sqlx-based code generator. See realworld.
+    # This example demonstrates the API without codegen.
     rows = Sql.query!(req.ctx, db_path, "SELECT id, title, author, year FROM books WHERE id = ?", [Integer(request.id)])?
     row = Sql.first(rows) ? |_| NotFound("book ${request.id.to_str()} not found")
     book = decode_book(row)?
