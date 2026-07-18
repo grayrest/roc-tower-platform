@@ -209,9 +209,9 @@ fn emit_read(
 
     let (ret_ty, helper) = if query.one {
         (
-            format!("Try({record_ty}, [NoRows, DbErr(Str)])"),
+            format!("Try({record_ty}, [NoRows, DbErr(Str), ..])"),
             format!(
-                "{helper}! : U64 => Try({record_ty}, [NoRows, DbErr(Str)])\n\
+                "{helper}! : U64 => Try({record_ty}, [NoRows, DbErr(Str), ..])\n\
                  {helper}! = |handle| {{\n\
                  \x20   match Host.sql_step!(handle) {{\n\
                  \x20       Err(message) => Err(DbErr(message))\n\
@@ -230,9 +230,9 @@ fn emit_read(
         )
     } else {
         (
-            format!("Try(List({record_ty}), [DbErr(Str)])"),
+            format!("Try(List({record_ty}), [DbErr(Str), ..])"),
             format!(
-                "{helper}! : U64, List({record_ty}) => Try(List({record_ty}), [DbErr(Str)])\n\
+                "{helper}! : U64, List({record_ty}) => Try(List({record_ty}), [DbErr(Str), ..])\n\
                  {helper}! = |handle, acc| {{\n\
                  \x20   match Host.sql_step!(handle) {{\n\
                  \x20       Err(message) => Err(DbErr(message))\n\

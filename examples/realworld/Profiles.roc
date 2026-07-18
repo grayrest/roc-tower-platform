@@ -2,7 +2,6 @@ import pf.Req
 import pf.Res
 import pf.Cofx
 import pf.JsonBool
-import Api
 import Auth
 import Db
 
@@ -10,32 +9,31 @@ import Db
 ## coeffect (`target!`); follow/unfollow bind it after the auth slot, so
 ## 401 precedes 404.
 Profiles := [].{
-    routes = |{ prefix }| [
-        { method: "GET", path: "${prefix}/{username}", handler: Profiles.get_h! },
-        { method: "POST", path: "${prefix}/{username}/follow", handler: Profiles.follow_h! },
-        { method: "DELETE", path: "${prefix}/{username}/follow", handler: Profiles.unfollow_h! },
+    routes = |{ prefix, route }| [
+        route("GET", "${prefix}/{username}", Profiles.get_h!),
+        route("POST", "${prefix}/{username}/follow", Profiles.follow_h!),
+        route("DELETE", "${prefix}/{username}/follow", Profiles.unfollow_h!),
     ]
 
     ## Coeffect: the {username} profile with its user id (for follow
     ## writes), as the (possibly anonymous) viewer sees it; 404 unknown.
     target! = Req.param("username")
-        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter username"))
         ->Cofx.and_then(|username, req| {
             viewer = Auth.optional_user!(req)?
             Db.load_profile!(req.ctx, Db.of(req), Auth.viewer_id(viewer), username)
         })
 
     ## `get` bound to the typed `target!` read.
-    get_h! = Box.box(Cofx.with1(Profiles.target!, Profiles.get))
+    get_h! = Cofx.bind1(Profiles.target!, Profiles.get)
 
     ## PURE handler: serialize the typed profile as `{profile}` in Roc.
     get : { id : I64, profile : Db.Profile } -> Res.Response
     get = |target| Res.json(200, { profile: target.profile })
 
     ## `follow` / `unfollow` bound to their coeffects.
-    follow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.follow))
+    follow_h! = Cofx.bind2(Auth.current_user!, Profiles.target!, Profiles.follow)
 
-    unfollow_h! = Box.box(Cofx.with2(Auth.current_user!, Profiles.target!, Profiles.unfollow))
+    unfollow_h! = Cofx.bind2(Auth.current_user!, Profiles.target!, Profiles.unfollow)
 
     ## PURE handler: record the follow (idempotent), answer the profile
     ## with following flipped on.

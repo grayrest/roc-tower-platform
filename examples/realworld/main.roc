@@ -1,6 +1,8 @@
 app [Model, main] { pf: platform "../../platform/main.roc" }
 
 import pf.Sql
+import pf.Req
+import Api
 import Db
 import Auth
 import Users
@@ -30,11 +32,29 @@ main = |{}| {
         ResponseCache({ ttl_ms: 30000, max_entries: 4096, methods: ["GET"], bypass_headers: [] }),
     ],
     init!: init!,
-    routes: Users.routes({ prefix: "/api" })
-        .concat(Profiles.routes({ prefix: "/api/profiles" }))
-        .concat(Articles.routes({ prefix: "/api/articles" }))
-        .concat(Comments.routes({ prefix: "/api/articles" }))
-        .concat(Tags.routes({ prefix: "/api/tags" })),
+    routes: Users.routes({ prefix: "/api", route })
+        .concat(Profiles.routes({ prefix: "/api/profiles", route }))
+        .concat(Articles.routes({ prefix: "/api/articles", route }))
+        .concat(Comments.routes({ prefix: "/api/articles", route }))
+        .concat(Tags.routes({ prefix: "/api/tags", route })),
+}
+
+## The route-table entry builder, with the app's error render baked in. Each
+## module's `routes` receives it and registers bare `Cofx.bindN` handlers.
+route = |method, path, handler| Req.route(method, path, handler, render)
+
+## Render a coeffect rejection to its RealWorld wire response. `Fail(status,
+## field, message)` is the app's whole domain-error vocabulary (401/403/404/
+## 422 are all field-keyed error envelopes); the platform extractor tags get
+## their own branches, and the wildcard catches anything new at 500 without
+## leaking internals. (Lives here, not in Api.roc: calling a platform fn
+## from an app NOMINAL module crashes executable finalization.)
+render = |error| match error {
+    Fail(status, field, message) => Api.field_error(status, field, message)
+    DbErr(message) => Api.field_error(500, "body", "db error: ${message}")
+    MissingParam(name) => Api.field_error(400, "body", "missing path parameter ${name}")
+    InvalidBody(errors) => Api.field_error(422, "body", Req.explain(errors))
+    _ => Api.field_error(500, "body", "internal error")
 }
 
 # --- Schema ------------------------------------------------------------------

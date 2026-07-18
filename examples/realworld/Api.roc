@@ -41,9 +41,12 @@ Api := [].{
     blank = |field| Api.field_error(422, field, "can't be blank")
 
     ## Validate a required field is non-blank (whitespace counts as blank).
+    ## Rejects with the DOMAIN tag `Fail(status, field, message)` — the
+    ## bindN-era convention: coeffects raise tags, main.roc's `render` maps
+    ## `Fail` through `Api.field_error` so wire bodies are unchanged.
     nonblank = |field, value| {
         if value.trim().is_empty() {
-            Err(Api.blank(field))
+            Err(Fail(422.U16, field, "can't be blank"))
         } else {
             Ok(value)
         }
@@ -54,7 +57,7 @@ Api := [].{
     nonblank_opt = |field, value| match value {
         Ok(text) => match Api.nonblank(field, text) {
             Ok(_) => Ok(value)
-            Err(response) => Err(response)
+            Err(failure) => Err(failure)
         }
         Err(Missing) => Ok(value)
     }
@@ -174,13 +177,8 @@ expect {
     response.status == 409 and Str.from_utf8_lossy(response.body) == "{\"errors\":{\"email\":[\"has already been taken\"]}}"
 }
 
-## nonblank rejects whitespace-only values with the can't-be-blank shape
-expect {
-    match Api.nonblank("username", "  ") {
-        Ok(_) => False
-        Err(response) => response.status == 422 and Str.from_utf8_lossy(response.body) == "{\"errors\":{\"username\":[\"can't be blank\"]}}"
-    }
-}
+## nonblank rejects whitespace-only values with the can't-be-blank domain tag
+expect Api.nonblank("username", "  ") == Err(Fail(422.U16, "username", "can't be blank"))
 
 ## nonblank passes real values through
 expect Api.nonblank("username", "jake") == Ok("jake")

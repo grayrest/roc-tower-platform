@@ -3,7 +3,6 @@ import pf.Req
 import pf.Cofx
 import pf.Sql
 import pf.NullableStr
-import Api
 import Db
 
 ## Token auth as coeffects. Tokens are opaque 32-hex-char strings minted from
@@ -51,10 +50,11 @@ Auth := [].{
         token: token,
     })
 
-    ## Coeffect: the viewer, required — rejects 401 when anonymous.
+    ## Coeffect: the viewer, required — rejects the domain 401 tag when
+    ## anonymous (rendered as `errors.token = ["is missing"]`).
     current_user! = |req| match Auth.lookup!(req) {
         Found(user) => Ok(user)
-        Anon => Err(Api.unauthorized())
+        Anon => Err(Fail(401.U16, "token", "is missing"))
     }
 
     ## Coeffect: the viewer, optional — anonymous requests resolve to `Anon`

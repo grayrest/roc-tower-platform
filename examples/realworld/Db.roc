@@ -91,8 +91,8 @@ Db := [].{
 
     load_article! = |ctx, db, viewer, slug| {
         row = DbGen.article_by_slug_q!(ctx, db, { slug: slug, viewer: viewer }) ? |err| match err {
-            NoRows => Api.not_found("article")
-            DbErr(message) => Api.error(500, "db error: ${message}")
+            NoRows => Fail(404.U16, "article", "not found")
+            DbErr(message) => DbErr(message)
         }
         Ok({ id: row.id, author_id: row.author_id, article: Db.article_from_row(row) })
     }
@@ -127,8 +127,8 @@ Db := [].{
 
     load_article_meta! = |ctx, db, slug| {
         row = DbGen.article_meta_q!(ctx, db, { slug: slug }) ? |err| match err {
-            NoRows => Api.not_found("article")
-            DbErr(message) => Api.error(500, "db error: ${message}")
+            NoRows => Fail(404.U16, "article", "not found")
+            DbErr(message) => DbErr(message)
         }
         Ok(row)
     }
@@ -219,8 +219,8 @@ Db := [].{
 
     load_profile! = |ctx, db, viewer, username| {
         row = DbGen.profile_by_username_q!(ctx, db, { username: username, viewer: viewer }) ? |err| match err {
-            NoRows => Api.not_found("profile")
-            DbErr(message) => Api.error(500, "db error: ${message}")
+            NoRows => Fail(404.U16, "profile", "not found")
+            DbErr(message) => DbErr(message)
         }
         Ok({
             id: row.id,
@@ -244,8 +244,7 @@ Db := [].{
         \\WHERE c.article_id = :article_id ORDER BY c.id
 
     load_comments! = |ctx, db, viewer, article_id| {
-        rows = DbGen.comments_q!(ctx, db, { viewer: viewer, article_id: article_id })
-            ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        rows = DbGen.comments_q!(ctx, db, { viewer: viewer, article_id: article_id })?
         Ok(rows.map(Db.comment_from_row))
     }
 
@@ -268,8 +267,8 @@ Db := [].{
 
     load_comment! = |ctx, db, comment_id, article_id| {
         row = DbGen.comment_meta_q!(ctx, db, { comment_id: comment_id, article_id: article_id }) ? |err| match err {
-            NoRows => Api.not_found("comment")
-            DbErr(message) => Api.error(500, "db error: ${message}")
+            NoRows => Fail(404.U16, "comment", "not found")
+            DbErr(message) => DbErr(message)
         }
         Ok(row)
     }
@@ -281,7 +280,7 @@ Db := [].{
         \\SELECT DISTINCT tag FROM article_tags ORDER BY tag
 
     all_tags! = |ctx, db| {
-        rows = DbGen.tags_q!(ctx, db, {}) ? |DbErr(message)| Api.error(500, "db error: ${message}")
+        rows = DbGen.tags_q!(ctx, db, {})?
         Ok(rows.map(|row| row.tag))
     }
 }
@@ -320,18 +319,18 @@ article_summary_select_anon =
 ## Internal: one `Sql.query!` row (by name) to an ArticleSummary; 500 on a
 ## corrupt cell (impossible for this fixed shape, but typed all the way).
 article_summary_from_row = |row| {
-    slug = row.str("slug") ? |_| Api.error(500, "corrupt article row")
-    title = row.str("title") ? |_| Api.error(500, "corrupt article row")
-    description = row.str("description") ? |_| Api.error(500, "corrupt article row")
-    created_at = row.str("created_at") ? |_| Api.error(500, "corrupt article row")
-    updated_at = row.str("updated_at") ? |_| Api.error(500, "corrupt article row")
-    username = row.str("username") ? |_| Api.error(500, "corrupt article row")
-    bio = row.nullable_str("bio") ? |_| Api.error(500, "corrupt article row")
-    image = row.nullable_str("image") ? |_| Api.error(500, "corrupt article row")
-    favorites_count = row.i64("favorites_count") ? |_| Api.error(500, "corrupt article row")
-    favorited = row.i64("favorited") ? |_| Api.error(500, "corrupt article row")
-    following = row.i64("following") ? |_| Api.error(500, "corrupt article row")
-    tag_list = row.nullable_str("tag_list") ? |_| Api.error(500, "corrupt article row")
+    slug = row.str("slug") ? |_| Fail(500.U16, "body", "corrupt article row")
+    title = row.str("title") ? |_| Fail(500.U16, "body", "corrupt article row")
+    description = row.str("description") ? |_| Fail(500.U16, "body", "corrupt article row")
+    created_at = row.str("created_at") ? |_| Fail(500.U16, "body", "corrupt article row")
+    updated_at = row.str("updated_at") ? |_| Fail(500.U16, "body", "corrupt article row")
+    username = row.str("username") ? |_| Fail(500.U16, "body", "corrupt article row")
+    bio = row.nullable_str("bio") ? |_| Fail(500.U16, "body", "corrupt article row")
+    image = row.nullable_str("image") ? |_| Fail(500.U16, "body", "corrupt article row")
+    favorites_count = row.i64("favorites_count") ? |_| Fail(500.U16, "body", "corrupt article row")
+    favorited = row.i64("favorited") ? |_| Fail(500.U16, "body", "corrupt article row")
+    following = row.i64("following") ? |_| Fail(500.U16, "body", "corrupt article row")
+    tag_list = row.nullable_str("tag_list") ? |_| Fail(500.U16, "body", "corrupt article row")
     Ok({
         slug: slug,
         title: title,
@@ -360,8 +359,7 @@ run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit
         .concat(where_params)
         .append(Integer(limit))
         .append(Integer(offset))
-    rows = Sql.query!(ctx, db, page_sql, page_params)
-        ? |DbErr(message)| Api.error(500, "db error: ${message}")
+    rows = Sql.query!(ctx, db, page_sql, page_params)?
     # Seed the accumulator at the row count so the per-row `append` never
     # reallocates the backing buffer (the page size is known up front).
     articles = rows.fold(Ok(List.with_capacity(List.len(rows))), |acc, row| match acc {
@@ -372,10 +370,9 @@ run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit
         }
     })?
 
-    count_rows = Sql.query!(ctx, db, count_sql, where_params)
-        ? |DbErr(message)| Api.error(500, "db error: ${message}")
-    count_row = Sql.first(count_rows) ? |_| Api.error(500, "count returned no rows")
-    count = count_row.i64("n") ? |_| Api.error(500, "corrupt count row")
+    count_rows = Sql.query!(ctx, db, count_sql, where_params)?
+    count_row = Sql.first(count_rows) ? |_| Fail(500.U16, "body", "count returned no rows")
+    count = count_row.i64("n") ? |_| Fail(500.U16, "body", "corrupt count row")
 
     Ok({ articles: articles, articlesCount: count })
 }

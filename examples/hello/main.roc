@@ -33,10 +33,10 @@ main = |{}| {
     ],
     init!: init!,
     routes: [
-        { method: "GET", path: "/", handler: home_h! },
-        { method: "GET", path: "/users/{id}", handler: user_h! },
-        { method: "POST", path: "/echo", handler: echo_h! },
-        { method: "POST", path: "/greet", handler: greet_h! },
+        route("GET", "/", home_h!),
+        route("GET", "/users/{id}", user_h!),
+        route("POST", "/echo", echo_h!),
+        route("POST", "/greet", greet_h!),
         # Cofx isn't required, it's just for populating handler args
         { method: "GET", path: "/visit", handler: Box.box(|_req| visit()) },
         # Escape hatch: raw effectful `Request => Response` handlers, for logic
@@ -63,29 +63,31 @@ init! = || {
 # Handlers receive the RAW resolved values — no wrapper types to destructure.
 
 
-## INTERIM withN adapter: the platform extractors reject TAGS now (bindN
-## convention); rebrand into the ready 400 response withN expects. Dies with
-## the bindN migration.
-or_400 = |resolver!| Cofx.map_reject(resolver!, |err| match err {
+## The route-table entry builder with the app's error render baked in: the
+## platform extractors reject TAGS (`MissingParam(name)`, `InvalidBody(...)`),
+## and `render` maps them to plain-text responses once for every route.
+route = |method, path, handler| Req.route(method, path, handler, render)
+
+render = |error| match error {
     MissingParam(name) => Res.text(400, "missing path parameter ${name}")
     InvalidBody(errors) => Res.text(400, Req.explain(errors))
     _ => Res.text(400, "bad request")
-})
+}
 
-home_h! = Box.box(Cofx.with1(Req.model, home))
+home_h! = Cofx.bind1(Req.model, home)
 home : Model -> Response
 home = |model| Res.text(200, "${model.greeting}, world!")
 
-user_h! = Box.box(Cofx.with1(or_400(Req.param("id")), user))
+user_h! = Cofx.bind1(Req.param("id"), user)
 ## The `{id}` path parameter, resolved by the `Req.param("id")` factory.
 user : Str -> Response
 user = |id| Res.text(200, "user ${id}")
 
-echo_h! = Box.box(Cofx.with1(Req.body!, echo))
+echo_h! = Cofx.bind1(Req.body!, echo)
 echo : List(U8) -> Response
 echo = |bytes| Res.bytes(200, "application/octet-stream", bytes)
 
-greet_h! = Box.box(Cofx.with2(or_400(Req.json_body!), Req.model, greet))
+greet_h! = Cofx.bind2(Req.json_body!, Req.model, greet)
 ## POST a JSON body like {"name":"Ada"} and get JSON back.
 greet : { name : Str }, Model -> Response
 greet = |body, model|

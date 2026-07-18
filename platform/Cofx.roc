@@ -26,14 +26,14 @@
 ##         # : req => Try({ id : I64, body : ... }, resp) — fields resolve in
 ##         # order, first rejection wins. Requires at least two fields.
 ##
-## `Cofx.with1` … `Cofx.with5` bind resolvers to a PURE handler's positional
+## `Cofx.bind1` … `Cofx.bind5` bind resolvers to a PURE handler's positional
 ## arguments: each runs left to right (this is where reads happen — parse a
-## param, load a row, reserve an id); the first `Err` becomes the response and
-## the handler never runs, otherwise the handler is called with the RAW
-## resolved values. The binder is effectful (`=>`); the handler is pure (`->`)
-## and may only CONSTRUCT effects — the host runs the returned effect list.
-## `Cofx.bind1` … `Cofx.bind5` are the same idea for resolvers that reject
-## with a DOMAIN ERROR instead of a response — see the binder section below.
+## param, load a row, reserve an id); the first `Err` short-circuits with the
+## DOMAIN ERROR (the route's render turns it into a response — `Req.route`),
+## otherwise the handler is called with the RAW resolved values and its
+## response is the `Ok`. The binder is effectful (`=>`); the handler is pure
+## (`->`) and may only CONSTRUCT effects — the host runs the returned effect
+## list.
 ##
 ## Memoization is OPT-IN, for resolvers that must run at most once per request
 ## (non-idempotent reads like `Req.reserved_id!`) or that several resolvers
@@ -114,85 +114,11 @@ Cofx := [].{
         }
     }
 
-    ## Bind one resolver to a 1-argument PURE handler. The resolver runs first;
-    ## an Err rejection is returned as the response, otherwise the handler
-    ## receives the raw resolved value.
-    with1 : (req => Try(a, resp)), (a -> resp) -> (req => resp)
-    with1 = |resolve_a!, handler|
-        |req| match resolve_a!(req) {
-            Ok(a) => handler(a)
-            Err(rejection) => rejection
-        }
-
-    ## Bind two resolvers to a 2-argument PURE handler (see with1). Resolvers
-    ## run left to right; the first rejection wins.
-    with2 : (req => Try(a, resp)), (req => Try(b, resp)), (a, b -> resp) -> (req => resp)
-    with2 = |resolve_a!, resolve_b!, handler|
-        |req| match resolve_a!(req) {
-            Err(rejection) => rejection
-            Ok(a) => match resolve_b!(req) {
-                Err(rejection) => rejection
-                Ok(b) => handler(a, b)
-            }
-        }
-
-    ## Bind three resolvers to a 3-argument PURE handler (see with1).
-    with3 : (req => Try(a, resp)), (req => Try(b, resp)), (req => Try(c, resp)), (a, b, c -> resp) -> (req => resp)
-    with3 = |resolve_a!, resolve_b!, resolve_c!, handler|
-        |req| match resolve_a!(req) {
-            Err(rejection) => rejection
-            Ok(a) => match resolve_b!(req) {
-                Err(rejection) => rejection
-                Ok(b) => match resolve_c!(req) {
-                    Err(rejection) => rejection
-                    Ok(c) => handler(a, b, c)
-                }
-            }
-        }
-
-    ## Bind four resolvers to a 4-argument PURE handler (see with1).
-    with4 : (req => Try(a, resp)), (req => Try(b, resp)), (req => Try(c, resp)), (req => Try(d, resp)), (a, b, c, d -> resp) -> (req => resp)
-    with4 = |resolve_a!, resolve_b!, resolve_c!, resolve_d!, handler|
-        |req| match resolve_a!(req) {
-            Err(rejection) => rejection
-            Ok(a) => match resolve_b!(req) {
-                Err(rejection) => rejection
-                Ok(b) => match resolve_c!(req) {
-                    Err(rejection) => rejection
-                    Ok(c) => match resolve_d!(req) {
-                        Err(rejection) => rejection
-                        Ok(d) => handler(a, b, c, d)
-                    }
-                }
-            }
-        }
-
-    ## Bind five resolvers to a 5-argument PURE handler (see with1). Consider
-    ## the record-builder form (`with1` + `{ ... }.Cofx`) at this arity.
-    with5 : (req => Try(a, resp)), (req => Try(b, resp)), (req => Try(c, resp)), (req => Try(d, resp)), (req => Try(e, resp)), (a, b, c, d, e -> resp) -> (req => resp)
-    with5 = |resolve_a!, resolve_b!, resolve_c!, resolve_d!, resolve_e!, handler|
-        |req| match resolve_a!(req) {
-            Err(rejection) => rejection
-            Ok(a) => match resolve_b!(req) {
-                Err(rejection) => rejection
-                Ok(b) => match resolve_c!(req) {
-                    Err(rejection) => rejection
-                    Ok(c) => match resolve_d!(req) {
-                        Err(rejection) => rejection
-                        Ok(d) => match resolve_e!(req) {
-                            Err(rejection) => rejection
-                            Ok(e) => handler(a, b, c, d, e)
-                        }
-                    }
-                }
-            }
-        }
-
-    ## --- Domain-error binders ------------------------------------------------
+    ## --- Binders -------------------------------------------------------------
     ##
-    ## `bindN` is `withN` for the DOMAIN-ERROR pipeline: resolvers reject with
-    ## an error VALUE (`req => Try(a, err)`) instead of a rendered response,
-    ## and the composed result is the fallible route-handler shape
+    ## `bindN` binds resolvers to a PURE handler's positional arguments:
+    ## resolvers reject with an error VALUE (`req => Try(a, err)`), and the
+    ## composed result is the fallible route-handler shape
     ## `req => Try(resp, err)` that `Req.route(method, path, handler, render)`
     ## renders. Because `err` is inferred as an open tag union, resolvers with
     ## different error tags merge, and a resolver that never rejects (e.g.

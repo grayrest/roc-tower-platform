@@ -63,8 +63,7 @@ Req := [].{
     ## Rejections are OPEN TAGS (`InvalidBody(...)`, `MissingParam(name)`,
     ## ...), so they merge into a pipeline's inferred error union alongside
     ## the app's own domain tags; `Req.explain` renders `InvalidBody`'s
-    ## payload to a message. (The deprecated `Cofx.withN` binders expect
-    ## response-rejecting resolvers — remap with `Cofx.map_reject` there.)
+    ## payload to a message.
     ##
     ## The handler receives the RAW resolved value — nothing to destructure.
     ## Parameterized coeffects are factories returning resolvers

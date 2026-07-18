@@ -31,11 +31,11 @@ Users := [].{
         image : Try(NullableStr, [Missing]),
     }
 
-    routes = |{ prefix }| [
-        { method: "POST", path: "${prefix}/users", handler: Users.register_h! },
-        { method: "POST", path: "${prefix}/users/login", handler: Users.login_h! },
-        { method: "GET", path: "${prefix}/user", handler: Users.current_h! },
-        { method: "PUT", path: "${prefix}/user", handler: Users.update_h! },
+    routes = |{ prefix, route }| [
+        route("POST", "${prefix}/users", Users.register_h!),
+        route("POST", "${prefix}/users/login", Users.login_h!),
+        route("GET", "${prefix}/user", Users.current_h!),
+        route("PUT", "${prefix}/user", Users.update_h!),
     ]
 
     ## The RealWorld user envelope every users endpoint responds with.
@@ -55,7 +55,7 @@ Users := [].{
     ## handler).
     registration! = |req| {
         body : { user : Users.Registration }
-        body = Req.json_body!(req) ? |_| Api.error(422, "invalid registration body")
+        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid registration body")
         Ok({
             username: Api.nonblank("username", body.user.username)?,
             email: Api.nonblank("email", body.user.email)?,
@@ -64,7 +64,7 @@ Users := [].{
     }
 
     ## `register` bound to its coeffects (validated body, id, token).
-    register_h! = Box.box(Cofx.with3(Users.registration!, Req.reserved_id!, Auth.fresh_token!, Users.register))
+    register_h! = Cofx.bind3(Users.registration!, Req.reserved_id!, Auth.fresh_token!, Users.register)
 
     ## PURE handler: INSERT the user and their first token in one
     ## transaction; a duplicate email/username fails the Must and the
@@ -104,7 +104,7 @@ Users := [].{
     ## email or password is 401 credentials/invalid, without leaking which.
     credentials! = |req| {
         body : { user : Users.Credentials }
-        body = Req.json_body!(req) ? |_| Api.error(422, "invalid login body")
+        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid login body")
         email = Api.nonblank("email", body.user.email)?
         password = Api.nonblank("password", body.user.password)?
         rows = Sql.query!(
@@ -112,20 +112,20 @@ Users := [].{
             Db.of(req),
             "SELECT id, email, username, bio, image, password_hash FROM users WHERE email = ?",
             [Text(email)],
-        ) ? |DbErr(message)| Api.error(500, "db error: ${message}")
-        row = Sql.first(rows) ? |_| Api.invalid_credentials()
-        stored = row.str("password_hash") ? |_| Api.error(500, "corrupt user row")
+        )?
+        row = Sql.first(rows) ? |_| Fail(401.U16, "credentials", "invalid")
+        stored = row.str("password_hash") ? |_| Fail(500.U16, "body", "corrupt user row")
         if Host.password_verify!(password, stored) {
             token = Auth.fresh_token!(req)?
-            user = Auth.decode_user(row, token) ? |_| Api.error(500, "corrupt user row")
+            user = Auth.decode_user(row, token) ? |_| Fail(500.U16, "body", "corrupt user row")
             Ok(user)
         } else {
-            Err(Api.invalid_credentials())
+            Err(Fail(401.U16, "credentials", "invalid"))
         }
     }
 
     ## `login` bound to the verified-credentials coeffect.
-    login_h! = Box.box(Cofx.with1(Users.credentials!, Users.login))
+    login_h! = Cofx.bind1(Users.credentials!, Users.login)
 
     ## PURE handler: store the fresh token, answer the user envelope.
     login : Auth.User -> Res.Response
@@ -139,7 +139,7 @@ Users := [].{
     }
 
     ## `current` bound to the auth coeffect.
-    current_h! = Box.box(Cofx.with1(Auth.current_user!, Users.current))
+    current_h! = Cofx.bind1(Auth.current_user!, Users.current)
 
     ## PURE handler: the current user, straight from the auth coeffect.
     current : Auth.User -> Res.Response
@@ -150,7 +150,7 @@ Users := [].{
     ## NULL to keep (COALESCE).
     user_patch! = |req| {
         body : { user : Users.UserPatch }
-        body = Req.json_body!(req) ? |_| Api.error(422, "invalid update body")
+        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid update body")
         Ok({
             email: Api.nonblank_opt("email", body.user.email)?,
             username: Api.nonblank_opt("username", body.user.username)?,
@@ -164,7 +164,7 @@ Users := [].{
     }
 
     ## `update` bound to its coeffects (auth, validated patch).
-    update_h! = Box.box(Cofx.with2(Auth.current_user!, Users.user_patch!, Users.update))
+    update_h! = Cofx.bind2(Auth.current_user!, Users.user_patch!, Users.update)
 
     ## PURE handler: merge the patch over the current user, UPDATE in one
     ## Must (duplicates answer 409 like registration), echo the merged user.
@@ -207,11 +207,11 @@ Users := [].{
 
 ## Internal: NIST 800-63B minimum (the spec's stated policy): at least 8
 ## chars; blankness is reported first, as its own message.
-valid_password : Str -> Try(Str, Res.Response)
+valid_password : Str -> Try(Str, [Fail(U16, Str, Str), ..])
 valid_password = |password| {
     checked = Api.nonblank("password", password)?
     if checked.count_utf8_bytes() < 8 {
-        Err(Api.field_error(422, "password", "is too short (minimum is 8 characters)"))
+        Err(Fail(422.U16, "password", "is too short (minimum is 8 characters)"))
     } else {
         Ok(checked)
     }
@@ -246,23 +246,13 @@ expect {
 }
 
 ## the password policy floors at 8 chars with the spec's message
-expect {
-    match valid_password("short7c") {
-        Ok(_) => False
-        Err(response) => response.status == 422
-    }
-}
+expect valid_password("short7c") == Err(Fail(422.U16, "password", "is too short (minimum is 8 characters)"))
 
 ## an 8-char simple password is accepted (no composition rules)
 expect valid_password("bonjour1") == Ok("bonjour1")
 
 ## a blank password reports can't-be-blank, not too-short
-expect {
-    match valid_password("") {
-        Ok(_) => False
-        Err(response) => Str.from_utf8_lossy(response.body).contains("can't be blank")
-    }
-}
+expect valid_password("") == Err(Fail(422.U16, "password", "can't be blank"))
 
 ## unique_field attributes the violated column
 expect unique_field("UNIQUE constraint failed: users.email") == "email"

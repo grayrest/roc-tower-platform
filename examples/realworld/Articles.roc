@@ -31,15 +31,15 @@ Articles := [].{
         tagList : Try(List(Str), [Missing]),
     }
 
-    routes = |{ prefix }| [
-        { method: "POST", path: prefix, handler: Articles.create_h! },
-        { method: "GET", path: "${prefix}/feed", handler: Articles.feed_h! },
-        { method: "GET", path: "${prefix}/{slug}", handler: Articles.get_h! },
-        { method: "PUT", path: "${prefix}/{slug}", handler: Articles.update_h! },
-        { method: "DELETE", path: "${prefix}/{slug}", handler: Articles.delete_h! },
-        { method: "GET", path: prefix, handler: Articles.list_h! },
-        { method: "POST", path: "${prefix}/{slug}/favorite", handler: Articles.favorite_h! },
-        { method: "DELETE", path: "${prefix}/{slug}/favorite", handler: Articles.unfavorite_h! },
+    routes = |{ prefix, route }| [
+        route("POST", prefix, Articles.create_h!),
+        route("GET", "${prefix}/feed", Articles.feed_h!),
+        route("GET", "${prefix}/{slug}", Articles.get_h!),
+        route("PUT", "${prefix}/{slug}", Articles.update_h!),
+        route("DELETE", "${prefix}/{slug}", Articles.delete_h!),
+        route("GET", prefix, Articles.list_h!),
+        route("POST", "${prefix}/{slug}/favorite", Articles.favorite_h!),
+        route("DELETE", "${prefix}/{slug}/favorite", Articles.unfavorite_h!),
     ]
 
     ## The author profile a brand-new article/comment shows its creator:
@@ -74,7 +74,6 @@ Articles := [].{
     ## miss. Prefer `Db.load_article_meta!`-based coeffects when the
     ## response doesn't need the article body.
     loaded_article! = Req.param("slug")
-        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             viewer = Auth.optional_user!(req)?
             Db.load_article!(req.ctx, Db.of(req), Auth.viewer_id(viewer), slug)
@@ -84,35 +83,33 @@ Articles := [].{
     ## own — 401 anonymous, 404 unknown, 403 not-your-article. Full read,
     ## for the update flow (the response echoes the merged article).
     owned_article! = Req.param("slug")
-        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             user = Auth.current_user!(req)?
             loaded = Db.load_article!(req.ctx, Db.of(req), user.id, slug)?
             if loaded.author_id == user.id {
                 Ok(loaded)
             } else {
-                Err(Api.forbidden("article"))
+                Err(Fail(403.U16, "article", "forbidden"))
             }
         })
 
     ## Coeffect: the same ownership gate, but via the LIGHT meta read —
     ## DELETE needs only the row id.
     owned_article_id! = Req.param("slug")
-        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             user = Auth.current_user!(req)?
             meta = Db.load_article_meta!(req.ctx, Db.of(req), slug)?
             if meta.author_id == user.id {
                 Ok(meta.id)
             } else {
-                Err(Api.forbidden("article"))
+                Err(Fail(403.U16, "article", "forbidden"))
             }
         })
 
     ## Coeffect: the decoded, validated POST body. Pure.
     new_article! = |req| {
         body : { article : Articles.NewArticle }
-        body = Req.json_body!(req) ? |_| Api.error(422, "invalid article body")
+        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid article body")
         Ok({
             title: Api.nonblank("title", body.article.title)?,
             description: Api.nonblank("description", body.article.description)?,
@@ -125,7 +122,7 @@ Articles := [].{
     ## Pure.
     article_patch! = |req| {
         body : { article : Articles.ArticlePatch }
-        body = Req.json_body!(req) ? |_| Api.error(422, "invalid article body")
+        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid article body")
         Ok({
             title: Api.nonblank_opt("title", body.article.title)?,
             description: Api.nonblank_opt("description", body.article.description)?,
@@ -135,7 +132,7 @@ Articles := [].{
     }
 
     ## `create` bound to its coeffects, boxed for the route table.
-    create_h! = Box.box(Cofx.with4(Auth.current_user!, Articles.new_article!, Req.reserved_id!, Req.now!, Articles.create))
+    create_h! = Cofx.bind4(Auth.current_user!, Articles.new_article!, Req.reserved_id!, Req.now!, Articles.create)
 
     ## PURE handler: INSERT the article and its tags in ONE transaction
     ## (any failure rolls the whole group back), answer the article as the
@@ -186,7 +183,7 @@ Articles := [].{
     }
 
     ## `get` bound to the typed `loaded_article!` read.
-    get_h! = Box.box(Cofx.with1(Articles.loaded_article!, Articles.get))
+    get_h! = Cofx.bind1(Articles.loaded_article!, Articles.get)
 
     ## PURE handler: serialize the typed article as `{article}` in Roc.
     ## Cacheable: anonymous GETs hit the response cache (authenticated requests
@@ -195,7 +192,7 @@ Articles := [].{
     get = |loaded| Res.json(200, { article: loaded.article })
 
     ## `update` bound to its coeffects (owner gate, patch, instant).
-    update_h! = Box.box(Cofx.with3(Articles.owned_article!, Articles.article_patch!, Req.now!, Articles.update))
+    update_h! = Cofx.bind3(Articles.owned_article!, Articles.article_patch!, Req.now!, Articles.update)
 
     ## PURE handler: merge the patch, re-slug when the title changed (the
     ## id keeps it unique), UPDATE row and tags in one Must group, answer
@@ -244,7 +241,7 @@ Articles := [].{
     }
 
     ## `delete` bound to the light ownership gate.
-    delete_h! = Box.box(Cofx.with1(Articles.owned_article_id!, Articles.delete))
+    delete_h! = Cofx.bind1(Articles.owned_article_id!, Articles.delete)
 
     ## PURE handler: delete the article and its dependents in ONE
     ## transaction (comments, favorites, tags, then the row).
@@ -284,9 +281,9 @@ Articles := [].{
         })
 
     ## `page` bound to each of its two sources (global list, viewer's feed).
-    list_h! = Box.box(Cofx.with1(Articles.list_page!, Articles.page))
+    list_h! = Cofx.bind1(Articles.list_page!, Articles.page)
 
-    feed_h! = Box.box(Cofx.with1(Articles.feed_page!, Articles.page))
+    feed_h! = Cofx.bind1(Articles.feed_page!, Articles.page)
 
     ## PURE handler: serialize the typed page envelope (summaries OMIT the body
     ## the spec forbids in list items) as `{articles, articlesCount}` in Roc.
@@ -294,7 +291,7 @@ Articles := [].{
     page = |data| Res.json(200, data)
 
     ## `favorite` bound to its coeffects.
-    favorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.favorite))
+    favorite_h! = Cofx.bind2(Auth.current_user!, Articles.loaded_article!, Articles.favorite)
 
     ## PURE handler: record the favorite (idempotent), answer the article
     ## with the flag on and the count the write will produce.
@@ -312,7 +309,7 @@ Articles := [].{
     }
 
     ## `unfavorite` bound to its coeffects.
-    unfavorite_h! = Box.box(Cofx.with2(Auth.current_user!, Articles.loaded_article!, Articles.unfavorite))
+    unfavorite_h! = Cofx.bind2(Auth.current_user!, Articles.loaded_article!, Articles.unfavorite)
 
     ## PURE handler: remove the favorite (idempotent), mirror of favorite.
     unfavorite : Auth.User, { id : I64, author_id : I64, article : Db.Article } -> Res.Response

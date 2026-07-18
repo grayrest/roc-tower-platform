@@ -4,42 +4,42 @@ import pf.NullableStr
 import pf.JsonBool
 
 DbGen := [].{
-    article_by_slug_q! : U64, Str, { slug : Str, viewer : I64 } => Try({ id : I64, author_id : I64, slug : Str, title : Str, description : Str, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }, [NoRows, DbErr(Str)])
+    article_by_slug_q! : U64, Str, { slug : Str, viewer : I64 } => Try({ id : I64, author_id : I64, slug : Str, title : Str, description : Str, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }, [NoRows, DbErr(Str), ..])
     article_by_slug_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT a.id, a.author_id, a.slug, a.title, a.description, a.body, a.created_at, a.updated_at, u.username, u.bio, u.image, a.favorites_count, EXISTS(SELECT 1 FROM favorites f2 WHERE f2.article_id = a.id AND f2.user_id = :viewer) AS favorited, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = a.author_id) AS following, a.tag_list FROM articles a JOIN users u ON u.id = a.author_id WHERE a.slug = :slug", params: [Integer(params.viewer), Text(params.slug)] }) ? |message| DbErr(message)
         result = read_article_by_slug_q!(handle)
         Host.sql_finish!(handle)
         result
     }
-    article_meta_q! : U64, Str, { slug : Str } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str)])
+    article_meta_q! : U64, Str, { slug : Str } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str), ..])
     article_meta_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT id, author_id FROM articles WHERE slug = :slug", params: [Text(params.slug)] }) ? |message| DbErr(message)
         result = read_article_meta_q!(handle)
         Host.sql_finish!(handle)
         result
     }
-    profile_by_username_q! : U64, Str, { username : Str, viewer : I64 } => Try({ id : I64, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }, [NoRows, DbErr(Str)])
+    profile_by_username_q! : U64, Str, { username : Str, viewer : I64 } => Try({ id : I64, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }, [NoRows, DbErr(Str), ..])
     profile_by_username_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT u.id, u.username, u.bio, u.image, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = u.id) AS \"following: Bool\" FROM users u WHERE u.username = :username", params: [Integer(params.viewer), Text(params.username)] }) ? |message| DbErr(message)
         result = read_profile_by_username_q!(handle)
         Host.sql_finish!(handle)
         result
     }
-    comments_q! : U64, Str, { article_id : I64, viewer : I64 } => Try(List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str)])
+    comments_q! : U64, Str, { article_id : I64, viewer : I64 } => Try(List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str), ..])
     comments_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT c.id, c.created_at, c.updated_at, c.body, u.username, u.bio, u.image, EXISTS(SELECT 1 FROM follows fo WHERE fo.follower_id = :viewer AND fo.followed_id = c.author_id) AS \"following: Bool\" FROM comments c JOIN users u ON u.id = c.author_id WHERE c.article_id = :article_id ORDER BY c.id", params: [Integer(params.viewer), Integer(params.article_id)] }) ? |message| DbErr(message)
         result = read_comments_q!(handle, [])
         Host.sql_finish!(handle)
         result
     }
-    comment_meta_q! : U64, Str, { article_id : I64, comment_id : I64 } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str)])
+    comment_meta_q! : U64, Str, { article_id : I64, comment_id : I64 } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str), ..])
     comment_meta_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT c.id, c.author_id FROM comments c WHERE c.id = :comment_id AND c.article_id = :article_id", params: [Integer(params.comment_id), Integer(params.article_id)] }) ? |message| DbErr(message)
         result = read_comment_meta_q!(handle)
         Host.sql_finish!(handle)
         result
     }
-    tags_q! : U64, Str, {} => Try(List({ tag : Str }), [DbErr(Str)])
+    tags_q! : U64, Str, {} => Try(List({ tag : Str }), [DbErr(Str), ..])
     tags_q! = |ctx, db, _params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT DISTINCT tag FROM article_tags ORDER BY tag", params: [] }) ? |message| DbErr(message)
         result = read_tags_q!(handle, [])
@@ -56,7 +56,7 @@ col_nullable_str! = |handle, index| {
         _ => NullableStr.Val(Host.sql_col_str!(handle, index))
     }
 }
-read_article_by_slug_q! : U64 => Try({ id : I64, author_id : I64, slug : Str, title : Str, description : Str, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }, [NoRows, DbErr(Str)])
+read_article_by_slug_q! : U64 => Try({ id : I64, author_id : I64, slug : Str, title : Str, description : Str, body : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }, [NoRows, DbErr(Str), ..])
 read_article_by_slug_q! = |handle| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
@@ -68,7 +68,7 @@ read_article_by_slug_q! = |handle| {
             }
     }
 }
-read_article_meta_q! : U64 => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str)])
+read_article_meta_q! : U64 => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str), ..])
 read_article_meta_q! = |handle| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
@@ -80,7 +80,7 @@ read_article_meta_q! = |handle| {
             }
     }
 }
-read_profile_by_username_q! : U64 => Try({ id : I64, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }, [NoRows, DbErr(Str)])
+read_profile_by_username_q! : U64 => Try({ id : I64, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }, [NoRows, DbErr(Str), ..])
 read_profile_by_username_q! = |handle| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
@@ -92,7 +92,7 @@ read_profile_by_username_q! = |handle| {
             }
     }
 }
-read_comments_q! : U64, List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }) => Try(List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str)])
+read_comments_q! : U64, List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }) => Try(List({ id : I64, created_at : Str, updated_at : Str, body : Str, username : Str, bio : NullableStr, image : NullableStr, following : JsonBool }), [DbErr(Str), ..])
 read_comments_q! = |handle, acc| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
@@ -104,7 +104,7 @@ read_comments_q! = |handle, acc| {
             }
     }
 }
-read_comment_meta_q! : U64 => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str)])
+read_comment_meta_q! : U64 => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str), ..])
 read_comment_meta_q! = |handle| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))
@@ -116,7 +116,7 @@ read_comment_meta_q! = |handle| {
             }
     }
 }
-read_tags_q! : U64, List({ tag : Str }) => Try(List({ tag : Str }), [DbErr(Str)])
+read_tags_q! : U64, List({ tag : Str }) => Try(List({ tag : Str }), [DbErr(Str), ..])
 read_tags_q! = |handle, acc| {
     match Host.sql_step!(handle) {
         Err(message) => Err(DbErr(message))

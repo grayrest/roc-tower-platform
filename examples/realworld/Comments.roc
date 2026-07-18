@@ -11,16 +11,15 @@ import Articles
 ## (comments never need the article body); `withN` slot order gives the
 ## spec's 401 → 404 → 422 precedence.
 Comments := [].{
-    routes = |{ prefix }| [
-        { method: "POST", path: "${prefix}/{slug}/comments", handler: Comments.add_h! },
-        { method: "GET", path: "${prefix}/{slug}/comments", handler: Comments.list_h! },
-        { method: "DELETE", path: "${prefix}/{slug}/comments/{id}", handler: Comments.delete_h! },
+    routes = |{ prefix, route }| [
+        route("POST", "${prefix}/{slug}/comments", Comments.add_h!),
+        route("GET", "${prefix}/{slug}/comments", Comments.list_h!),
+        route("DELETE", "${prefix}/{slug}/comments/{id}", Comments.delete_h!),
     ]
 
     ## Coeffect: the target article's row id — the light existence check,
     ## 404 when the slug is unknown.
     article_id! = Req.param("slug")
-        ->Cofx.map_reject(|_| Api.error(400, "missing path parameter slug"))
         ->Cofx.and_then(|slug, req| {
             meta = Db.load_article_meta!(req.ctx, Db.of(req), slug)?
             Ok(meta.id)
@@ -29,12 +28,12 @@ Comments := [].{
     ## Coeffect: the decoded, validated comment text. Pure.
     comment_body! = |req| {
         body : { comment : { body : Str } }
-        body = Req.json_body!(req) ? |_| Api.error(422, "invalid comment body")
+        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid comment body")
         Api.nonblank("body", body.comment.body)
     }
 
     ## `add` bound to its coeffects (auth, article, text, id, instant).
-    add_h! = Box.box(Cofx.with5(Auth.current_user!, Comments.article_id!, Comments.comment_body!, Req.reserved_id!, Req.now!, Comments.add))
+    add_h! = Cofx.bind5(Auth.current_user!, Comments.article_id!, Comments.comment_body!, Req.reserved_id!, Req.now!, Comments.add)
 
     ## PURE handler: INSERT the comment, answer the comment object as its
     ## author sees it.
@@ -73,7 +72,7 @@ Comments := [].{
         })
 
     ## `list` bound to its coeffect.
-    list_h! = Box.box(Cofx.with1(Comments.article_comments!, Comments.list))
+    list_h! = Cofx.bind1(Comments.article_comments!, Comments.list)
 
     ## PURE handler: serialize the typed comment list as `{comments}` in Roc.
     list : List(Db.Comment) -> Res.Response
@@ -85,18 +84,18 @@ Comments := [].{
     owned_comment_id! = |req| {
         user = Auth.current_user!(req)?
         article_id = Comments.article_id!(req)?
-        raw_id = Req.get_param(req, "id") ? |_| Api.error(400, "missing comment id")
-        comment_id = I64.from_str(raw_id) ? |_| Api.not_found("comment")
+        raw_id = Req.get_param(req, "id") ? |_| Fail(400.U16, "body", "missing comment id")
+        comment_id = I64.from_str(raw_id) ? |_| Fail(404.U16, "comment", "not found")
         comment = Db.load_comment!(req.ctx, Db.of(req), comment_id, article_id)?
         if comment.author_id == user.id {
             Ok(comment.id)
         } else {
-            Err(Api.forbidden("comment"))
+            Err(Fail(403.U16, "comment", "forbidden"))
         }
     }
 
     ## `delete` bound to the comment-ownership gate.
-    delete_h! = Box.box(Cofx.with1(Comments.owned_comment_id!, Comments.delete))
+    delete_h! = Cofx.bind1(Comments.owned_comment_id!, Comments.delete)
 
     ## PURE handler: delete the comment.
     delete : I64 -> Res.Response
