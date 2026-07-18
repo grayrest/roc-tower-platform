@@ -1,5 +1,16 @@
 # Input extractors + canonical cache keys
 
+> **STATUS 2026-07-17: ALL PHASES DONE** (EX3 assessed+deferred by design).
+> EX1 `ff06b3f` tag rejections + Req.explain + connect reshape ·
+> EX2 `e7ce107` canonical body keys (to_hash, alias table; upstream roc
+> `59e30d7db6`+`5628dbfeef` expose Hasher.new/finish/hash_of) ·
+> EX3 deferred — landing sites in notes/2026-07-17-json-parseerr-
+> enrichment-assessment.md ·
+> EX4 `797491c` scalar factories (parser_for IS format-generic —
+> HttpHeaderEncoding precedent — derive not needed for scalars) ·
+> EX5 `06f3e35` realworld/hello/e2e on bindN+Req.route, withN DELETED,
+> sqlgen emits open unions.
+
 Grill-me outcome, 2026-07-17. Two goals, one design: (a) kill the response
 cache's remaining DoS vector (eviction pressure from junk variants of valid
 messages), (b) make the framework own input boilerplate — hand-written wrap
