@@ -2348,6 +2348,16 @@ pub struct HostRequestBodyArgs {
     pub arg0: u64,
 }
 
+/// Arguments for Host.set_body_key!
+/// Roc signature: U64, U64 => {}
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSetBodyKeyArgs {
+    pub arg0: u64,
+    pub arg1: u64,
+}
+
 /// Arguments for Host.sql_begin!
 /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
 /// Refcounted fields are owned by the hosted function.
@@ -3484,6 +3494,10 @@ unsafe extern "C" {
     /// Roc signature: Str => Try(Str, [EnvVarNotFound])
     pub fn roc_env_var(arg0: RocStr) -> HostEnvVarResult;
 
+    /// Hosted symbol for Host.hash_seed!
+    /// Roc signature: {} => U64
+    pub fn roc_hash_seed() -> u64;
+
     /// Hosted symbol for Host.http_send!
     /// Roc signature: { body : List(U8), headers : List({ name : Str, value : Str }), method : Str, timeout_ms : U64, url : Str } => Try({ body : List(U8), headers : List({ name : Str, value : Str }), status : U16 }, Str)
     pub fn roc_http_send(arg0: HostHttpSendArgs) -> HostHttpSendResult;
@@ -3539,6 +3553,10 @@ unsafe extern "C" {
     /// Hosted symbol for Host.reserve_runs!
     /// Roc signature: {} => U64
     pub fn roc_reserve_runs() -> u64;
+
+    /// Hosted symbol for Host.set_body_key!
+    /// Roc signature: U64, U64 => {}
+    pub fn roc_set_body_key(arg0: u64, arg1: u64);
 
     /// Hosted symbol for Host.sql_begin!
     /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
