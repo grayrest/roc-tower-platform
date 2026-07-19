@@ -5,6 +5,8 @@ Rust host built on [hyper](https://hyper.rs/), [Tower](https://github.com/tower-
 and [matchit](https://github.com/ibraheemdev/matchit) — similar in scope to
 Axum, but the application is written in Roc.
 
+## Warning: Requires patches from my branch of the Roc compiler.
+
 **Status: experimental.** Targets the new (Zig-based) Roc compiler built from
 source, and tracks its moving platform ABI via generated glue.
 

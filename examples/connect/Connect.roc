@@ -42,14 +42,14 @@ Connect := [].{
     ## postcheck invariant as the `Connect.ok` case), so the empty `effects: []`
     ## is left to unify.
     error = |code, message| {
-        # Pin `message` to Str locally (no signature), so `Json.to_utf8` can
+        # Pin `message` to Str locally (no signature), so `Json.to_str` can
         # resolve an encoder for the `{ code, message }` record.
         text : Str
         text = message
         {
             status: status_of(code),
             headers: [{ name: "content-type", value: "application/json" }],
-            body: Json.to_utf8({ code: string_of(code), message: text }),
+            body: Json.to_str({ code: string_of(code), message: text }).to_utf8(),
             effects: [],
         }
     }
