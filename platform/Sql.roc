@@ -260,5 +260,12 @@ expect {
 expect {
     rows : List(Sql.Row)
     rows = []
-    Sql.first(rows) == Err(NoRows)
+    # Matched rather than compared with `==`: equality on the `Try` would
+    # demand `is_eq` for `Sql.Row`, which a nominal declaring associated items
+    # no longer derives, and supplying it would cascade into `Host.SqlValue`.
+    # Only the Err side is under test, so there is nothing to compare.
+    match Sql.first(rows) {
+        Err(NoRows) => True
+        Ok(_) => False
+    }
 }

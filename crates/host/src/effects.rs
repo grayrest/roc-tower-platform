@@ -410,8 +410,8 @@ struct CacheAttribution {
     epoch: Option<u64>,
     /// Cookie NAMES read, in first-read order (variant dimension).
     cookies_read: Vec<String>,
-    /// How many times the route extracted the body (variant dimension when
-    /// > 0). A COUNT, not a flag: paired with `body_keys` it distinguishes
+    /// How many times the route extracted the body (a variant dimension when
+    /// nonzero). A COUNT, not a flag: paired with `body_keys` it distinguishes
     /// "every read was a typed decode" from "some consumer saw raw bytes".
     body_reads: u32,
     /// Canonical body keys reported by typed decodes (`Host.set_body_key!`),

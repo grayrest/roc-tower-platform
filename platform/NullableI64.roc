@@ -3,6 +3,15 @@
 ## (`I64?`). A record field typed `NullableI64` comes out of `Res.json` /
 ## `Json.to_str` as `"n":7` or `"n":null`.
 NullableI64 := [Null, Val(I64)].{
+    ## Structural equality — see the note on `NullableStr.is_eq`: a nominal
+    ## declaring associated items no longer gets a derived `is_eq`.
+    is_eq : NullableI64, NullableI64 -> Bool
+    is_eq = |left, right| match (left, right) {
+        (Null, Null) => True
+        (Val(left_number), Val(right_number)) => left_number == right_number
+        _ => False
+    }
+
     ## The `Json.to_str` hook: `Null` encodes as JSON `null`, `Val(n)` as a
     ## JSON number.
     encoder_for = |encoding| |nullable, state| match nullable {
@@ -49,14 +58,14 @@ expect NullableI64.with_default(NullableI64.Null, 0) == 0
 
 ## explicit JSON null decodes to Null
 expect {
-    parsed : Try({ n : NullableI64 }, Json.ParseErr)
+    parsed : Try({ n : NullableI64 }, _)
     parsed = Json.parse("{\"n\":null}")
     parsed == Ok({ n: NullableI64.Null })
 }
 
 ## a JSON number decodes to Val
 expect {
-    parsed : Try({ n : NullableI64 }, Json.ParseErr)
+    parsed : Try({ n : NullableI64 }, _)
     parsed = Json.parse("{\"n\":5}")
     parsed == Ok({ n: NullableI64.Val(5) })
 }

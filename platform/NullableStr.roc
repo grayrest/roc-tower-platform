@@ -9,6 +9,17 @@
 ## states of a nullable PATCH field — absent (`Err(Missing)`), explicit
 ## null (`Ok(Null)`), and a value (`Ok(Val(s))`).
 NullableStr := [Null, Val(Str)].{
+    ## Structural equality. A nominal that declares associated items no longer
+    ## receives a derived `is_eq`, so `==` on a `NullableStr` needs this
+    ## spelled out (it is what the expects below, and any app comparing a
+    ## nullable column, rely on).
+    is_eq : NullableStr, NullableStr -> Bool
+    is_eq = |left, right| match (left, right) {
+        (Null, Null) => True
+        (Val(left_text), Val(right_text)) => left_text == right_text
+        _ => False
+    }
+
     ## The `Json.to_str` hook: `Null` encodes as JSON `null`, `Val(s)` as a
     ## JSON string. Derived record/list encoders pick this up for any field
     ## typed `NullableStr`.
@@ -71,23 +82,23 @@ expect NullableStr.with_default(NullableStr.Null, "d") == "d"
 
 ## explicit JSON null decodes to Null
 expect {
-    parsed : Try({ bio : NullableStr }, Json.ParseErr)
+    parsed : Try({ bio : NullableStr }, _)
     parsed = Json.parse("{\"bio\":null}")
     parsed == Ok({ bio: NullableStr.Null })
 }
 
 ## a JSON string decodes to Val
 expect {
-    parsed : Try({ bio : NullableStr }, Json.ParseErr)
+    parsed : Try({ bio : NullableStr }, _)
     parsed = Json.parse("{\"bio\":\"hi\"}")
     parsed == Ok({ bio: NullableStr.Val("hi") })
 }
 
 ## tri-state PATCH decode: absent field is Err(Missing), explicit null is Ok(Null)
 expect {
-    absent : Try({ bio : Try(NullableStr, [Missing]) }, Json.ParseErr)
+    absent : Try({ bio : Try(NullableStr, [Missing]) }, _)
     absent = Json.parse("{}")
-    explicit : Try({ bio : Try(NullableStr, [Missing]) }, Json.ParseErr)
+    explicit : Try({ bio : Try(NullableStr, [Missing]) }, _)
     explicit = Json.parse("{\"bio\":null}")
     absent == Ok({ bio: Err(Missing) }) and explicit == Ok({ bio: Ok(NullableStr.Null) })
 }

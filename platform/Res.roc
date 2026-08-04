@@ -151,7 +151,13 @@ Res := [].{
         opt = |builder, tag| Res.Fx.{ effects: builder.effects.append(Opt(tag)) }
 
         ## Terminal: a plain-text response carrying the accumulated effects.
-        text : Res.Fx, U16, Str -> Res.Response
+        # NOTE: the effect-carrying terminals are deliberately UNANNOTATED.
+        # An explicit `-> Res.Response` return annotation makes the returned
+        # record's `effects` field come back EMPTY — the accumulated effects
+        # are silently dropped, so a `Res.fx(DbWrite(...)).text(...)` response
+        # runs no write at all. `json` was already unannotated and was the only
+        # terminal that worked. Same family as the app-side rule that
+        # `Res.Response` helpers must be unannotated.
         text = |builder, status, message| {
             status: status,
             headers: [{ name: "content-type", value: "text/plain; charset=utf-8" }],
@@ -160,7 +166,6 @@ Res := [].{
         }
 
         ## Terminal: an HTML response carrying the accumulated effects.
-        html : Res.Fx, U16, Str -> Res.Response
         html = |builder, status, message| {
             status: status,
             headers: [{ name: "content-type", value: "text/html; charset=utf-8" }],
@@ -177,7 +182,6 @@ Res := [].{
         }
 
         ## Terminal: raw body bytes with an explicit content type and the effects.
-        bytes : Res.Fx, U16, Str, List(U8) -> Res.Response
         bytes = |builder, status, content_type, body| {
             status: status,
             headers: [{ name: "content-type", value: content_type }],
@@ -186,11 +190,9 @@ Res := [].{
         }
 
         ## Terminal: 204 No Content carrying the accumulated effects.
-        no_content : Res.Fx -> Res.Response
         no_content = |builder| { status: 204, headers: [], body: [], effects: builder.effects }
 
         ## Terminal: a redirect carrying the accumulated effects.
-        redirect : Res.Fx, U16, Str -> Res.Response
         redirect = |builder, status, location| {
             status: status,
             headers: [{ name: "location", value: location }],

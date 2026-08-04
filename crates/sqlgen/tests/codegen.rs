@@ -88,7 +88,9 @@ fn emits_one_reader_with_nullable_and_bool() {
     let module = emit_module("Db", &scan_ok()).expect("emit");
     // The `one` reader signature and NoRows error.
     assert!(module.contains("load_profile! : U64, Str, { username : Str, viewer : I64 } => Try("));
-    assert!(module.contains("[NoRows, DbErr(Str)]"));
+    // OPEN union: generated errors must merge into a caller's own error union
+    // so a coeffect can propagate them with bare postfix `?` (since 06f3e35).
+    assert!(module.contains("[NoRows, DbErr(Str), ..]"));
     // bio is nullable TEXT -> NullableStr via the probe helper.
     assert!(module.contains("bio : NullableStr"));
     assert!(module.contains("col_nullable_str!"));

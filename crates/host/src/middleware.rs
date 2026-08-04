@@ -262,20 +262,20 @@ impl tower::Service<Request<ReqBody>> for CacheService {
                 // Raw-hash miss: stored entries for typed-decode routes key
                 // on the CANONICAL body key. If a prior store aliased this
                 // raw spelling, translate and retry once.
-                if let Some(canonical) = body_hash.and_then(|raw| cache.body_key_for(raw)) {
-                    if let Some(stored) = cache.lookup(
+                if let Some(canonical) = body_hash.and_then(|raw| cache.body_key_for(raw))
+                    && let Some(stored) = cache.lookup(
                         &key,
                         |spec| resolve_variant(spec, req.headers(), Some(canonical)),
                         Instant::now(),
-                    ) {
-                        tracing::debug!("response cache: canonical body-key hit");
-                        let response = if none_match(&req, &stored.etag) {
-                            not_modified(&stored.etag)
-                        } else {
-                            serve_stored(&stored)
-                        };
-                        return Ok(response);
-                    }
+                    )
+                {
+                    tracing::debug!("response cache: canonical body-key hit");
+                    let response = if none_match(&req, &stored.etag) {
+                        not_modified(&stored.etag)
+                    } else {
+                        serve_stored(&stored)
+                    };
+                    return Ok(response);
                 }
                 req
             } else {

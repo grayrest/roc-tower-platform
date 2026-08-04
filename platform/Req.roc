@@ -123,12 +123,18 @@ Req := [].{
     ##
     ##     InvalidBody(errors) => my_error_response(400, Req.explain(errors))
     ##
-    ## The wildcard keeps this total as the builtin `ParseErr` union grows
-    ## (e.g. per-field type mismatches); new variants render generically
-    ## until a specific branch is added here. (Call this from a PLAIN app
-    ## module — calling it from an app nominal module crashes executable
-    ## finalization, same family as the `Res.Response` annotation crash.)
-    explain : List(Json.ParseErr) -> Str
+    ## The wildcard keeps this total as the decode error union grows (e.g.
+    ## per-field type mismatches); new variants render generically until a
+    ## specific branch is added here. (Call this from a PLAIN app module —
+    ## calling it from an app nominal module crashes executable finalization,
+    ## same family as the `Res.Response` annotation crash.)
+    ##
+    ## The union is written INLINE and OPEN rather than as `Json.ParseErr`:
+    ## the builtin dropped that alias, and `Json.parse` now fails with the
+    ## bare open union `[InvalidJson(Str), ..errs]` (`MissingRequiredField`
+    ## comes from the generated record driver). Open is also what lets a
+    ## caller's own tags merge, the same contract as `Sql`'s decoders.
+    explain : List([MissingRequiredField(Str), InvalidJson(Str), ..]) -> Str
     explain = |errors| {
         parts = errors.map(|error| match error {
             MissingRequiredField(field) => "missing required field \"${field}\""
