@@ -63,10 +63,23 @@ Articles := [].{
 
     ## Coeffect: the list filters, straight off the query string ("" means
     ## unfiltered). Pure.
-    filters! = |req| {
-        q : { tag : Try(Str, [Missing]), author : Try(Str, [Missing]), favorited : Try(Str, [Missing]) }
+    ## Coeffect: filters AND bounds from ONE decode of the query string. The
+    ## old design decoded twice (a `filters!` and a `bounds!` coeffect each
+    ## running a full QueryDec.parse + percent-decode + canonical-key hash);
+    ## the list request only has one query, so it is parsed once here.
+    list_filters! = |req| {
+        q : {
+            limit : Try(I64, [Missing]),
+            offset : Try(I64, [Missing]),
+            tag : Try(Str, [Missing]),
+            author : Try(Str, [Missing]),
+            favorited : Try(Str, [Missing]),
+        }
         q = Req.query_record!(req)?
-        Ok({ tag: or_blank(q.tag), author: or_blank(q.author), favorited: or_blank(q.favorited) })
+        Ok({
+            filters: { tag: or_blank(q.tag), author: or_blank(q.author), favorited: or_blank(q.favorited) },
+            bounds: clamp_bounds(q.limit, q.offset),
+        })
     }
 
     ## Coeffect: the article at {slug} with its row id and author, as the
@@ -254,14 +267,11 @@ Articles := [].{
             .no_content()
     }
 
-    ## Coeffect: the filtered, paginated global article list + count. `filters`
-    ## builds the query shape once; the Db call differs by mode.
-    list_filters = { filters: Articles.filters!, bounds: Articles.bounds! }.Cofx
-
-    list_page! = Articles.list_filters
+    ## Coeffect: the filtered, paginated global article list + count.
+    list_page! = Articles.list_filters!
         ->Cofx.and_then(|input, req| {
             viewer = Auth.optional_user!(req)?
-            Db.list_articles!(req.ctx, Db.of(req), Auth.viewer_id(viewer), Articles.list_args(input))
+            Db.stream_list!(req.ctx, Db.of(req), Auth.viewer_id(viewer), Articles.list_args(input))
         })
 
     ## PURE: the filters+bounds coeffect value to the Db list-args record.
@@ -277,7 +287,7 @@ Articles := [].{
     feed_page! = Articles.bounds!
         ->Cofx.and_then(|page_bounds, req| {
             user = Auth.current_user!(req)?
-            Db.feed_articles!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
+            Db.stream_feed!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
         })
 
     ## `page` bound to each of its two sources (global list, viewer's feed).
@@ -285,10 +295,11 @@ Articles := [].{
 
     feed_h! = Cofx.bind1(Articles.feed_page!, Articles.page)
 
-    ## PURE handler: serialize the typed page envelope (summaries OMIT the body
-    ## the spec forbids in list items) as `{articles, articlesCount}` in Roc.
-    page : { articles : List(Db.ArticleSummary), articlesCount : I64 } -> Res.Response
-    page = |data| Res.json(200, data)
+    ## PURE handler: the list/feed body is already JSON bytes — the streaming
+    ## encoder (Db.stream_list!/stream_feed!) fused the cursor read with the
+    ## JSON write, so no `ArticleSummary` records were ever materialized.
+    page : List(U8) -> Res.Response
+    page = |bytes| Res.bytes(200, "application/json", bytes)
 
     ## `favorite` bound to its coeffects.
     favorite_h! = Cofx.bind2(Auth.current_user!, Articles.loaded_article!, Articles.favorite)

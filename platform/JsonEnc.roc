@@ -145,6 +145,35 @@ JsonEnc := [Default].{
     to_str : a -> Str
         where [a.encoder_for : JsonEnc -> (a, JsonEncState -> Try(JsonEncState, []))]
     to_str = |value| Str.from_utf8_lossy(JsonEnc.to_utf8_with_capacity(value, default_capacity))
+
+    ## --- Streaming primitives -------------------------------------------------
+    ##
+    ## Append one JSON value straight onto a `List(U8)` buffer, for a
+    ## hand-written serializer that fuses reading with encoding and never
+    ## materializes an intermediate record (the derived `encoder_for` walks a
+    ## value; these let a caller walk a cursor instead). Same quoting/escaping
+    ## as the derived path.
+
+    ## Append a quoted, escaped JSON string.
+    str_into : List(U8), Str -> List(U8)
+    str_into = |out, value| quoted(out, value)
+
+    ## Append a JSON integer.
+    i64_into : List(U8), I64 -> List(U8)
+    i64_into = |out, value| raw_bytes(out, I64.to_str(value))
+
+    ## Append JSON `true`/`false`.
+    bool_into : List(U8), Bool -> List(U8)
+    bool_into = |out, value| raw_bytes(out, if value "true" else "false")
+
+    ## Append JSON `null`.
+    null_into : List(U8) -> List(U8)
+    null_into = |out| raw_bytes(out, "null")
+
+    ## Append a run of raw, pre-formed bytes (structural punctuation, constant
+    ## keys). The caller guarantees it is valid JSON.
+    raw_into : List(U8), Str -> List(U8)
+    raw_into = |out, literal| raw_bytes(out, literal)
 }
 
 ## The encoder's output buffer. Owning this type is what lets `Res.json` hand

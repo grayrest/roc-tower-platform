@@ -2,6 +2,7 @@ import pf.Host
 import pf.Sql
 import pf.NullableStr
 import pf.JsonBool
+import pf.JsonEnc
 import Api
 import DbGen
 
@@ -32,19 +33,6 @@ Db := [].{
         author : Db.Profile,
     }
 
-    ## RealWorld list-item article: the full article MINUS `body` (the spec
-    ## forbids the body in list/feed items). Serialized in Roc from typed rows.
-    ArticleSummary : {
-        slug : Str,
-        title : Str,
-        description : Str,
-        tagList : List(Str),
-        createdAt : Str,
-        updatedAt : Str,
-        favorited : JsonBool,
-        favoritesCount : I64,
-        author : Db.Profile,
-    }
 
     ## The database file the request's model names — the standard first step
     ## of a coeffect that reads.
@@ -184,29 +172,54 @@ Db := [].{
         # under concurrency than probing article rows. A tag COMBINED with
         # other filters still drives from the tag index but joins the rest.
         tag_only = !filters.tag.is_empty() and filters.author.is_empty() and filters.favorited.is_empty()
+        # The COUNT never selects user columns, so it only joins `users` when a
+        # filter actually constrains one (the author filter's `u.username = ?`).
+        # SQLite can't prove an inner join to a NOT-NULL FK target is a count
+        # no-op, so an unnecessary join costs a PK probe PER ROW — ~25x on the
+        # 5000-row unfiltered count (147us -> 6us). The page query still joins
+        # (it selects username/bio/image); only the count is trimmed.
+        needs_user_join = !filters.author.is_empty()
         count_sql =
             if tag_only
                 "SELECT COUNT(*) AS n FROM article_tags att${count_where}"
+            else if filters.tag.is_empty() and !needs_user_join
+                "SELECT COUNT(*) AS n FROM articles a${count_where}"
             else if filters.tag.is_empty()
                 "SELECT COUNT(*) AS n FROM articles a JOIN users u ON u.id = a.author_id${count_where}"
-            else
+            else if needs_user_join
                 "SELECT COUNT(*) AS n FROM article_tags att JOIN articles a ON a.id = att.article_id JOIN users u ON u.id = a.author_id${count_where}"
+            else
+                "SELECT COUNT(*) AS n FROM article_tags att JOIN articles a ON a.id = att.article_id${count_where}"
         { page_where: page_where, count_sql: count_sql, where_params: where_params }
     }
 
     ## List: same filter parts, typed rows serialized in Roc.
-    list_articles! = |ctx, db, viewer, filters| {
+    ## STREAMING list encoder: build the `{articles:[...],articlesCount:N}` bytes
+    ## straight off the cursor, never materializing the 20 ArticleSummary records
+    ## or their ~200 string fields. Each cell is read, written to the buffer, and
+    ## dropped in place. Returns the response body bytes for `Res.bytes`.
+    stream_list! : U64, Str, I64, { tag : Str, author : Str, favorited : Str, limit : I64, offset : I64 } => Try(List(U8), [Fail(U16, Str, Str), ..])
+    stream_list! = |ctx, db, viewer, filters| {
         parts = Db.list_query_parts(filters)
-        run_article_page!(ctx, db, viewer, parts.page_where, parts.count_sql, parts.where_params, filters.limit, filters.offset)
+        is_anon = viewer == 0
+        select = if is_anon article_summary_select_anon else article_summary_select
+        page_sql = "${select}${parts.page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
+        viewer_params = if is_anon [] else [Integer(viewer)]
+        page_params = viewer_params.concat(parts.where_params).append(Integer(filters.limit)).append(Integer(filters.offset))
+        stream_page!(ctx, db, page_sql, page_params, parts.count_sql, parts.where_params)
+    }
+
+    ## STREAMING feed encoder — same, over the feed page SQL.
+    stream_feed! : U64, Str, I64, I64, I64 => Try(List(U8), [Fail(U16, Str, Str), ..])
+    stream_feed! = |ctx, db, viewer, limit, offset| {
+        page_sql = "${article_summary_select}${Db.feed_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
+        page_params = [Integer(viewer), Integer(viewer), Integer(limit), Integer(offset)]
+        stream_page!(ctx, db, page_sql, page_params, Db.feed_count, [Integer(viewer)])
     }
 
     ## The viewer's feed: articles by followed authors, most recent first.
-    ## Same EXISTS-for-page / IN-for-count split as `list_articles!`.
     feed_where = " WHERE EXISTS(SELECT 1 FROM follows fo2 WHERE fo2.follower_id = ? AND fo2.followed_id = a.author_id)"
     feed_count = "SELECT COUNT(*) AS n FROM articles a WHERE a.author_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)"
-
-    feed_articles! = |ctx, db, viewer, limit, offset|
-        run_article_page!(ctx, db, viewer, Db.feed_where, Db.feed_count, [Integer(viewer)], limit, offset)
 
     ## Load a profile by username with the viewer's following flag; rejects
     ## 404 on a miss. Returns the user id alongside for follow writes.
@@ -306,8 +319,6 @@ Db := [].{
 ## columns (trigger-maintained), so the only per-row work left is the two viewer
 ## flags. Read by name via `Sql.query!`; `:viewer` is param 1 (SQLite reuses it
 ## for both flags), page_where `?` follow it.
-## @params slug: Str, title: Str, description: Str, created_at: Str, updated_at: Str, username: Str, bio: Str?, image: Str?, favorites_count: I64, favorited: I64, following: I64, tag_list: Str?
-## @reader article_summary
 article_summary_select =
     \\SELECT a.slug, a.title, a.description, a.created_at, a.updated_at,
     \\       u.username, u.bio, u.image,
@@ -331,56 +342,117 @@ article_summary_select_anon =
     \\       a.tag_list
     \\FROM articles a JOIN users u ON u.id = a.author_id
 
-## Internal: one flat reader row (positional, from `DbGen.read_article_summary!`)
-## to an ArticleSummary — a PURE shape transform (split the tag string, wrap the
-## flags as JSON booleans, nest the author). No per-cell decode: the positional
-## reader already typed every column, so this can never fail (contrast the old
-## by-name `Sql.Row` version, which the list regression traced to).
-article_summary_of = |r| {
-    slug: r.slug,
-    title: r.title,
-    description: r.description,
-    tagList: Db.split_tags(r.tag_list),
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-    favorited: JsonBool.from(r.favorited != 0),
-    favoritesCount: r.favorites_count,
-    author: { username: r.username, bio: r.bio, image: r.image, following: JsonBool.from(r.following != 0) },
-}
 
 ## Internal: read the page as typed rows (body-less), read the count, and hand
 ## the `{articles, articlesCount}` record back for the pure handler to
 ## serialize in Roc. `where_params` bind the page_where `?` in order.
-run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit, offset| {
-    # Anonymous (viewer 0): the flag subqueries are constant-false, so use the
-    # `_anon` select (no `:viewer` param). Authenticated: `:viewer` is page
-    # param 1, ahead of the page_where `?`. Feed always passes a real viewer.
-    is_anon = viewer == 0
-    select = if is_anon article_summary_select_anon else article_summary_select
-    page_sql = "${select}${page_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
-    viewer_params = if is_anon [] else [Integer(viewer)]
-    page_params = viewer_params
-        .concat(where_params)
-        .append(Integer(limit))
-        .append(Integer(offset))
-    # Positional reader (DbGen.read_article_summary!) over the dynamic page SQL:
-    # the SELECT emits the reader's declared column order, so cells decode by
-    # index — no by-name `Sql.Row` lookups (the list regression).
-    handle = Host.sql_begin!({ ctx: ctx, db: db, sql: page_sql, params: page_params }) ? |message| Fail(500.U16, "body", message)
-    raw_rows = DbGen.read_article_summary!(handle, []) ? |err| match err {
-        DbErr(message) => Fail(500.U16, "body", message)
-    }
-    Host.sql_finish!(handle)
-    articles = raw_rows.map(article_summary_of)
-
-    count_rows = Sql.query!(ctx, db, count_sql, where_params)?
-    count_row = Sql.first(count_rows) ? |_| Fail(500.U16, "body", "count returned no rows")
-    count = count_row.i64("n") ? |_| Fail(500.U16, "body", "corrupt count row")
-
-    Ok({ articles: articles, articlesCount: count })
-}
 
 ## split_tags: NULL means no tags
+
+# --- streaming JSON encoder (module-private, effectful) --------------------
+#
+# Fuse the cursor read with the JSON write: append each cell straight to the
+# byte buffer, so the article records are never built. Field order matches the
+# derived encoder's alphabetical output so responses are byte-identical.
+
+## Open the page cursor, stream every row into the articles array, then read
+## the count and close the envelope.
+stream_page! : U64, Str, Str, List(Host.SqlValue), Str, List(Host.SqlValue) => Try(List(U8), [Fail(U16, Str, Str), ..])
+stream_page! = |ctx, db, page_sql, page_params, count_sql, count_params| {
+    handle = Host.sql_begin!({ ctx: ctx, db: db, sql: page_sql, params: page_params }) ? |m| Fail(500.U16, "body", m)
+    # On a mid-stream error the request tears down and the host sweeps this
+    # unfinished cursor (Host.sql_begin! contract), so a bare `?` is safe.
+    body = stream_rows!(handle, JsonEnc.raw_into([], "{\"articles\":["), True)?
+    Host.sql_finish!(handle)
+    chandle = Host.sql_begin!({ ctx: ctx, db: db, sql: count_sql, params: count_params }) ? |m| Fail(500.U16, "body", m)
+    count = read_count!(chandle)
+    Host.sql_finish!(chandle)
+    Ok(JsonEnc.raw_into(JsonEnc.i64_into(JsonEnc.raw_into(body, "],\"articlesCount\":"), count), "}"))
+}
+
+## Step the cursor, append each article object (comma-separated), recurse.
+stream_rows! : U64, List(U8), Bool => Try(List(U8), [Fail(U16, Str, Str), ..])
+stream_rows! = |handle, out, first| {
+    match Host.sql_step!(handle) {
+        Err(m) => Err(Fail(500.U16, "body", m))
+        Ok(has_row) =>
+            if has_row {
+                separated = if first out else JsonEnc.raw_into(out, ",")
+                stream_rows!(handle, stream_article!(handle, separated), False)
+            } else {
+                Ok(out)
+            }
+    }
+}
+
+## One article object, read cell-by-cell (column order: slug 0, title 1,
+## description 2, created_at 3, updated_at 4, username 5, bio 6, image 7,
+## favorites_count 8, favorited 9, following 10, tag_list 11). JSON keys are
+## emitted alphabetically to match the derived encoder.
+stream_article! : U64, List(U8) => List(U8)
+stream_article! = |h, out|
+    out
+    |> JsonEnc.raw_into("{\"author\":{\"bio\":")
+    |> nullable_into!(h, 6)
+    |> JsonEnc.raw_into(",\"following\":")
+    |> JsonEnc.bool_into(Host.sql_col_i64!(h, 10) != 0)
+    |> JsonEnc.raw_into(",\"image\":")
+    |> nullable_into!(h, 7)
+    |> JsonEnc.raw_into(",\"username\":")
+    |> JsonEnc.str_into(Host.sql_col_str!(h, 5))
+    |> JsonEnc.raw_into("},\"createdAt\":")
+    |> JsonEnc.str_into(Host.sql_col_str!(h, 3))
+    |> JsonEnc.raw_into(",\"description\":")
+    |> JsonEnc.str_into(Host.sql_col_str!(h, 2))
+    |> JsonEnc.raw_into(",\"favorited\":")
+    |> JsonEnc.bool_into(Host.sql_col_i64!(h, 9) != 0)
+    |> JsonEnc.raw_into(",\"favoritesCount\":")
+    |> JsonEnc.i64_into(Host.sql_col_i64!(h, 8))
+    |> JsonEnc.raw_into(",\"slug\":")
+    |> JsonEnc.str_into(Host.sql_col_str!(h, 0))
+    |> JsonEnc.raw_into(",\"tagList\":")
+    |> tags_into!(h, 11)
+    |> JsonEnc.raw_into(",\"title\":")
+    |> JsonEnc.str_into(Host.sql_col_str!(h, 1))
+    |> JsonEnc.raw_into(",\"updatedAt\":")
+    |> JsonEnc.str_into(Host.sql_col_str!(h, 4))
+    |> JsonEnc.raw_into("}")
+
+## A nullable TEXT cell: JSON null, or the quoted string.
+nullable_into! : List(U8), U64, U64 => List(U8)
+nullable_into! = |out, h, idx|
+    match Host.sql_col_type!(h, idx) {
+        Null => JsonEnc.null_into(out)
+        _ => JsonEnc.str_into(out, Host.sql_col_str!(h, idx))
+    }
+
+## The tagList array: split the comma-joined tag_list cell, quote each tag.
+tags_into! : List(U8), U64, U64 => List(U8)
+tags_into! = |out, h, idx| {
+    opened = JsonEnc.raw_into(out, "[")
+    filled = match Host.sql_col_type!(h, idx) {
+        Null => opened
+        _ => {
+            text = Host.sql_col_str!(h, idx)
+            if text.is_empty() {
+                opened
+            } else {
+                text.split_on(",").fold_with_index(opened, |acc, tag, i|
+                    if i == 0 { JsonEnc.str_into(acc, tag) } else { JsonEnc.str_into(JsonEnc.raw_into(acc, ","), tag) })
+            }
+        }
+    }
+    JsonEnc.raw_into(filled, "]")
+}
+
+## Read the single COUNT(*) cell.
+read_count! : U64 => I64
+read_count! = |handle|
+    match Host.sql_step!(handle) {
+        Ok(has_row) => if has_row Host.sql_col_i64!(handle, 0) else 0
+        Err(_) => 0
+    }
+
 expect Db.split_tags(NullableStr.Null) == []
 
 ## split_tags: GROUP_CONCAT output splits on commas

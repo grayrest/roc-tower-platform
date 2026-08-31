@@ -104,3 +104,33 @@ required fields report `missing required field: <name>`.
 
 The blocker-1 repro (`examples/repro/RecordFieldNominalParser.roc`, the user's
 minimization) now builds; it documents a fixed bug.
+
+## Phase 6 measured 2026-08-29 (miss-path)
+
+Authenticated list request (`GET /api/articles?limit=20` with a token —
+`authorization` is hard-defaulted into the cache bypass set, so every request
+runs the full handler: auth lookup + dynamic page query + 20×12-column row read
++ encode). wrk -t4 -c16 -d15s, two runs each:
+
+    by-name (Sql.Row)          : ~10201 rps  p50 ~1.17 ms
+    positional (@reader)       : ~10810 rps  p50 ~1.13 ms
+
+**Positional is ~6% faster** end-to-end. The row read is only a fraction of the
+request (auth + DB + encode dominate), so the isolated read-path win is larger
+but diluted; positional avoids 240 by-name column lookups (find_first_index over
+the column-name list) per 20-row page.
+
+## Uncached list end-to-end, count fix confirmed (2026-08-30, load 4.5)
+
+TP_PROFILE single-conn, anonymous list, cache off, WITH the count-join fix
+(commit 20cdf8c):
+
+    req = 99,811ns = host 13,118ns + handler 86,693ns
+                     [ db_exec 13,112ns + roc_side 73,581ns (~18µs marshal) ]
+
+vs before the fix (231µs; db_exec 147µs). The count fix removed ~134µs of
+db_exec, cutting the request 57% (231 -> 100µs) and lifting single-conn
+throughput 2,667 -> 7,609 rps. The profile FLIPS: the uncached list is now
+~74% roc_side (record build + JsonEnc encode), 13% db_exec, 13% host — DB-bound
+only until the pointless count join was removed. This is where phases 1/6 act,
+so they now move the uncached path.

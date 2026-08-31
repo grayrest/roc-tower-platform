@@ -1,5 +1,9 @@
 # Encoder/decoder branch — phase progress checkpoint
 
+> **UPDATE 2026-08-29: ALL PHASES COMPLETE.** 1/2/3/4/5/6/7/-1 shipped and
+> verified; 8 filed. `just check` exit 0, realworld Hurl 154/154. Final commit
+> list at the bottom.
+
 **Date:** 2026-08-29. Toolchain: `~/.bin/roc` = local-fixes (codec + app_for_host
 fixes landed). Gate command: `ROC=~/.bin/roc just check` (exit 0) and
 `ROC=~/.bin/roc just realworld-conformance` (154/154).
@@ -68,3 +72,24 @@ decisions above being made deliberately, and each sub-step (ABI, then keying,
 then drop) verified green on its own — not a single autonomous push. Phases 1-3
 + -1 already deliver the encoder, the field-named accumulating decoder (the
 headline), the query decoder, and the shipped-cache-defect fixes.
+
+## Final status — all phases
+
+| Phase | Commit | Deliverable |
+|---|---|---|
+| -1 | `0c2492c` | Seeded cache hashers; stopped unbounded `order` growth |
+| 1 | `0c80001` | `JsonEnc` — response bytes encode direct, no Str round trip |
+| 2 | `c9b912e` | `JsonDec` — field-named, ACCUMULATED body decode errors (the headline) |
+| 3 | `a4a4962` | `QueryDec` — query decoding as a format; scalar factories deleted |
+| 4 | `e4550cf` | Query canonicalization — junk-param spellings collapse to one entry |
+| 5 | `eee5b82` | `Fields` — derive a SELECT column list from a record type |
+| 6 | `6187174` | sqlgen `@reader` — positional reader for a declared column set |
+| 7 | `a5a5431` | Named-binding writes via `@sql` — kill positional-param drift |
+| 8 | `fd438dd` | Filed the `parser_for!` upstream ask (row-decoder sketch) |
+
+Deferred, documented, available as follow-ups:
+- Phase 4's fail-OPEN drop-when-unread (needs query off the record + a static
+  route attribute).
+- Perf measurement of phases 1 and 6 (the warm-cache bench can't isolate
+  encode/decode cost; needs a cache-miss workload).
+- Migrating the remaining hand-written writes to `@sql` (phase 7 pattern).

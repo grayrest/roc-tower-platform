@@ -37,3 +37,19 @@ uses `List.concat(out, s.to_utf8())`, one temporary byte list per string. On a
 miss-heavy workload this could plausibly cost more than the Str round trip it
 removes for string-dense bodies, or less for number-dense ones. Unknown until
 measured against a miss workload. Recorded so the claim isn't overstated.
+
+## Measured 2026-08-29 (miss-path)
+
+Isolated encoder micro-bench (200k iterations, a representative nested
+response record with Str/I64 fields, `favoritesCount: i` varied per iter so the
+encode can't be hoisted; in-process, no cache, no DB):
+
+    JsonEnc.to_utf8_with_capacity : ~1719 ms  (~8.6 µs/encode)
+    Json.to_str(...).to_utf8()    : ~2291 ms  (~11.5 µs/encode)   [builtin]
+
+**JsonEnc is ~25% faster**, byte-identical output (77,888,895 bytes both). The
+direct-to-bytes write beats the builtin's Str build + `.to_utf8()` copy even
+with the per-string `to_utf8` allocation the vendoring cost note worried about.
+The open question in this note is resolved: phase 1 is a win, not a wash.
+(Measured on a plain record so the builtin resolves; NullableStr-bearing bodies
+use JsonEnc's custom encoder either way.)
