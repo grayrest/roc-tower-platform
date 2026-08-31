@@ -49,30 +49,43 @@ host: glue
     mkdir -p "platform/targets/{{ target_dir }}"
     cp target/release/libtower_platform_host.a "platform/targets/{{ target_dir }}/libhost.a"
 
-# Full pipeline: glue -> host staticlib -> link a Roc app (output: ./main).
+# Run `roc` and absorb its warning-only exit 2.
 #
-# `roc build` exits 2 when it emits warnings, even on a build that fully
-# succeeded ("0 errors and N warnings found ... while successfully
-# building"). A plain recipe propagates that, which fails the build and
-# takes every e2e test with it, since all three shell out to `just build`.
-# The platform currently carries one such warning on purpose:
+# roc exits 2 whenever it emits warnings, even when the command fully
+# succeeded. The platform currently carries one such warning on purpose:
 # `sql_row_str` in platform/Host.roc is a hosted read typed PURE, and the
-# "effectful function name" check fires on any hosted pure arrow.
+# "effectful function name" check fires on any hosted pure arrow. Left
+# unhandled that failed `just build`, and with it every e2e test, since all
+# three shell out to it.
 #
-# So: stream the output, keep roc's own exit status, and downgrade it to
-# success ONLY when roc itself reported the build finished. A non-zero exit
-# without that line, including a genuine exit 2 with errors, still fails.
-build app="examples/hello/main.roc": host
+# Do NOT simplify the pattern below to "successfully building". `roc build`
+# prints that phrase even when there ARE errors ("1 error and 1 warning found
+# in 323ms while successfully building:"), so it is not a success signal on
+# its own. Each subcommand needs its own anchored line, and they all differ:
+#
+#   build   0 errors and 1 warning found in 2.7s while successfully building:
+#   check   ── 0 errors and 1 warning ──────────── examples/hello/main.roc
+#   test    All (127) tests passed in 5590.8 ms.
+#
+# A non-zero exit without one of those, a genuine exit 2 with errors included,
+# still fails. Args are interpolated unquoted, so no path here may contain
+# spaces.
+[private]
+roc-tolerant +args:
     #!/usr/bin/env bash
     set -uo pipefail
     log=$(mktemp)
     trap 'rm -f "$log"' EXIT
-    "{{ roc }}" build "{{ app }}" 2>&1 | tee "$log"
+    "{{ roc }}" {{ args }} 2>&1 | tee "$log"
     rc=${PIPESTATUS[0]}
-    if [[ $rc -ne 0 ]] && grep -q "^0 errors .* while successfully building:" "$log"; then
+    if [[ $rc -ne 0 ]] && grep -qE '^(0 errors .* while successfully building:|── 0 errors |All \([0-9]+\) tests passed)' "$log"; then
         rc=0
     fi
     exit $rc
+
+# Full pipeline: glue -> host staticlib -> link a Roc app (output: ./main).
+build app="examples/hello/main.roc": host
+    ROC="{{ roc }}" {{ just_executable() }} roc-tolerant build "{{ app }}"
 
 # --- Turso backend (experimental: `--features turso`) ----------------------
 # The typed-API-on-Turso experiment. Swaps the DB backend to Turso; the roc
@@ -106,7 +119,7 @@ host-turso: glue turso-sysroot
 
 # Build a Roc app against the turso host (output: ./main).
 build-turso app="examples/realworld/main.roc": host-turso
-    "{{ roc }}" build "{{ app }}"
+    ROC="{{ roc }}" {{ just_executable() }} roc-tolerant build "{{ app }}"
 
 # Build and run an example app.
 run app="examples/hello/main.roc": (build app)
@@ -120,7 +133,7 @@ check-examples: glue
     #!/usr/bin/env bash
     set -euo pipefail
     for ex in hello e2e ctxmemo realworld connect; do
-        "{{ roc }}" check "examples/$ex/main.roc"
+        ROC="{{ roc }}" {{ just_executable() }} roc-tolerant check "examples/$ex/main.roc"
     done
 
 # RealWorld conformance: the official Hurl suite (the spec repo's source of
@@ -168,8 +181,8 @@ realworld-conformance-turso: (build-turso "examples/realworld/main.roc")
 # (the only example with its own expects — `roc check` alone would let its
 # expect blocks silently vanish).
 test-roc:
-    "{{ roc }}" test platform/main.roc
-    "{{ roc }}" test examples/realworld/main.roc
+    ROC="{{ roc }}" {{ just_executable() }} roc-tolerant test platform/main.roc
+    ROC="{{ roc }}" {{ just_executable() }} roc-tolerant test examples/realworld/main.roc
 
 # FFI round-trip tests under the counting allocator.
 test-host:
