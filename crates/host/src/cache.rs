@@ -24,9 +24,9 @@
 //! ([`global`]) is installed once at startup when the app enables the
 //! `ResponseCache` setting.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -34,6 +34,24 @@ use bytes::Bytes;
 use http::{HeaderName, HeaderValue};
 
 use crate::shadow::Cols;
+
+/// Per-process random seed for every cache hash. `DefaultHasher::new()` is
+/// fixed-key SipHash — identical in every process and collidable offline — so a
+/// shared cache keyed on it can be poisoned (a crafted body/cookie/query
+/// colliding another's variant serves the wrong response). A process-static
+/// `RandomState` makes the keys per-process and non-craftable; the cache is
+/// in-memory, so per-process stability is all it needs, and the record and
+/// lookup sides share this one seed so they still agree.
+static HASH_SEED: OnceLock<RandomState> = OnceLock::new();
+
+/// A hasher seeded from the per-process `HASH_SEED`. `domain` domain-separates
+/// inputs that share the u64 space (a raw body hash must not collide a raw
+/// query hash) by mixing a fixed tag in first.
+fn seeded_hasher(domain: u8) -> DefaultHasher {
+    let mut h = HASH_SEED.get_or_init(RandomState::new).build_hasher();
+    domain.hash(&mut h);
+    h
+}
 
 /// Base identity of a cached resource: everything knowable BEFORE the
 /// handler runs. `encoding` is the negotiated `Accept-Encoding` (normalized)
@@ -103,7 +121,7 @@ pub fn variant_hash(
     if spec.body && body_hash.is_none() {
         return None;
     }
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = seeded_hasher(0);
     for name in &spec.cookies {
         name.hash(&mut hasher);
         cookie_value(name).hash(&mut hasher);
@@ -169,6 +187,13 @@ pub struct CacheDeps {
     /// entry (the cache-DoS mitigation); `body_hash` then only feeds the
     /// raw→canonical alias table lookups translate through.
     pub body_key: Option<u64>,
+    /// CANONICAL query key — the structural hash of the decoded query record
+    /// (`Req.query_record!`), present only when the route DECODED its query.
+    /// When set, the store aliases this request's raw target to a canonical
+    /// target keyed on it, so raw spellings that decode to the same record
+    /// collapse onto one entry. A route that never decodes its query is
+    /// unaffected (its raw target stays the base key — fail-safe, no drop).
+    pub query_key: Option<u64>,
 }
 
 struct Entry {
@@ -210,13 +235,20 @@ pub struct ResponseCache {
     /// raw spellings churn only these slots, never stored bodies. Cleared
     /// wholesale at capacity — aliases re-establish on the next store.
     aliases: Mutex<HashMap<u64, u64>>,
+    /// Raw request target -> canonical request target, for query-key
+    /// canonicalization. Keyed on the FULL raw target (which includes the
+    /// path, so entries for different routes cannot collide — review S1).
+    /// Bounded with FIFO eviction (not a wholesale clear — review S4) so an
+    /// adversarial junk-query flood evicts one alias at a time.
+    target_aliases: Mutex<HashMap<String, String>>,
+    target_alias_order: Mutex<VecDeque<String>>,
 }
 
 /// Hash of raw request-body bytes — the D14 variant dimension. ONE function
 /// shared by the host side (recording, in `take_cache_attribution`) and the
 /// middleware side (lookup) so the two always agree.
 pub fn body_hash_of(bytes: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = seeded_hasher(1);
     bytes.hash(&mut hasher);
     hasher.finish()
 }
@@ -224,7 +256,7 @@ pub fn body_hash_of(bytes: &[u8]) -> u64 {
 /// A strong ETag over the exact stored bytes: hashed once at insert, then the
 /// middleware answers `If-None-Match` with `304` for free.
 pub fn etag_for(body: &[u8]) -> String {
-    let mut h = DefaultHasher::new();
+    let mut h = seeded_hasher(2);
     body.hash(&mut h);
     format!("\"{:016x}\"", h.finish())
 }
@@ -243,6 +275,8 @@ impl ResponseCache {
                 epoch: 0,
             }),
             aliases: Mutex::new(HashMap::new()),
+            target_aliases: Mutex::new(HashMap::new()),
+            target_alias_order: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -261,6 +295,32 @@ impl ResponseCache {
     /// stored entries use, if a store recorded one.
     pub fn body_key_for(&self, raw: u64) -> Option<u64> {
         self.aliases.lock().unwrap().get(&raw).copied()
+    }
+
+    /// Record that raw target `raw` canonicalizes to `canonical`. Bounded at
+    /// 4x the entry cap; at capacity the OLDEST alias is evicted (FIFO), never
+    /// a wholesale clear, so one route's flood cannot wipe every other route's
+    /// aliases at once.
+    pub fn alias_target(&self, raw: String, canonical: String) {
+        if raw == canonical {
+            return;
+        }
+        let mut aliases = self.target_aliases.lock().unwrap();
+        let mut order = self.target_alias_order.lock().unwrap();
+        if aliases.insert(raw.clone(), canonical).is_none() {
+            order.push_back(raw);
+            while order.len() > self.max_entries.saturating_mul(4) {
+                if let Some(old) = order.pop_front() {
+                    aliases.remove(&old);
+                }
+            }
+        }
+    }
+
+    /// Translate an incoming request's raw target to the canonical target a
+    /// prior store recorded, if any.
+    pub fn target_alias_for(&self, raw: &str) -> Option<String> {
+        self.target_aliases.lock().unwrap().get(raw).cloned()
     }
 
     /// Look up a live entry. `resolve` maps the base key's variant spec to
@@ -331,7 +391,7 @@ impl ResponseCache {
                 .insert((base.clone(), variant));
         }
         let expires = now + self.ttl;
-        inner
+        let replaced = inner
             .map
             .entry(base.clone())
             .or_insert_with(|| VariantSet {
@@ -346,9 +406,18 @@ impl ResponseCache {
                     expires,
                     deps,
                 },
-            );
-        inner.len += 1;
-        inner.order.push_back((base, variant));
+            )
+            .is_some();
+        // Only a NEWLY created (base, variant) grows the set and the eviction
+        // queue. Re-storing an existing variant (the steady state under
+        // canonical keying: every junk spelling re-stores one canonical entry)
+        // must not push a duplicate `order` slot — the drain is gated on `len`,
+        // which a re-store leaves unchanged, so duplicates would accumulate
+        // without bound.
+        if !replaced {
+            inner.len += 1;
+            inner.order.push_back((base, variant));
+        }
 
         while inner.len > self.max_entries {
             let Some((base, variant)) = inner.order.pop_front() else {
@@ -723,6 +792,65 @@ mod tests {
         assert_eq!(cache.len(), 1);
         assert_eq!(cache.table_index_len("t"), 1, "no duplicate reverse-index key");
         assert_eq!(get(&cache, "/a", now).unwrap().body.as_ref(), b"A2");
+    }
+
+    /// re-storing an existing entry under capacity pressure must not inflate
+    /// the eviction counter or queue (the order-growth bug): five re-stores of
+    /// /a leave capacity for exactly one more, and adding /b then /c evicts
+    /// the genuine oldest (/a), not a phantom duplicate.
+    #[test]
+    fn restore_under_pressure_does_not_inflate_eviction() {
+        let cache = ResponseCache::new(Duration::from_secs(60), 2);
+        let now = Instant::now();
+        put(&cache, "/a", "1", all(&["t"]), now);
+        for spelling in ["2", "3", "4", "5", "6"] {
+            put(&cache, "/a", spelling, all(&["t"]), now);
+        }
+        assert_eq!(cache.len(), 1, "five re-stores are still one entry");
+        put(&cache, "/b", "B", all(&["t"]), now);
+        put(&cache, "/c", "C", all(&["t"]), now);
+        assert_eq!(cache.len(), 2);
+        assert!(get(&cache, "/a", now).is_none(), "genuine oldest evicted");
+        assert!(get(&cache, "/b", now).is_some());
+        assert!(get(&cache, "/c", now).is_some());
+    }
+
+    /// target aliases translate a raw target to its canonical one, are scoped
+    /// so different routes never collide, and evict FIFO (never wholesale).
+    #[test]
+    fn target_alias_translates_scopes_and_evicts() {
+        let cache = ResponseCache::new(Duration::from_secs(60), 1); // 4x cap = 4 aliases
+        cache.alias_target("/a?x=1".into(), "/a?~qDEAD".into());
+        cache.alias_target("/a?x=1&junk=2".into(), "/a?~qDEAD".into());
+        assert_eq!(cache.target_alias_for("/a?x=1").as_deref(), Some("/a?~qDEAD"));
+        assert_eq!(
+            cache.target_alias_for("/a?x=1&junk=2").as_deref(),
+            Some("/a?~qDEAD"),
+            "a junk spelling of the same query maps to the same canonical target"
+        );
+        // A different route's alias never collides (the raw key carries the path).
+        cache.alias_target("/b?x=1".into(), "/b?~qBEEF".into());
+        assert_eq!(cache.target_alias_for("/b?x=1").as_deref(), Some("/b?~qBEEF"));
+        assert_eq!(cache.target_alias_for("/a?x=1").as_deref(), Some("/a?~qDEAD"));
+        // Flood past 4x cap: FIFO evicts the oldest, not everything.
+        for i in 0..6 {
+            cache.alias_target(format!("/flood?n={i}"), format!("/flood?~q{i}"));
+        }
+        let survivors = (0..6)
+            .filter(|i| cache.target_alias_for(&format!("/flood?n={i}")).is_some())
+            .count();
+        assert!(survivors > 0 && survivors <= 4, "bounded, not wiped: {survivors}");
+        // an identity alias is a no-op (never stored)
+        cache.alias_target("/same".into(), "/same".into());
+        assert!(cache.target_alias_for("/same").is_none());
+    }
+
+    /// per-process seeding: a hash is stable within the process (record and
+    /// lookup agree) and domain-separated across input kinds.
+    #[test]
+    fn body_hash_is_stable_within_process() {
+        assert_eq!(body_hash_of(b"same"), body_hash_of(b"same"));
+        assert_ne!(body_hash_of(b"a"), body_hash_of(b"b"));
     }
 
     /// etag is stable for identical bytes, distinct for different bytes

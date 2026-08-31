@@ -154,6 +154,32 @@ Req := [].{
         if parts.is_empty() "invalid request body" else Str.join_with(parts, "; ")
     }
 
+    ## Coeffect: the whole query string decoded through `QueryDec` into the
+    ## handler slot's record type. Rejects with `InvalidQuery(errors)` — the
+    ## accumulated per-field mismatches, rendered by `Req.explain_query`. This
+    ## is the query analogue of `json_body!`: one decode, the demanded field
+    ## set, malformed scalars named and accumulated. Optional params are
+    ## `Try(_, [Missing])`; the handler supplies the default.
+    ##
+    ##     bounds = Req.query_record!->Cofx.map(|q| clamp(q))   # q : { limit : Try(I64,_), .. }
+    query_record! = |req| {
+        result = QueryDec.parse(req.query) ? |parse_err| InvalidQuery([parse_err])
+        if !result.errors.is_empty() {
+            Err(InvalidQuery(result.errors))
+        } else {
+            # Report the CANONICAL query key so the response cache collapses raw
+            # spellings that decode to the same record (junk params, order) onto
+            # one entry — the query analogue of `set_body_key!`.
+            Host.set_query_key!(req.ctx, Hasher.hash_of(result.value, Host.hash_seed!()))
+            Ok(result.value)
+        }
+    }
+
+    ## Render `InvalidQuery`'s payload to a message — the query analogue of
+    ## `Req.explain`, same quote-free field-named contract.
+    explain_query : List([MissingRequiredField(Str), InvalidField(Str, Str), InvalidJson(Str), ..]) -> Str
+    explain_query = |errors| Req.explain(errors)
+
     ## All query parameters, percent-decoded, in order of appearance. Never
     ## rejects.
     query_pairs = |req| Ok(parse_pairs(req.query))
@@ -187,51 +213,7 @@ Req := [].{
         Ok(value)
     }
 
-    ## Coeffect factory: the named query parameter, or `default` when absent.
-    ## Never rejects — the shape of optional filters (`?limit=20`).
-    query_or = |name, default| |req| match Req.get_query(req, name) {
-        Ok(value) => Ok(value)
-        Err(_) => Ok(default)
-    }
 
-    ## --- Typed extraction ---------------------------------------------------
-    ##
-    ## Scalar params parsed at the boundary, with the platform naming both
-    ## the parameter and the expectation in the rejection — the app's render
-    ## maps `InvalidQueryParam(name, expected)` / `InvalidParam(name,
-    ## expected)` like any other extractor tag. Scalars are factories rather
-    ## than a `parser_for` derive: queries only ever carry scalars, so the
-    ## derive's record/union power buys nothing here (a scalar ENCODING
-    ## through the format-generic `parser_for` — the `HttpHeaderEncoding`
-    ## precedent — remains the road if that ever changes).
-
-    ## Coeffect factory: the named query parameter as an I64. Rejects with
-    ## `MissingQueryParam(name)` when absent, `InvalidQueryParam(name,
-    ## expected)` when present but not an integer.
-    query_i64 = |name| |req| {
-        raw = Req.get_query(req, name) ? |_| MissingQueryParam(name)
-        value = I64.from_str(raw) ? |_| InvalidQueryParam(name, "an integer")
-        Ok(value)
-    }
-
-    ## Coeffect factory: the named query parameter as an I64, or `default`
-    ## when ABSENT. A present-but-malformed value still rejects — an explicit
-    ## wrong input is an error, not a silent default.
-    query_i64_or = |name, default| |req| match Req.get_query(req, name) {
-        Ok(raw) => {
-            value = I64.from_str(raw) ? |_| InvalidQueryParam(name, "an integer")
-            Ok(value)
-        }
-        Err(_) => Ok(default)
-    }
-
-    ## Coeffect factory: the named path parameter as an I64. Rejects with
-    ## `MissingParam(name)` / `InvalidParam(name, expected)`.
-    param_i64 = |name| |req| {
-        raw = Req.get_param(req, name) ? |_| MissingParam(name)
-        value = I64.from_str(raw) ? |_| InvalidParam(name, "an integer")
-        Ok(value)
-    }
 
     ## Coeffect factory: the named request cookie. Rejects with
     ## `MissingCookie(name)` on a miss. The Cookie header is STRIPPED from
@@ -280,6 +262,7 @@ Req := [].{
 
 import Host
 import JsonDec
+import QueryDec
 import Cofx
 import Res
 
@@ -481,17 +464,7 @@ expect {
     resolver({ headers: [{ name: "x-custom", value: "abc" }] }) == Ok("abc")
 }
 
-## query_or resolves a present query parameter
-expect {
-    resolver = Req.query_or("limit", "20")
-    resolver({ query: "limit=5" }) == Ok("5")
-}
 
-## query_or falls back to the default when the parameter is absent
-expect {
-    resolver = Req.query_or("limit", "20")
-    resolver({ query: "offset=3" }) == Ok("20")
-}
 
 # NOTE: do NOT expect-test a composition like `Cofx.map(Req.param("id"), …)`
 # here. Applying a sibling module's combinator to this module's factory inside
@@ -514,46 +487,3 @@ expect {
     a == b
 }
 
-# --- typed extraction factories ---
-
-## query_i64 parses a present integer parameter
-expect {
-    resolver = Req.query_i64("limit")
-    resolver({ query: "limit=25" }) == Ok(25)
-}
-
-## query_i64 rejects an absent parameter with its name
-expect {
-    resolver = Req.query_i64("limit")
-    resolver({ query: "" }) == Err(MissingQueryParam("limit"))
-}
-
-## query_i64 rejects a malformed value with the expectation
-expect {
-    resolver = Req.query_i64("limit")
-    resolver({ query: "limit=abc" }) == Err(InvalidQueryParam("limit", "an integer"))
-}
-
-## query_i64_or falls back only when the parameter is absent
-expect {
-    resolver = Req.query_i64_or("limit", 20)
-    resolver({ query: "" }) == Ok(20)
-}
-
-## query_i64_or still rejects a present-but-malformed value
-expect {
-    resolver = Req.query_i64_or("limit", 20)
-    resolver({ query: "limit=abc" }) == Err(InvalidQueryParam("limit", "an integer"))
-}
-
-## param_i64 parses and rejects with the parameter name
-expect {
-    resolver = Req.param_i64("id")
-    resolver({ params: [{ name: "id", value: "7" }] }) == Ok(7)
-}
-
-## param_i64 names the expectation on a malformed value
-expect {
-    resolver = Req.param_i64("id")
-    resolver({ params: [{ name: "id", value: "x" }] }) == Err(InvalidParam("id", "an integer"))
-}

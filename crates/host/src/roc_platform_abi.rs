@@ -2527,6 +2527,16 @@ pub struct HostSetBodyKeyArgs {
     pub arg1: u64,
 }
 
+/// Arguments for Host.set_query_key!
+/// Roc signature: U64, U64 => {}
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSetQueryKeyArgs {
+    pub arg0: u64,
+    pub arg1: u64,
+}
+
 /// Arguments for Host.cookie!
 /// Roc signature: U64, Str => Try(Str, [NoCookie])
 /// Refcounted fields are owned by the hosted function.
@@ -3645,6 +3655,10 @@ unsafe extern "C" {
     /// Hosted symbol for Host.set_body_key!
     /// Roc signature: U64, U64 => {}
     pub fn roc_set_body_key(arg0: u64, arg1: u64);
+
+    /// Hosted symbol for Host.set_query_key!
+    /// Roc signature: U64, U64 => {}
+    pub fn roc_set_query_key(arg0: u64, arg1: u64);
 
     /// Hosted symbol for Host.hash_seed!
     /// Roc signature: {} => U64

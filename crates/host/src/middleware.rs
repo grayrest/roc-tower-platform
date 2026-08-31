@@ -230,6 +230,31 @@ impl tower::Service<Request<ReqBody>> for CacheService {
                 return Ok(response);
             }
 
+            // Query-canonical hit: a prior decode of an equivalent query
+            // aliased this raw target to a canonical one. Translate and retry
+            // once. (Body-varying canonical routes are rare — GET reads carry
+            // no body — so this pass ignores `needs_body`.)
+            if let Some(canonical_target) = cache.target_alias_for(&key.target) {
+                let canonical_key = Key {
+                    method: key.method.clone(),
+                    target: canonical_target,
+                    encoding: key.encoding.clone(),
+                };
+                if let Some(stored) = cache.lookup(
+                    &canonical_key,
+                    |spec| resolve_variant(spec, req.headers(), None),
+                    Instant::now(),
+                ) {
+                    tracing::debug!("response cache: canonical query-key hit");
+                    let response = if none_match(&req, &stored.etag) {
+                        not_modified(&stored.etag)
+                    } else {
+                        serve_stored(&stored)
+                    };
+                    return Ok(response);
+                }
+            }
+
             // Body-varying entry: buffer the body — bounded exactly like the
             // router would — hash it, rebuild the request, and retry once.
             let req = if needs_body {
@@ -427,6 +452,24 @@ async fn maybe_store(
         }
         tracing::debug!("response cache: store under canonical body key");
     }
+
+    // Query canonicalization: when the route DECODED its query it reported a
+    // canonical key; store under a canonical target so raw spellings that
+    // decode alike collapse, and alias this raw target so future raw lookups
+    // translate to it. Fail-safe: no query_key -> store under the raw target
+    // unchanged (a route that never decodes its query is not dropped).
+    let key = if let Some(qk) = deps.query_key {
+        let path = key.target.split('?').next().unwrap_or(&key.target);
+        let canonical_target = format!("{path}?~q{qk:016x}");
+        cache.alias_target(key.target.clone(), canonical_target.clone());
+        Key {
+            method: key.method,
+            target: canonical_target,
+            encoding: key.encoding,
+        }
+    } else {
+        key
+    };
 
     let etag = cache::etag_for(&bytes);
     let headers: Vec<(HeaderName, HeaderValue)> = parts

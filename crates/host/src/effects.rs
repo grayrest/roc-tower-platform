@@ -418,6 +418,12 @@ struct CacheAttribution {
     /// one per decode, in call order. When every body read reported one, the
     /// cache keys the body variant on their fold instead of the raw hash.
     body_keys: Vec<u64>,
+    /// Canonical QUERY keys reported by `Host.set_query_key!` — one per
+    /// `Req.query_record!` decode (a route may decode the query more than
+    /// once, e.g. separate bounds and filters coeffects). Their fold is the
+    /// canonical query key; junk params affect no decode, so raw spellings
+    /// that decode alike fold identically and collapse onto one entry.
+    query_keys: Vec<u64>,
     /// Uncacheable: nondeterministic host call, Must DbWrite/HttpSend,
     /// underivable statement, or read-path DML.
     poisoned: bool,
@@ -535,6 +541,8 @@ pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps
     let body_key = (attribution.body_reads > 0
         && attribution.body_keys.len() == attribution.body_reads as usize)
         .then(|| fold_body_keys(&attribution.body_keys));
+    let query_key = (!attribution.query_keys.is_empty())
+        .then(|| fold_body_keys(&attribution.query_keys));
     let cookies = attribution
         .cookies_read
         .into_iter()
@@ -562,11 +570,12 @@ pub(crate) fn take_cache_attribution(ctx: u64) -> Option<crate::cache::CacheDeps
         cookies,
         body_hash,
         body_key,
+        query_key,
     })
 }
 
-/// Fold the per-decode canonical keys into one body-variant value (FNV-style
-/// chain — order-sensitive, deterministic).
+/// Fold per-decode canonical keys into one variant value (FNV-style chain —
+/// order-sensitive, deterministic). Shared by the body and query dimensions.
 fn fold_body_keys(keys: &[u64]) -> u64 {
     keys.iter().fold(0xcbf2_9ce4_8422_2325u64, |acc, key| {
         (acc ^ key).wrapping_mul(0x0000_0100_0000_01b3)
@@ -582,6 +591,18 @@ pub extern "C" fn roc_set_body_key(ctx: u64, key: u64) {
     let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
     if let Some(state) = registry.get_mut(&ctx) {
         state.attribution.body_keys.push(key);
+    }
+}
+
+/// `Host.set_query_key! : U64, U64 => {}` — a clean `Req.query_record!` decode
+/// reports the structural hash of the decoded query record. The store side
+/// aliases this request's raw target to a canonical one keyed on it, so raw
+/// spellings that decode to the same record share one cached entry.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_set_query_key(ctx: u64, key: u64) {
+    let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
+    if let Some(state) = registry.get_mut(&ctx) {
+        state.attribution.query_keys.push(key);
     }
 }
 

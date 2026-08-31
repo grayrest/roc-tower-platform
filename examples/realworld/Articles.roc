@@ -55,19 +55,19 @@ Articles := [].{
     ## Coeffect: pagination bounds off the query string — limit 1..100
     ## (default 20), offset >= 0 (default 0), junk falls back. Pure and
     ## shared by list and feed.
-    bounds = {
-        limit: Req.query_or("limit", "20"),
-        offset: Req.query_or("offset", "0"),
-    }.Cofx
-        ->Cofx.map(|raw| clamp_bounds(raw.limit, raw.offset))
+    bounds! = |req| {
+        q : { limit : Try(I64, [Missing]), offset : Try(I64, [Missing]) }
+        q = Req.query_record!(req)?
+        Ok(clamp_bounds(q.limit, q.offset))
+    }
 
     ## Coeffect: the list filters, straight off the query string ("" means
     ## unfiltered). Pure.
-    filters = {
-        tag: Req.query_or("tag", ""),
-        author: Req.query_or("author", ""),
-        favorited: Req.query_or("favorited", ""),
-    }.Cofx
+    filters! = |req| {
+        q : { tag : Try(Str, [Missing]), author : Try(Str, [Missing]), favorited : Try(Str, [Missing]) }
+        q = Req.query_record!(req)?
+        Ok({ tag: or_blank(q.tag), author: or_blank(q.author), favorited: or_blank(q.favorited) })
+    }
 
     ## Coeffect: the article at {slug} with its row id and author, as the
     ## (possibly anonymous) viewer sees it — the shared FULL read; 404 on a
@@ -256,7 +256,7 @@ Articles := [].{
 
     ## Coeffect: the filtered, paginated global article list + count. `filters`
     ## builds the query shape once; the Db call differs by mode.
-    list_filters = { filters: Articles.filters, bounds: Articles.bounds }.Cofx
+    list_filters = { filters: Articles.filters!, bounds: Articles.bounds! }.Cofx
 
     list_page! = Articles.list_filters
         ->Cofx.and_then(|input, req| {
@@ -274,7 +274,7 @@ Articles := [].{
     }
 
     ## Coeffect: the authenticated viewer's feed page + count.
-    feed_page! = Articles.bounds
+    feed_page! = Articles.bounds!
         ->Cofx.and_then(|page_bounds, req| {
             user = Auth.current_user!(req)?
             Db.feed_articles!(req.ctx, Db.of(req), user.id, page_bounds.limit, page_bounds.offset)
@@ -328,18 +328,27 @@ Articles := [].{
 
 # --- module-private helpers (unreachable from other modules) ---
 
-## Internal: clamp raw limit/offset strings to sane pagination bounds.
-clamp_bounds : Str, Str -> { limit : I64, offset : I64 }
-clamp_bounds = |limit_raw, offset_raw| {
-    limit = match I64.from_str(limit_raw) {
+## Internal: apply pagination defaults (absent -> 20/0) and clamp (limit
+## 1..100, offset >= 0). A present-but-malformed value never reaches here — it
+## is rejected as InvalidQuery at decode.
+clamp_bounds : Try(I64, [Missing]), Try(I64, [Missing]) -> { limit : I64, offset : I64 }
+clamp_bounds = |limit_opt, offset_opt| {
+    limit = match limit_opt {
         Ok(n) => if n < 1 1 else if n > 100 100 else n
-        Err(_) => 20
+        Err(Missing) => 20
     }
-    offset = match I64.from_str(offset_raw) {
+    offset = match offset_opt {
         Ok(n) => if n < 0 0 else n
-        Err(_) => 0
+        Err(Missing) => 0
     }
     { limit: limit, offset: offset }
+}
+
+## Internal: an optional query string, "" when absent (the filters' sentinel).
+or_blank : Try(Str, [Missing]) -> Str
+or_blank = |opt| match opt {
+    Ok(text) => text
+    Err(Missing) => ""
 }
 
 ## Internal: a partial-update field — the sent value, or the current one.
@@ -349,11 +358,11 @@ or_keep = |field, existing| match field {
     Err(Missing) => existing
 }
 
-## clamp_bounds turns junk and out-of-range values into the defaults
-expect clamp_bounds("junk", "-3") == { limit: 20, offset: 0 }
+## clamp_bounds defaults absent params and floors a negative offset
+expect clamp_bounds(Err(Missing), Ok(-3)) == { limit: 20, offset: 0 }
 
 ## clamp_bounds passes in-range values through
-expect clamp_bounds("5", "10") == { limit: 5, offset: 10 }
+expect clamp_bounds(Ok(5), Ok(10)) == { limit: 5, offset: 10 }
 
 ## clamp_bounds caps the limit at 100
-expect clamp_bounds("5000", "0") == { limit: 100, offset: 0 }
+expect clamp_bounds(Ok(5000), Ok(0)) == { limit: 100, offset: 0 }

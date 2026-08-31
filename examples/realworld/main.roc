@@ -54,6 +54,7 @@ render = |error| match error {
     DbErr(message) => Api.field_error(500, "body", "db error: ${message}")
     MissingParam(name) => Api.field_error(400, "body", "missing path parameter ${name}")
     InvalidBody(errors) => Api.field_error(422, "body", Req.explain(errors))
+    InvalidQuery(errors) => Api.field_error(400, "query", Req.explain_query(errors))
     _ => Api.field_error(500, "body", "internal error")
 }
 

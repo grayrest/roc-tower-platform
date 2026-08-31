@@ -104,6 +104,14 @@ Host := [].{
     ## key (a RAW body read wins — byte-equality is all that's safe then).
     set_body_key! : U64, U64 => {}
 
+    ## Override the request's QUERY-variant cache key with a CANONICAL key —
+    ## the structural hash of the DECODED query record (`Req.query_record!`).
+    ## Two raw spellings of the same query (extra junk params, order) then
+    ## share one cached entry: the host aliases the raw request target to a
+    ## canonical one. Only a route that DECODES its query reports a key; a
+    ## route that never reads the query is unaffected (no drop — fail-safe).
+    set_query_key! : U64, U64 => {}
+
     ## The process-wide random seed for canonical body-key hashing. Seeding
     ## `to_hash` makes canonical-key collisions non-craftable offline; the
     ## in-memory cache only needs in-process stability.

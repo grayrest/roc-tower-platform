@@ -97,6 +97,7 @@ platform ""
         "roc_next_id": Host.next_id!,
         "roc_request_body": Host.request_body!,
         "roc_set_body_key": Host.set_body_key!,
+        "roc_set_query_key": Host.set_query_key!,
         "roc_hash_seed": Host.hash_seed!,
         "roc_cookie": Host.cookie!,
         "roc_reserve_id": Host.reserve_id!,
@@ -124,6 +125,8 @@ import NullableI64
 import JsonBool
 import JsonEnc
 import JsonDec
+import QueryDec
+import Fields
 
 app_for_host : {} -> {
     settings : List([
