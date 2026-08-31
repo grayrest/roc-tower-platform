@@ -92,6 +92,23 @@ Host := [].{
     ## deliberate purity (note rung 1).
     sql_row_str : U64, U64, U64 -> Str
 
+    ## Append column `index` of the row named by `tok` as a JSON-escaped string
+    ## straight into `out` — the H2 escaped-cell sink. One copy (SQLite bytes to
+    ## the Roc buffer, escaping inline) versus the two of
+    ## `JsonEnc.str_into(sql_row_str(..))`. PURE (`->`) like `sql_row_str`: the
+    ## token pins the row, so this is a function of `(out, handle, tok, index)`.
+    sql_col_str_json_into : List(U8), U64, U64, U64 -> List(U8)
+
+    ## Like `sql_col_str_json_into`, but a NULL cell appends the JSON literal
+    ## `null` instead of a quoted string — the one-copy sink for nullable TEXT
+    ## columns (replaces `sql_col_type!` probe + `sql_row_str` + str/null into).
+    sql_col_nullable_str_json_into : List(U8), U64, U64, U64 -> List(U8)
+
+    ## Append a comma-joined `GROUP_CONCAT` tag cell as a JSON array of escaped
+    ## strings (`["a","b"]`; NULL/empty → `[]`) straight into `out` — the
+    ## one-copy sink that replaces the Roc-side `split_on` + per-tag `str_into`.
+    sql_col_taglist_json_into : List(U8), U64, U64, U64 -> List(U8)
+
     ## Column `index` of the current row as a byte blob.
     sql_col_blob! : U64, U64 => List(U8)
 

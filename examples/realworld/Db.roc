@@ -399,58 +399,30 @@ stream_article! : U64, U64, List(U8) => List(U8)
 stream_article! = |h, tok, out|
     out
     |> JsonEnc.raw_into("{\"author\":{\"bio\":")
-    |> nullable_into!(h, tok, 6)
+    |> Host.sql_col_nullable_str_json_into(h, tok, 6)
     |> JsonEnc.raw_into(",\"following\":")
     |> JsonEnc.bool_into(Host.sql_col_i64!(h, 10) != 0)
     |> JsonEnc.raw_into(",\"image\":")
-    |> nullable_into!(h, tok, 7)
+    |> Host.sql_col_nullable_str_json_into(h, tok, 7)
     |> JsonEnc.raw_into(",\"username\":")
-    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 5))
+    |> Host.sql_col_str_json_into(h, tok, 5)
     |> JsonEnc.raw_into("},\"createdAt\":")
-    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 3))
+    |> Host.sql_col_str_json_into(h, tok, 3)
     |> JsonEnc.raw_into(",\"description\":")
-    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 2))
+    |> Host.sql_col_str_json_into(h, tok, 2)
     |> JsonEnc.raw_into(",\"favorited\":")
     |> JsonEnc.bool_into(Host.sql_col_i64!(h, 9) != 0)
     |> JsonEnc.raw_into(",\"favoritesCount\":")
     |> JsonEnc.i64_into(Host.sql_col_i64!(h, 8))
     |> JsonEnc.raw_into(",\"slug\":")
-    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 0))
+    |> Host.sql_col_str_json_into(h, tok, 0)
     |> JsonEnc.raw_into(",\"tagList\":")
-    |> tags_into!(h, tok, 11)
+    |> Host.sql_col_taglist_json_into(h, tok, 11)
     |> JsonEnc.raw_into(",\"title\":")
-    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 1))
+    |> Host.sql_col_str_json_into(h, tok, 1)
     |> JsonEnc.raw_into(",\"updatedAt\":")
-    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 4))
+    |> Host.sql_col_str_json_into(h, tok, 4)
     |> JsonEnc.raw_into("}")
-
-## A nullable TEXT cell: JSON null, or the quoted string.
-nullable_into! : List(U8), U64, U64, U64 => List(U8)
-nullable_into! = |out, h, tok, idx|
-    match Host.sql_col_type!(h, idx) {
-        Null => JsonEnc.null_into(out)
-        _ => JsonEnc.str_into(out, Host.sql_row_str(h, tok, idx))
-    }
-
-## The tagList array: split the comma-joined tag_list cell, quote each tag.
-tags_into! : List(U8), U64, U64, U64 => List(U8)
-tags_into! = |out, h, tok, idx| {
-    opened = JsonEnc.raw_into(out, "[")
-    filled = match Host.sql_col_type!(h, idx) {
-        Null => opened
-        _ => {
-            text = Host.sql_row_str(h, tok, idx)
-            if text.is_empty() {
-                opened
-            } else {
-                text.split_on(",").fold_with_index(opened, |acc, tag, i|
-                    if i == 0 { JsonEnc.str_into(acc, tag) } else { JsonEnc.str_into(JsonEnc.raw_into(acc, ","), tag) })
-            }
-        }
-    }
-    JsonEnc.raw_into(filled, "]")
-}
-
 ## Read the single COUNT(*) cell.
 read_count! : U64 => I64
 read_count! = |handle|

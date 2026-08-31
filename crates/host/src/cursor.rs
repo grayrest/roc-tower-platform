@@ -470,6 +470,274 @@ pub extern "C-unwind" fn roc_sql_row_str(handle: u64, tok: u64, index: u64) -> a
     }
 }
 
+// ---------------------------------------------------------------------------
+// H2 spike: escaped-cell sink. `sql_col_str_json_into` appends a JSON-quoted,
+// JSON-escaped string cell straight from SQLite's bytes into the Roc output
+// `List(U8)`, growing the list in place. One copy (SQLite bytes -> Roc buffer,
+// escaping inline), versus the two of `str_into(sql_row_str(..))` (SQLite ->
+// RocStr, then RocStr -> buffer). Reaches behind the glue to grow a `RocList`
+// (no supported grow path yet) — a spike to MEASURE the second-copy win.
+// ---------------------------------------------------------------------------
+
+/// `RocList<u8>` header bytes and alignment (see `RocListWith::header_bytes`):
+/// one word of rc slot for a non-refcounted element type, 8-aligned.
+const LIST_HDR: usize = core::mem::size_of::<usize>();
+const LIST_ALIGN: usize = core::mem::size_of::<usize>();
+
+/// The element capacity of a `List(U8)` (0 for empty or a seamless slice, which
+/// we never grow in place).
+#[inline]
+fn list_capacity(out: &abi::RocListWith<u8, false>) -> usize {
+    if out.elements.is_null() || out.is_seamless_slice() {
+        0
+    } else {
+        out.capacity_or_alloc_ptr >> 1
+    }
+}
+
+/// Ensure `out` has room for `additional` more bytes past its current length,
+/// growing the backing allocation (fresh alloc / realloc through the arena) when
+/// needed. Assumes `out` is uniquely owned (true for a response body built
+/// linearly in one request); a shared list would need copy-on-write.
+fn list_reserve(
+    mut out: abi::RocListWith<u8, false>,
+    additional: usize,
+    host: &abi::RocHost,
+) -> abi::RocListWith<u8, false> {
+    let need = out.length + additional;
+    if list_capacity(&out) >= need {
+        return out;
+    }
+    let new_cap = need.max(list_capacity(&out) * 2).max(64);
+    let new_total = new_cap + LIST_HDR;
+    if out.elements.is_null() {
+        // SAFETY: fresh allocation; write the rc slot (=1) and point at the data.
+        let base = unsafe { host.alloc(LIST_ALIGN, new_total) } as *mut u8;
+        let data = unsafe { base.add(LIST_HDR) };
+        unsafe { *(data as *mut isize).sub(1) = 1 };
+        out.elements = data;
+        out.capacity_or_alloc_ptr = new_cap << 1;
+    } else {
+        // SAFETY: realloc preserves the old bytes, including the rc slot in the
+        // first header word; `old_base` is the allocation the arena/glue handed
+        // out (`elements - header`).
+        let old_base = unsafe { (out.elements as *mut u8).sub(LIST_HDR) };
+        let new_base =
+            unsafe { host.realloc(old_base as *mut core::ffi::c_void, LIST_ALIGN, new_total) }
+                as *mut u8;
+        out.elements = unsafe { new_base.add(LIST_HDR) };
+        out.capacity_or_alloc_ptr = new_cap << 1;
+    }
+    out
+}
+
+/// One lowercase hex digit as its ASCII byte (mirrors `JsonEnc.hex_digit`).
+#[inline]
+fn hex_digit(nibble: u8) -> u8 {
+    if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 }
+}
+
+/// Write the JSON escape of `b` at `dst`, returning the bytes written (1..=6).
+/// Mirrors `JsonEnc.escaped`.
+#[inline]
+unsafe fn write_escaped(dst: *mut u8, b: u8) -> usize {
+    unsafe {
+        match b {
+            b'"' => { *dst = b'\\'; *dst.add(1) = b'"'; 2 }
+            b'\\' => { *dst = b'\\'; *dst.add(1) = b'\\'; 2 }
+            b'\n' => { *dst = b'\\'; *dst.add(1) = b'n'; 2 }
+            b'\r' => { *dst = b'\\'; *dst.add(1) = b'r'; 2 }
+            b'\t' => { *dst = b'\\'; *dst.add(1) = b't'; 2 }
+            0x08 => { *dst = b'\\'; *dst.add(1) = b'b'; 2 }
+            0x0c => { *dst = b'\\'; *dst.add(1) = b'f'; 2 }
+            c if c < 0x20 => {
+                *dst = b'\\';
+                *dst.add(1) = b'u';
+                *dst.add(2) = b'0';
+                *dst.add(3) = b'0';
+                *dst.add(4) = hex_digit(c >> 4);
+                *dst.add(5) = hex_digit(c & 0xf);
+                6
+            }
+            c => { *dst = c; 1 }
+        }
+    }
+}
+
+/// Append `src` as a JSON string (quoted, escaped) into `out`, one copy.
+fn append_json_string(
+    out: abi::RocListWith<u8, false>,
+    src: &[u8],
+    host: &abi::RocHost,
+) -> abi::RocListWith<u8, false> {
+    let needs_escape = src.iter().any(|&b| b == b'"' || b == b'\\' || b < 0x20);
+    if !needs_escape {
+        // Common path: quote + raw memcpy + quote — the single copy.
+        let mut out = list_reserve(out, src.len() + 2, host);
+        let start = out.length;
+        unsafe {
+            let p = out.elements.add(start);
+            *p = b'"';
+            core::ptr::copy_nonoverlapping(src.as_ptr(), p.add(1), src.len());
+            *p.add(1 + src.len()) = b'"';
+        }
+        out.length = start + src.len() + 2;
+        out
+    } else {
+        // Rare path: reserve the worst case (\u00XX is 6 bytes/char) and escape.
+        let mut out = list_reserve(out, 2 + src.len() * 6, host);
+        let start = out.length;
+        let mut w = start;
+        unsafe {
+            let base = out.elements;
+            *base.add(w) = b'"';
+            w += 1;
+            for &b in src {
+                w += write_escaped(base.add(w), b);
+            }
+            *base.add(w) = b'"';
+            w += 1;
+        }
+        out.length = w;
+        out
+    }
+}
+
+/// `Host.sql_col_str_json_into : List(U8), U64, U64, U64 -> List(U8)` (H2 + H1).
+/// Escapes column `index` of the row named by `tok` as a JSON string straight
+/// into `out`. Generation-guarded like `sql_row_str`; `C-unwind` so the guard
+/// panic unwinds to the router.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_sql_col_str_json_into(
+    out: abi::RocListWith<u8, false>,
+    handle: u64,
+    tok: u64,
+    index: u64,
+) -> abi::RocListWith<u8, false> {
+    crate::profile::getter();
+    let host = roc_host();
+    match with_cursor(handle, |cursor| {
+        require_token(cursor.generation, tok);
+        if cursor.current.is_null() {
+            return append_json_string(out, &[], host);
+        }
+        // SAFETY: token matched, so `current` is the row `tok` names and is live.
+        let row = unsafe { &*cursor.current };
+        match row.get_ref(index as usize) {
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_json_string(out, b, host),
+            Ok(ValueRef::Integer(n)) => append_json_string(out, n.to_string().as_bytes(), host),
+            Ok(ValueRef::Real(f)) => append_json_string(out, f.to_string().as_bytes(), host),
+            _ => append_json_string(out, &[], host),
+        }
+    }) {
+        Some(o) => o,
+        None => out,
+    }
+}
+
+/// Append `bytes` verbatim (no escaping) into `out` — for structural bytes like
+/// `null`, `[`, `]`, and array separators.
+fn append_raw(
+    out: abi::RocListWith<u8, false>,
+    bytes: &[u8],
+    host: &abi::RocHost,
+) -> abi::RocListWith<u8, false> {
+    let mut out = list_reserve(out, bytes.len(), host);
+    let start = out.length;
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.elements.add(start), bytes.len());
+    }
+    out.length = start + bytes.len();
+    out
+}
+
+/// Append the comma-joined `src` (a `GROUP_CONCAT` tag cell) as a JSON array of
+/// escaped strings: `["a","b"]`. Empty `src` yields `[]`.
+fn append_taglist(
+    out: abi::RocListWith<u8, false>,
+    src: &[u8],
+    host: &abi::RocHost,
+) -> abi::RocListWith<u8, false> {
+    let mut out = append_raw(out, b"[", host);
+    if !src.is_empty() {
+        let mut first = true;
+        for tag in src.split(|&b| b == b',') {
+            if !first {
+                out = append_raw(out, b",", host);
+            }
+            first = false;
+            out = append_json_string(out, tag, host);
+        }
+    }
+    append_raw(out, b"]", host)
+}
+
+/// `Host.sql_col_nullable_str_json_into : List(U8), U64, U64, U64 -> List(U8)`
+/// (H2 + H1). Like `sql_col_str_json_into`, but a NULL cell appends the JSON
+/// literal `null` instead of a quoted string — one host call replaces the
+/// `sql_col_type!` probe + `sql_row_str` + `str_into`/`null_into`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_sql_col_nullable_str_json_into(
+    out: abi::RocListWith<u8, false>,
+    handle: u64,
+    tok: u64,
+    index: u64,
+) -> abi::RocListWith<u8, false> {
+    crate::profile::getter();
+    let host = roc_host();
+    match with_cursor(handle, |cursor| {
+        require_token(cursor.generation, tok);
+        if cursor.current.is_null() {
+            return append_raw(out, b"null", host);
+        }
+        // SAFETY: token matched, so `current` is the row `tok` names and is live.
+        let row = unsafe { &*cursor.current };
+        match row.get_ref(index as usize) {
+            Ok(ValueRef::Null) => append_raw(out, b"null", host),
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_json_string(out, b, host),
+            Ok(ValueRef::Integer(n)) => append_json_string(out, n.to_string().as_bytes(), host),
+            Ok(ValueRef::Real(f)) => append_json_string(out, f.to_string().as_bytes(), host),
+            Err(_) => append_raw(out, b"null", host),
+        }
+    }) {
+        Some(o) => o,
+        None => out,
+    }
+}
+
+/// `Host.sql_col_taglist_json_into : List(U8), U64, U64, U64 -> List(U8)`
+/// (H2 + H1). Splits the comma-joined tag cell host-side and appends it as a
+/// JSON array of escaped strings — one host call replaces the `sql_col_type!`
+/// probe + `sql_row_str` + Roc-side `split_on` + per-tag `str_into`. NULL or an
+/// empty cell yields `[]`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_sql_col_taglist_json_into(
+    out: abi::RocListWith<u8, false>,
+    handle: u64,
+    tok: u64,
+    index: u64,
+) -> abi::RocListWith<u8, false> {
+    crate::profile::getter();
+    let host = roc_host();
+    match with_cursor(handle, |cursor| {
+        require_token(cursor.generation, tok);
+        if cursor.current.is_null() {
+            return append_taglist(out, &[], host);
+        }
+        // SAFETY: token matched, so `current` is the row `tok` names and is live.
+        let row = unsafe { &*cursor.current };
+        match row.get_ref(index as usize) {
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_taglist(out, b, host),
+            Ok(ValueRef::Integer(n)) => append_taglist(out, n.to_string().as_bytes(), host),
+            Ok(ValueRef::Real(f)) => append_taglist(out, f.to_string().as_bytes(), host),
+            _ => append_taglist(out, &[], host),
+        }
+    }) {
+        Some(o) => o,
+        None => out,
+    }
+}
+
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {

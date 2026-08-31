@@ -3573,6 +3573,42 @@ pub struct HostSqlRowStrArgs {
     pub arg2: u64,
 }
 
+/// Arguments for Host.sql_col_str_json_into
+/// Roc signature: List(U8), U64, U64, U64 -> List(U8)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlColStrJsonIntoArgs {
+    pub arg0: RocListWith<u8, false>,
+    pub arg1: u64,
+    pub arg2: u64,
+    pub arg3: u64,
+}
+
+/// Arguments for Host.sql_col_nullable_str_json_into
+/// Roc signature: List(U8), U64, U64, U64 -> List(U8)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlColNullableStrJsonIntoArgs {
+    pub arg0: RocListWith<u8, false>,
+    pub arg1: u64,
+    pub arg2: u64,
+    pub arg3: u64,
+}
+
+/// Arguments for Host.sql_col_taglist_json_into
+/// Roc signature: List(U8), U64, U64, U64 -> List(U8)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlColTaglistJsonIntoArgs {
+    pub arg0: RocListWith<u8, false>,
+    pub arg1: u64,
+    pub arg2: u64,
+    pub arg3: u64,
+}
+
 /// Arguments for Host.sql_col_blob!
 /// Roc signature: U64, U64 => List(U8)
 /// Refcounted fields are owned by the hosted function.
@@ -4935,6 +4971,30 @@ unsafe extern "C" {
     /// Roc signature: U64, U64, U64 -> Str
     /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_row_str(arg0: u64, arg1: u64, arg2: u64) -> RocStr;
+
+    /// Hosted symbol for Host.sql_col_str_json_into
+    /// Roc signature: List(U8), U64, U64, U64 -> List(U8)
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
+    pub fn roc_sql_col_str_json_into(arg0: RocListWith<u8, false>, arg1: u64, arg2: u64, arg3: u64) -> RocListWith<u8, false>;
+
+    /// Hosted symbol for Host.sql_col_nullable_str_json_into
+    /// Roc signature: List(U8), U64, U64, U64 -> List(U8)
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
+    pub fn roc_sql_col_nullable_str_json_into(arg0: RocListWith<u8, false>, arg1: u64, arg2: u64, arg3: u64) -> RocListWith<u8, false>;
+
+    /// Hosted symbol for Host.sql_col_taglist_json_into
+    /// Roc signature: List(U8), U64, U64, U64 -> List(U8)
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
+    pub fn roc_sql_col_taglist_json_into(arg0: RocListWith<u8, false>, arg1: u64, arg2: u64, arg3: u64) -> RocListWith<u8, false>;
 
     /// Hosted symbol for Host.sql_col_blob!
     /// Roc signature: U64, U64 => List(U8)
