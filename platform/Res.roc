@@ -67,13 +67,12 @@ Res := [].{
         effects: [],
     }
 
-    ## A JSON response; the value is encoded with the builtin Json module.
-    ## `Json.to_str` encodes to a Str; `.to_utf8()` hands the response its
-    ## body bytes.
+    ## A JSON response. `JsonEnc.to_utf8` is the platform's own encoding, so
+    ## the encoder's `List(U8)` IS the body — no `Str` round trip.
     json = |status, value| {
         status: status,
         headers: [{ name: "content-type", value: "application/json" }],
-        body: Json.to_str(value).to_utf8(),
+        body: JsonEnc.to_utf8_with_capacity(value, 1024),
         effects: [],
     }
 
@@ -173,11 +172,11 @@ Res := [].{
             effects: builder.effects,
         }
 
-        ## Terminal: a JSON response (builtin Json encoding) with the effects.
+        ## Terminal: a JSON response carrying the accumulated effects.
         json = |builder, status, value| {
             status: status,
             headers: [{ name: "content-type", value: "application/json" }],
-            body: Json.to_str(value).to_utf8(),
+            body: JsonEnc.to_utf8_with_capacity(value, 1024),
             effects: builder.effects,
         }
 
@@ -230,6 +229,7 @@ Res := [].{
 }
 
 import Host
+import JsonEnc
 
 expect {
     response = Res.text(200, "hi")

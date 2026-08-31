@@ -71,7 +71,7 @@ platform ""
             }),
         }
     }
-    exposes [Host, Res, Req, Effect, Cofx, Sql, NullableStr, NullableI64, JsonBool]
+    exposes [Host, Res, Req, Effect, Cofx, Sql, NullableStr, NullableI64, JsonBool, JsonEnc]
     packages {}
     provides {
         "roc_app": app_for_host,
@@ -122,6 +122,78 @@ import Sql
 import NullableStr
 import NullableI64
 import JsonBool
+import JsonEnc
+import JsonDec
+
+app_for_host : {} -> {
+    settings : List([
+        Port(U16),
+        TimeoutMs(U64),
+        MaxBodyBytes(U64),
+        CorsPermissive,
+        CorsAllowOrigins(List(Str)),
+        Compression,
+        ConcurrencyLimit(U64),
+        ServeFiles({ url_prefix : Str, dir : Str }),
+        ResponseCache({ ttl_ms : U64, max_entries : U64, methods : List(Str), bypass_headers : List(Str) }),
+    ]),
+    routes : List({
+        method : Str,
+        path : Str,
+        # The request record carries only routing-pure data. The body
+        # and the Cookie header are NOT fields: they are extracted via
+        # host-mediated coeffects (Host.request_body!/cookie!) so the
+        # response cache knows exactly which routes vary on them
+        # (decision log D13/D14).
+        handler : Box({
+            ctx : U64,
+            method : Str,
+            path : Str,
+            params : List({ name : Str, value : Str }),
+            query : Str,
+            headers : List({ name : Str, value : Str }),
+            model : Box(Model),
+        } => {
+            status : U16,
+            headers : List({ name : Str, value : Str }),
+            body : List(U8),
+            effects : List([
+                Must([
+                    DbWrite({ db : Str, sql : Str, params : List(Host.SqlValue) }),
+                    HttpSend({
+                        method : Str,
+                        url : Str,
+                        headers : List({ name : Str, value : Str }),
+                        body : List(U8),
+                        timeout_ms : U64,
+                    }),
+                    Log(Str),
+                ], Box([
+                    UniqueViolation(Str),
+                    ForeignKeyViolation(Str),
+                    Busy,
+                    HttpFailed(Str),
+                    Other(Str),
+                ] -> {
+                    status : U16,
+                    headers : List({ name : Str, value : Str }),
+                    body : List(U8),
+                })),
+                Opt([
+                    DbWrite({ db : Str, sql : Str, params : List(Host.SqlValue) }),
+                    HttpSend({
+                        method : Str,
+                        url : Str,
+                        headers : List({ name : Str, value : Str }),
+                        body : List(U8),
+                        timeout_ms : U64,
+                    }),
+                    Log(Str),
+                ]),
+            ]),
+        }),
+    }),
+}
 
 app_for_host = |{}| {
     program = main({})

@@ -4,6 +4,7 @@ import pf.Res
 import pf.Cofx
 import pf.Sql
 import pf.NullableStr
+import pf.JsonEnc
 import Api
 import Auth
 import Db
@@ -55,7 +56,7 @@ Users := [].{
     ## handler).
     registration! = |req| {
         body : { user : Users.Registration }
-        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid registration body")
+        body = Req.json_body!(req)?
         Ok({
             username: Api.nonblank("username", body.user.username)?,
             email: Api.nonblank("email", body.user.email)?,
@@ -104,7 +105,7 @@ Users := [].{
     ## email or password is 401 credentials/invalid, without leaking which.
     credentials! = |req| {
         body : { user : Users.Credentials }
-        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid login body")
+        body = Req.json_body!(req)?
         email = Api.nonblank("email", body.user.email)?
         password = Api.nonblank("password", body.user.password)?
         rows = Sql.query!(
@@ -150,7 +151,7 @@ Users := [].{
     ## NULL to keep (COALESCE).
     user_patch! = |req| {
         body : { user : Users.UserPatch }
-        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid update body")
+        body = Req.json_body!(req)?
         Ok({
             email: Api.nonblank_opt("email", body.user.email)?,
             username: Api.nonblank_opt("username", body.user.username)?,
@@ -242,7 +243,7 @@ merge_nullable = |field, existing| match field {
 ## user_body wraps the user in the RealWorld envelope with nullable fields
 expect {
     body = Users.user_body({ id: 1, email: "j@x.com", username: "jake", bio: NullableStr.Null, image: NullableStr.Null, token: "tok" })
-    Json.to_str(body) == "{\"user\":{\"bio\":null,\"email\":\"j@x.com\",\"image\":null,\"token\":\"tok\",\"username\":\"jake\"}}"
+    JsonEnc.to_str(body) == "{\"user\":{\"bio\":null,\"email\":\"j@x.com\",\"image\":null,\"token\":\"tok\",\"username\":\"jake\"}}"
 }
 
 ## the password policy floors at 8 chars with the spec's message

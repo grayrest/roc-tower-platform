@@ -2304,14 +2304,13 @@ const _: () = assert!(core::mem::align_of::<InitForHostResult>() == 4, "InitForH
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(InitForHostResult, tag) == 12, "InitForHostResult tag offset mismatch");
 
-/// Arguments for Host.cookie!
-/// Roc signature: U64, Str => Try(Str, [NoCookie])
+/// Arguments for Host.log!
+/// Roc signature: Str => {}
 /// Refcounted fields are owned by the hosted function.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostCookieArgs {
-    pub arg0: u64,
-    pub arg1: RocStr,
+pub struct HostLogArgs {
+    pub arg0: RocStr,
 }
 
 /// Arguments for Host.env_var!
@@ -2321,6 +2320,34 @@ pub struct HostCookieArgs {
 #[derive(Clone, Copy)]
 pub struct HostEnvVarArgs {
     pub arg0: RocStr,
+}
+
+/// Arguments for Host.random_bytes!
+/// Roc signature: U64 => List(U8)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostRandomBytesArgs {
+    pub arg0: u64,
+}
+
+/// Arguments for Host.password_hash!
+/// Roc signature: Str => Str
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostPasswordHashArgs {
+    pub arg0: RocStr,
+}
+
+/// Arguments for Host.password_verify!
+/// Roc signature: Str, Str => Bool
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostPasswordVerifyArgs {
+    pub arg0: RocStr,
+    pub arg1: RocStr,
 }
 
 /// Arguments for Host.http_send!
@@ -2360,92 +2387,6 @@ const _: () = assert!(core::mem::size_of::<HostHttpSendArgs>() == 56, "HostHttpS
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<HostHttpSendArgs>() == 8, "HostHttpSendArgs alignment mismatch");
 
-/// Arguments for Host.log!
-/// Roc signature: Str => {}
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostLogArgs {
-    pub arg0: RocStr,
-}
-
-/// Arguments for Host.memo_get!
-/// Roc signature: U64, Str => Try(Box({} => rigid), [Miss])
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostMemoGetArgs {
-    pub arg0: u64,
-    pub arg1: RocStr,
-}
-
-/// Arguments for Host.memo_put!
-/// Roc signature: U64, Str, Box({} => rigid) => {}
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostMemoPutArgs {
-    pub arg0: u64,
-    pub arg1: RocStr,
-    pub arg2: RocErasedCallable,
-}
-
-/// Arguments for Host.next_id!
-/// Roc signature: Str => I64
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostNextIdArgs {
-    pub arg0: RocStr,
-}
-
-/// Arguments for Host.password_hash!
-/// Roc signature: Str => Str
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostPasswordHashArgs {
-    pub arg0: RocStr,
-}
-
-/// Arguments for Host.password_verify!
-/// Roc signature: Str, Str => Bool
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostPasswordVerifyArgs {
-    pub arg0: RocStr,
-    pub arg1: RocStr,
-}
-
-/// Arguments for Host.random_bytes!
-/// Roc signature: U64 => List(U8)
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostRandomBytesArgs {
-    pub arg0: u64,
-}
-
-/// Arguments for Host.request_body!
-/// Roc signature: U64 => List(U8)
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostRequestBodyArgs {
-    pub arg0: u64,
-}
-
-/// Arguments for Host.set_body_key!
-/// Roc signature: U64, U64 => {}
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostSetBodyKeyArgs {
-    pub arg0: u64,
-    pub arg1: u64,
-}
-
 /// Arguments for Host.sql_begin!
 /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
 /// Refcounted fields are owned by the hosted function.
@@ -2481,22 +2422,30 @@ const _: () = assert!(core::mem::size_of::<HostSqlBeginArgs>() == 48, "HostSqlBe
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<HostSqlBeginArgs>() == 8, "HostSqlBeginArgs alignment mismatch");
 
-/// Arguments for Host.sql_col_blob!
-/// Roc signature: U64, U64 => List(U8)
+/// Arguments for Host.sql_step!
+/// Roc signature: U64 => Try(Bool, Str)
 /// Refcounted fields are owned by the hosted function.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostSqlColBlobArgs {
+pub struct HostSqlStepArgs {
     pub arg0: u64,
-    pub arg1: u64,
 }
 
-/// Arguments for Host.sql_col_f64!
-/// Roc signature: U64, U64 => F64
+/// Arguments for Host.sql_columns!
+/// Roc signature: U64 => List(Str)
 /// Refcounted fields are owned by the hosted function.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostSqlColF64Args {
+pub struct HostSqlColumnsArgs {
+    pub arg0: u64,
+}
+
+/// Arguments for Host.sql_col_type!
+/// Roc signature: U64, U64 => Host.ColType
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlColTypeArgs {
     pub arg0: u64,
     pub arg1: u64,
 }
@@ -2511,6 +2460,16 @@ pub struct HostSqlColI64Args {
     pub arg1: u64,
 }
 
+/// Arguments for Host.sql_col_f64!
+/// Roc signature: U64, U64 => F64
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlColF64Args {
+    pub arg0: u64,
+    pub arg1: u64,
+}
+
 /// Arguments for Host.sql_col_str!
 /// Roc signature: U64, U64 => Str
 /// Refcounted fields are owned by the hosted function.
@@ -2521,23 +2480,14 @@ pub struct HostSqlColStrArgs {
     pub arg1: u64,
 }
 
-/// Arguments for Host.sql_col_type!
-/// Roc signature: U64, U64 => Host.ColType
+/// Arguments for Host.sql_col_blob!
+/// Roc signature: U64, U64 => List(U8)
 /// Refcounted fields are owned by the hosted function.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostSqlColTypeArgs {
+pub struct HostSqlColBlobArgs {
     pub arg0: u64,
     pub arg1: u64,
-}
-
-/// Arguments for Host.sql_columns!
-/// Roc signature: U64 => List(Str)
-/// Refcounted fields are owned by the hosted function.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct HostSqlColumnsArgs {
-    pub arg0: u64,
 }
 
 /// Arguments for Host.sql_finish!
@@ -2549,13 +2499,63 @@ pub struct HostSqlFinishArgs {
     pub arg0: u64,
 }
 
-/// Arguments for Host.sql_step!
-/// Roc signature: U64 => Try(Bool, Str)
+/// Arguments for Host.next_id!
+/// Roc signature: Str => I64
 /// Refcounted fields are owned by the hosted function.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct HostSqlStepArgs {
+pub struct HostNextIdArgs {
+    pub arg0: RocStr,
+}
+
+/// Arguments for Host.request_body!
+/// Roc signature: U64 => List(U8)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostRequestBodyArgs {
     pub arg0: u64,
+}
+
+/// Arguments for Host.set_body_key!
+/// Roc signature: U64, U64 => {}
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSetBodyKeyArgs {
+    pub arg0: u64,
+    pub arg1: u64,
+}
+
+/// Arguments for Host.cookie!
+/// Roc signature: U64, Str => Try(Str, [NoCookie])
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostCookieArgs {
+    pub arg0: u64,
+    pub arg1: RocStr,
+}
+
+/// Arguments for Host.memo_get!
+/// Roc signature: U64, Str => Try(Box({} => rigid), [Miss])
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostMemoGetArgs {
+    pub arg0: u64,
+    pub arg1: RocStr,
+}
+
+/// Arguments for Host.memo_put!
+/// Roc signature: U64, Str, Box({} => rigid) => {}
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostMemoPutArgs {
+    pub arg0: u64,
+    pub arg1: RocStr,
+    pub arg2: RocErasedCallable,
 }
 
 // Platform Type Aliases
@@ -3570,53 +3570,21 @@ unsafe extern "C" {
 
 #[allow(improper_ctypes)]
 unsafe extern "C" {
-    /// Hosted symbol for Host.cookie!
-    /// Roc signature: U64, Str => Try(Str, [NoCookie])
-    pub fn roc_cookie(arg0: u64, arg1: RocStr) -> HostCookieResult;
-
-    /// Hosted symbol for Host.ctx_registry_size!
-    /// Roc signature: {} => U64
-    pub fn roc_ctx_registry_size() -> u64;
+    /// Hosted symbol for Host.log!
+    /// Roc signature: Str => {}
+    pub fn roc_log(arg0: RocStr);
 
     /// Hosted symbol for Host.env_var!
     /// Roc signature: Str => Try(Str, [EnvVarNotFound])
     pub fn roc_env_var(arg0: RocStr) -> HostEnvVarResult;
 
-    /// Hosted symbol for Host.hash_seed!
-    /// Roc signature: {} => U64
-    pub fn roc_hash_seed() -> u64;
-
-    /// Hosted symbol for Host.http_send!
-    /// Roc signature: { body : List(U8), headers : List({ name : Str, value : Str }), method : Str, timeout_ms : U64, url : Str } => Try({ body : List(U8), headers : List({ name : Str, value : Str }), status : U16 }, Str)
-    pub fn roc_http_send(arg0: HostHttpSendArgs) -> HostHttpSendResult;
-
-    /// Hosted symbol for Host.log!
-    /// Roc signature: Str => {}
-    pub fn roc_log(arg0: RocStr);
-
-    /// Hosted symbol for Host.memo_get!
-    /// Roc signature: U64, Str => Try(Box({} => rigid), [Miss])
-    pub fn roc_memo_get(arg0: u64, arg1: RocStr) -> HostMemoGetResult;
-
-    /// Hosted symbol for Host.memo_live_boxes!
-    /// Roc signature: {} => U64
-    pub fn roc_memo_live_boxes() -> u64;
-
-    /// Hosted symbol for Host.memo_put!
-    /// Roc signature: U64, Str, Box({} => rigid) => {}
-    pub fn roc_memo_put(arg0: u64, arg1: RocStr, arg2: RocErasedCallable);
-
-    /// Hosted symbol for Host.next_id!
-    /// Roc signature: Str => I64
-    pub fn roc_next_id(arg0: RocStr) -> i64;
-
     /// Hosted symbol for Host.now_ms!
     /// Roc signature: {} => U64
     pub fn roc_now_ms() -> u64;
 
-    /// Hosted symbol for Host.panic_test!
-    /// Roc signature: {} => {}
-    pub fn roc_panic_test();
+    /// Hosted symbol for Host.random_bytes!
+    /// Roc signature: U64 => List(U8)
+    pub fn roc_random_bytes(arg0: u64) -> RocListWith<u8, false>;
 
     /// Hosted symbol for Host.password_hash!
     /// Roc signature: Str => Str
@@ -3626,13 +3594,65 @@ unsafe extern "C" {
     /// Roc signature: Str, Str => Bool
     pub fn password_verify(arg0: RocStr, arg1: RocStr) -> bool;
 
-    /// Hosted symbol for Host.random_bytes!
-    /// Roc signature: U64 => List(U8)
-    pub fn roc_random_bytes(arg0: u64) -> RocListWith<u8, false>;
+    /// Hosted symbol for Host.http_send!
+    /// Roc signature: { body : List(U8), headers : List({ name : Str, value : Str }), method : Str, timeout_ms : U64, url : Str } => Try({ body : List(U8), headers : List({ name : Str, value : Str }), status : U16 }, Str)
+    pub fn roc_http_send(arg0: HostHttpSendArgs) -> HostHttpSendResult;
+
+    /// Hosted symbol for Host.sql_begin!
+    /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
+    pub fn roc_sql_begin(arg0: HostSqlBeginArgs) -> HostSqlBeginResult;
+
+    /// Hosted symbol for Host.sql_step!
+    /// Roc signature: U64 => Try(Bool, Str)
+    pub fn roc_sql_step(arg0: u64) -> HostSqlStepResult;
+
+    /// Hosted symbol for Host.sql_columns!
+    /// Roc signature: U64 => List(Str)
+    pub fn roc_sql_columns(arg0: u64) -> RocList<RocStr>;
+
+    /// Hosted symbol for Host.sql_col_type!
+    /// Roc signature: U64, U64 => Host.ColType
+    pub fn roc_sql_col_type(arg0: u64, arg1: u64) -> HostColType;
+
+    /// Hosted symbol for Host.sql_col_i64!
+    /// Roc signature: U64, U64 => I64
+    pub fn roc_sql_col_i64(arg0: u64, arg1: u64) -> i64;
+
+    /// Hosted symbol for Host.sql_col_f64!
+    /// Roc signature: U64, U64 => F64
+    pub fn roc_sql_col_f64(arg0: u64, arg1: u64) -> f64;
+
+    /// Hosted symbol for Host.sql_col_str!
+    /// Roc signature: U64, U64 => Str
+    pub fn roc_sql_col_str(arg0: u64, arg1: u64) -> RocStr;
+
+    /// Hosted symbol for Host.sql_col_blob!
+    /// Roc signature: U64, U64 => List(U8)
+    pub fn roc_sql_col_blob(arg0: u64, arg1: u64) -> RocListWith<u8, false>;
+
+    /// Hosted symbol for Host.sql_finish!
+    /// Roc signature: U64 => {}
+    pub fn roc_sql_finish(arg0: u64);
+
+    /// Hosted symbol for Host.next_id!
+    /// Roc signature: Str => I64
+    pub fn roc_next_id(arg0: RocStr) -> i64;
 
     /// Hosted symbol for Host.request_body!
     /// Roc signature: U64 => List(U8)
     pub fn roc_request_body(arg0: u64) -> RocListWith<u8, false>;
+
+    /// Hosted symbol for Host.set_body_key!
+    /// Roc signature: U64, U64 => {}
+    pub fn roc_set_body_key(arg0: u64, arg1: u64);
+
+    /// Hosted symbol for Host.hash_seed!
+    /// Roc signature: {} => U64
+    pub fn roc_hash_seed() -> u64;
+
+    /// Hosted symbol for Host.cookie!
+    /// Roc signature: U64, Str => Try(Str, [NoCookie])
+    pub fn roc_cookie(arg0: u64, arg1: RocStr) -> HostCookieResult;
 
     /// Hosted symbol for Host.reserve_id!
     /// Roc signature: {} => U64
@@ -3642,45 +3662,25 @@ unsafe extern "C" {
     /// Roc signature: {} => U64
     pub fn roc_reserve_runs() -> u64;
 
-    /// Hosted symbol for Host.set_body_key!
-    /// Roc signature: U64, U64 => {}
-    pub fn roc_set_body_key(arg0: u64, arg1: u64);
+    /// Hosted symbol for Host.memo_get!
+    /// Roc signature: U64, Str => Try(Box({} => rigid), [Miss])
+    pub fn roc_memo_get(arg0: u64, arg1: RocStr) -> HostMemoGetResult;
 
-    /// Hosted symbol for Host.sql_begin!
-    /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
-    pub fn roc_sql_begin(arg0: HostSqlBeginArgs) -> HostSqlBeginResult;
+    /// Hosted symbol for Host.memo_put!
+    /// Roc signature: U64, Str, Box({} => rigid) => {}
+    pub fn roc_memo_put(arg0: u64, arg1: RocStr, arg2: RocErasedCallable);
 
-    /// Hosted symbol for Host.sql_col_blob!
-    /// Roc signature: U64, U64 => List(U8)
-    pub fn roc_sql_col_blob(arg0: u64, arg1: u64) -> RocListWith<u8, false>;
+    /// Hosted symbol for Host.ctx_registry_size!
+    /// Roc signature: {} => U64
+    pub fn roc_ctx_registry_size() -> u64;
 
-    /// Hosted symbol for Host.sql_col_f64!
-    /// Roc signature: U64, U64 => F64
-    pub fn roc_sql_col_f64(arg0: u64, arg1: u64) -> f64;
+    /// Hosted symbol for Host.memo_live_boxes!
+    /// Roc signature: {} => U64
+    pub fn roc_memo_live_boxes() -> u64;
 
-    /// Hosted symbol for Host.sql_col_i64!
-    /// Roc signature: U64, U64 => I64
-    pub fn roc_sql_col_i64(arg0: u64, arg1: u64) -> i64;
-
-    /// Hosted symbol for Host.sql_col_str!
-    /// Roc signature: U64, U64 => Str
-    pub fn roc_sql_col_str(arg0: u64, arg1: u64) -> RocStr;
-
-    /// Hosted symbol for Host.sql_col_type!
-    /// Roc signature: U64, U64 => Host.ColType
-    pub fn roc_sql_col_type(arg0: u64, arg1: u64) -> HostColType;
-
-    /// Hosted symbol for Host.sql_columns!
-    /// Roc signature: U64 => List(Str)
-    pub fn roc_sql_columns(arg0: u64) -> RocList<RocStr>;
-
-    /// Hosted symbol for Host.sql_finish!
-    /// Roc signature: U64 => {}
-    pub fn roc_sql_finish(arg0: u64);
-
-    /// Hosted symbol for Host.sql_step!
-    /// Roc signature: U64 => Try(Bool, Str)
-    pub fn roc_sql_step(arg0: u64) -> HostSqlStepResult;
+    /// Hosted symbol for Host.panic_test!
+    /// Roc signature: {} => {}
+    pub fn roc_panic_test();
 
 }
 

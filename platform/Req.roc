@@ -40,8 +40,8 @@ Req := [].{
     ## WITH the original error as its payload).
     json = |bytes| {
         text = Str.from_utf8(bytes) ? |_| InvalidUtf8
-        value = Json.parse(text) ? InvalidJson
-        Ok(value)
+        result = JsonDec.parse(text) ? InvalidJson
+        Ok(result)
     }
 
     ## Parse application/x-www-form-urlencoded body bytes.
@@ -95,10 +95,14 @@ Req := [].{
     ## the decoder learns to accumulate, the payload gets richer with no
     ## change here or in apps.
     json_body! = |req| {
-        decoded = Req.json(Host.request_body!(req.ctx)) ? |err| match err {
-            InvalidUtf8 => InvalidBody([InvalidJson("request body is not valid UTF-8")])
-            InvalidJson(parse_err) => InvalidBody([parse_err])
-        }
+        utf8_message : Str
+        utf8_message = "request body is not valid UTF-8"
+        text = Req.body_str(Host.request_body!(req.ctx)) ? |_| InvalidBody([InvalidJson(utf8_message)])
+        result = JsonDec.parse(text) ? |parse_err| InvalidBody([parse_err])
+        if !result.errors.is_empty() {
+            Err(InvalidBody(result.errors))
+        } else {
+        decoded = result.value
         # Report the CANONICAL body key — the structural hash of the decoded
         # value (derived `to_hash`, seeded per-process) — so the response
         # cache keys this route's body variant on what the handler actually
@@ -109,6 +113,7 @@ Req := [].{
         # type variable here fails build-time lowering.
         Host.set_body_key!(req.ctx, Hasher.hash_of(decoded, Host.hash_seed!()))
         Ok(decoded)
+        }
     }
 
     ## The request body parsed as application/x-www-form-urlencoded pairs.
@@ -129,15 +134,20 @@ Req := [].{
     ## calling it from an app nominal module crashes executable finalization,
     ## same family as the `Res.Response` annotation crash.)
     ##
+    ## Messages are QUOTE-FREE on purpose: apps interpolate them into
+    ## hand-built error JSON (`Api.field_error`, a dynamic-key shape the
+    ## encoder cannot produce), where an embedded `"` would break the body.
+    ##
     ## The union is written INLINE and OPEN rather than as `Json.ParseErr`:
     ## the builtin dropped that alias, and `Json.parse` now fails with the
     ## bare open union `[InvalidJson(Str), ..errs]` (`MissingRequiredField`
     ## comes from the generated record driver). Open is also what lets a
     ## caller's own tags merge, the same contract as `Sql`'s decoders.
-    explain : List([MissingRequiredField(Str), InvalidJson(Str), ..]) -> Str
+    explain : List([MissingRequiredField(Str), InvalidField(Str, Str), InvalidJson(Str), ..]) -> Str
     explain = |errors| {
         parts = errors.map(|error| match error {
-            MissingRequiredField(field) => "missing required field \"${field}\""
+            MissingRequiredField(field) => "missing required field: ${field}"
+            InvalidField(field, expected) => "field ${field} must be ${expected}"
             InvalidJson(detail) => detail
             _ => "invalid body"
         })
@@ -269,6 +279,7 @@ Req := [].{
 }
 
 import Host
+import JsonDec
 import Cofx
 import Res
 
@@ -409,16 +420,22 @@ expect Req.form("a=1&b=%2B".to_utf8()) == Ok([{ name: "a", value: "1" }, { name:
 
 ## json decodes body bytes into the target shape
 expect {
-    decoded : Try({ id : U64 }, _)
+    decoded : Try({ value : { id : U64 }, errors : _ }, _)
     decoded = Req.json("{\"id\":7}".to_utf8())
-    decoded == Ok({ id: 7 })
+    match decoded {
+        Ok(r) => r.value.id == 7
+        Err(_) => False
+    }
 }
 
 ## json rejects bytes that are not JSON for the shape
 expect {
-    decoded : Try({ id : U64 }, _)
+    decoded : Try({ value : { id : U64 }, errors : _ }, _)
     decoded = Req.json("nope".to_utf8())
-    decoded != Ok({ id: 7 })
+    match decoded {
+        Ok(_) => False
+        Err(_) => True
+    }
 }
 
 # --- coeffect resolvers ---
@@ -446,10 +463,10 @@ expect {
 }
 
 ## explain names the missing field from the decode error
-expect Req.explain([MissingRequiredField("title")]) == "missing required field \"title\""
+expect Req.explain([MissingRequiredField("title")]) == "missing required field: title"
 
 ## explain joins several decode errors into one message
-expect Req.explain([MissingRequiredField("a"), MissingRequiredField("b")]) == "missing required field \"a\"; missing required field \"b\""
+expect Req.explain([MissingRequiredField("a"), MissingRequiredField("b")]) == "missing required field: a; missing required field: b"
 
 ## explain falls back to a generic message for an empty error list
 expect Req.explain([]) == "invalid request body"

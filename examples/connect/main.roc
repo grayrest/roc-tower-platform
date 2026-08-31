@@ -126,6 +126,7 @@ list_books = |books| Res.json(200, {books: books})
 add_book_h! = Cofx.bind2(Req.json_body!, Req.reserved_id!, add_book)
 ## AddBook({ title, author, year }) -> { book }. A DbWrite mutation: the effect
 ## poisons this response (never cached) and purges every cached read of `books`.
+add_book : NewBook, I64 -> Response
 add_book = |fields, id| {
     book : Book
     book = { id: id, title: fields.title, author: fields.author, year: fields.year }

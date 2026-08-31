@@ -2,6 +2,8 @@
 ## companion to `NullableStr`, emitted by sqlgen for a nullable INTEGER column
 ## (`I64?`). A record field typed `NullableI64` comes out of `Res.json` /
 ## `Json.to_str` as `"n":7` or `"n":null`.
+import JsonEnc
+
 NullableI64 := [Null, Val(I64)].{
     ## Structural equality — see the note on `NullableStr.is_eq`: a nominal
     ## declaring associated items no longer gets a derived `is_eq`.
@@ -12,11 +14,11 @@ NullableI64 := [Null, Val(I64)].{
         _ => False
     }
 
-    ## The `Json.to_str` hook: `Null` encodes as JSON `null`, `Val(n)` as a
-    ## JSON number.
-    encoder_for = |encoding| |nullable, state| match nullable {
-        Null => Json.encode_null(encoding, state)
-        Val(inner) => Json.encode_i64(encoding, inner, state)
+    ## The encode hook, typed to the platform's `JsonEnc` (see the note on
+    ## `JsonBool.encoder_for`).
+    encoder_for = |_encoding| |nullable, state| match nullable {
+        Null => JsonEnc.encode_null(state)
+        Val(inner) => JsonEnc.encode_i64(inner, state)
     }
 
     ## The `Json.parse` hook: JSON `null` decodes to `Null`, a number to `Val`.
@@ -40,14 +42,14 @@ NullableI64 := [Null, Val(I64)].{
 expect {
     n : NullableI64
     n = NullableI64.Null
-    Json.to_str({ n: n }) == "{\"n\":null}"
+    JsonEnc.to_str({ n: n }) == "{\"n\":null}"
 }
 
 ## A Val field encodes as a plain JSON number
 expect {
     n : NullableI64
     n = NullableI64.Val(7)
-    Json.to_str({ n: n }) == "{\"n\":7}"
+    JsonEnc.to_str({ n: n }) == "{\"n\":7}"
 }
 
 ## with_default returns the contained value for Val

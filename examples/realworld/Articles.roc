@@ -109,7 +109,7 @@ Articles := [].{
     ## Coeffect: the decoded, validated POST body. Pure.
     new_article! = |req| {
         body : { article : Articles.NewArticle }
-        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid article body")
+        body = Req.json_body!(req)?
         Ok({
             title: Api.nonblank("title", body.article.title)?,
             description: Api.nonblank("description", body.article.description)?,
@@ -122,7 +122,7 @@ Articles := [].{
     ## Pure.
     article_patch! = |req| {
         body : { article : Articles.ArticlePatch }
-        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid article body")
+        body = Req.json_body!(req)?
         Ok({
             title: Api.nonblank_opt("title", body.article.title)?,
             description: Api.nonblank_opt("description", body.article.description)?,

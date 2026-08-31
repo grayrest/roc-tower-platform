@@ -4,7 +4,10 @@
 #   ROC=/path/to/roc just build
 
 roc := env("ROC", home_directory() / "Repositories/roc/zig-out/bin/roc")
-rust_glue := env("RUST_GLUE", home_directory() / "Repositories/roc/src/glue/src/RustGlue.roc")
+# Pinned to a VENDORED copy taken from the stable compiler's commit (917abf7f).
+# It used to default into the roc working tree, so a branch switch there silently
+# changed the generated ABI and broke the host build (2026-08-04).
+rust_glue := env("RUST_GLUE", justfile_directory() / "vendor/RustGlue.roc")
 
 # Platform target directory expected by `roc build` for the current host.
 target_dir := if os() + "/" + arch() == "macos/aarch64" { "arm64mac" } else if os() + "/" + arch() == "macos/x86_64" { "x64mac" } else { error("unsupported host platform: " + os() + "/" + arch()) }

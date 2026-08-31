@@ -8,6 +8,9 @@
 ## string, and `Try(NullableStr, [Missing])` distinguishes all THREE input
 ## states of a nullable PATCH field — absent (`Err(Missing)`), explicit
 ## null (`Ok(Null)`), and a value (`Ok(Val(s))`).
+import JsonEnc
+import JsonDec
+
 NullableStr := [Null, Val(Str)].{
     ## Structural equality. A nominal that declares associated items no longer
     ## receives a derived `is_eq`, so `==` on a `NullableStr` needs this
@@ -20,19 +23,19 @@ NullableStr := [Null, Val(Str)].{
         _ => False
     }
 
-    ## The `Json.to_str` hook: `Null` encodes as JSON `null`, `Val(s)` as a
-    ## JSON string. Derived record/list encoders pick this up for any field
-    ## typed `NullableStr`.
-    encoder_for = |encoding| |nullable, state| match nullable {
-        Null => Json.encode_null(encoding, state)
-        Val(inner) => Json.encode_str(encoding, inner, state)
+    ## The encode hook, typed to the platform's `JsonEnc` (see the note on
+    ## `JsonBool.encoder_for` for why it cannot also serve the builtin).
+    ## Derived record/list encoders pick this up for any `NullableStr` field.
+    encoder_for = |_encoding| |nullable, state| match nullable {
+        Null => JsonEnc.encode_null(state)
+        Val(inner) => JsonEnc.encode_str(inner, state)
     }
 
     ## The `Json.parse` hook: JSON `null` decodes to `Null`, a string to
     ## `Val`; anything else is that value's parse error.
-    parser_for = |encoding| |state| match Json.parse_null(encoding, state) {
+    parser_for = |encoding| |state| match JsonDec.parse_null(encoding, state) {
         Ok(rest) => Ok({ value: NullableStr.Null, rest: rest })
-        Err(_) => match Json.parse_str(encoding, state) {
+        Err(_) => match JsonDec.parse_str(encoding, state) {
             Ok({ value, rest }) => Ok({ value: NullableStr.Val(value), rest: rest })
             Err(problem) => Err(problem)
         }
@@ -58,14 +61,14 @@ NullableStr := [Null, Val(Str)].{
 expect {
     bio : NullableStr
     bio = NullableStr.Null
-    Json.to_str({ bio: bio }) == "{\"bio\":null}"
+    JsonEnc.to_str({ bio: bio }) == "{\"bio\":null}"
 }
 
 ## A Val field encodes as a plain JSON string
 expect {
     bio : NullableStr
     bio = NullableStr.Val("hi")
-    Json.to_str({ bio: bio }) == "{\"bio\":\"hi\"}"
+    JsonEnc.to_str({ bio: bio }) == "{\"bio\":\"hi\"}"
 }
 
 ## from_try maps Ok to Val
@@ -82,23 +85,37 @@ expect NullableStr.with_default(NullableStr.Null, "d") == "d"
 
 ## explicit JSON null decodes to Null
 expect {
-    parsed : Try({ bio : NullableStr }, _)
-    parsed = Json.parse("{\"bio\":null}")
-    parsed == Ok({ bio: NullableStr.Null })
+    parsed : Try({ value : { bio : NullableStr }, errors : _ }, _)
+    parsed = JsonDec.parse("{\"bio\":null}")
+    match parsed {
+        Ok(r) => r.value.bio == NullableStr.Null
+        Err(_) => False
+    }
 }
 
 ## a JSON string decodes to Val
 expect {
-    parsed : Try({ bio : NullableStr }, _)
-    parsed = Json.parse("{\"bio\":\"hi\"}")
-    parsed == Ok({ bio: NullableStr.Val("hi") })
+    parsed : Try({ value : { bio : NullableStr }, errors : _ }, _)
+    parsed = JsonDec.parse("{\"bio\":\"hi\"}")
+    match parsed {
+        Ok(r) => r.value.bio == NullableStr.Val("hi")
+        Err(_) => False
+    }
 }
 
 ## tri-state PATCH decode: absent field is Err(Missing), explicit null is Ok(Null)
 expect {
-    absent : Try({ bio : Try(NullableStr, [Missing]) }, _)
-    absent = Json.parse("{}")
-    explicit : Try({ bio : Try(NullableStr, [Missing]) }, _)
-    explicit = Json.parse("{\"bio\":null}")
-    absent == Ok({ bio: Err(Missing) }) and explicit == Ok({ bio: Ok(NullableStr.Null) })
+    absent : Try({ value : { bio : Try(NullableStr, _) }, errors : _ }, _)
+    absent = JsonDec.parse("{}")
+    explicit : Try({ value : { bio : Try(NullableStr, _) }, errors : _ }, _)
+    explicit = JsonDec.parse("{\"bio\":null}")
+    a_ok = match absent {
+        Ok(r) => r.value.bio == Err(Missing)
+        Err(_) => False
+    }
+    e_ok = match explicit {
+        Ok(r) => r.value.bio == Ok(NullableStr.Null)
+        Err(_) => False
+    }
+    a_ok and e_ok
 }

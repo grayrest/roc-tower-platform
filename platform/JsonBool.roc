@@ -5,9 +5,15 @@
 ## notes/2026-07-12-compiler-bool-encode-gap.md. This nominal routes encoding
 ## through `encode_bool`; delete it (and switch fields back to plain `Bool`)
 ## once the derivation is fixed upstream.
+import JsonEnc
+
 JsonBool := { value : Bool }.{
-    ## The `Json.to_str` hook: encode the wrapped Bool as JSON true/false.
-    encoder_for = |encoding| |wrapped, state| Json.encode_bool(encoding, wrapped.value, state)
+    ## The encode hook, typed to the PLATFORM's `JsonEnc` format rather than the
+    ## builtin's. A nominal can serve exactly one encoding: a generic
+    ## `encoder_for` spanning two formats panics the compiler (see
+    ## examples/repro/GenericEncoderTwoFormats.roc), so this deliberately gives
+    ## up `Json.to_str` on `JsonBool` — which is now a clean compile error.
+    encoder_for = |_encoding| |wrapped, state| JsonEnc.encode_bool(wrapped.value, state)
 
     ## Wrap a Bool for JSON output.
     from : Bool -> JsonBool
@@ -19,10 +25,10 @@ JsonBool := { value : Bool }.{
 }
 
 ## a True flag encodes as JSON true (not the string "True")
-expect Json.to_str({ favorited: JsonBool.from(True) }) == "{\"favorited\":true}"
+expect JsonEnc.to_str({ favorited: JsonBool.from(True) }) == "{\"favorited\":true}"
 
 ## a False flag encodes as JSON false
-expect Json.to_str({ favorited: JsonBool.from(False) }) == "{\"favorited\":false}"
+expect JsonEnc.to_str({ favorited: JsonBool.from(False) }) == "{\"favorited\":false}"
 
 ## truth unwraps what from wrapped
 expect JsonBool.truth(JsonBool.from(True)) and !JsonBool.truth(JsonBool.from(False))

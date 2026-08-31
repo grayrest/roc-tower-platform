@@ -373,9 +373,10 @@ async fn extractor_rejection_returns_400_with_platform_message() {
         .await
         .unwrap();
     assert_eq!(response.status(), 400);
-    // The platform-rendered decode message (`Req.explain` over the builtin
-    // `Json.ParseErr`); today's parser reports a generic invalid-JSON detail.
-    assert_eq!(response.text().await.unwrap(), "Invalid JSON");
+    // The platform-rendered decode message (`Req.explain` over the platform's
+    // own `JsonDec`): a non-object body fails `parse_record_start` with a
+    // specific detail rather than the builtin's generic "Invalid JSON".
+    assert_eq!(response.text().await.unwrap(), "expected object");
 }
 
 #[tokio::test]

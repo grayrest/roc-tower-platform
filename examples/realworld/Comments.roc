@@ -28,7 +28,7 @@ Comments := [].{
     ## Coeffect: the decoded, validated comment text. Pure.
     comment_body! = |req| {
         body : { comment : { body : Str } }
-        body = Req.json_body!(req) ? |_| Fail(422.U16, "body", "invalid comment body")
+        body = Req.json_body!(req)?
         Api.nonblank("body", body.comment.body)
     }
 
