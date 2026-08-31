@@ -75,8 +75,6 @@ fn require_token(cursor_generation: u64, tok: u64) {
 /// The three pointers form a self-reference (rows → stmt → conn); they are
 /// dropped in that order and the heap boxes never move.
 struct Cursor {
-    /// Column names, cached once at begin for by-name decode in `Sql.roc`.
-    columns: Vec<String>,
     /// The current row after a successful `step`, or null before the first
     /// step / after `Done`. Borrows `rows`; replaced on each step.
     current: *const Row<'static>,
@@ -276,15 +274,12 @@ fn build_cursor(
             return Err(format!("bind param {}: {err}", i + 1));
         }
     }
-    let columns: Vec<String> = stmt.column_names().iter().map(|s| (*s).to_owned()).collect();
-
     let stmt: *mut CachedStatement<'static> = Box::into_raw(Box::new(stmt));
     // SAFETY: stable heap box, never moved, dropped after `rows`.
     let stmt_ref: &'static mut CachedStatement<'static> = unsafe { &mut *stmt };
     let rows: *mut Rows<'static> = Box::into_raw(Box::new(stmt_ref.raw_query()));
 
     Ok(Cursor {
-        columns,
         current: std::ptr::null(),
         generation: 0,
         rows,
@@ -339,15 +334,24 @@ fn with_row<R>(handle: u64, f: impl FnOnce(&Row<'static>) -> R) -> Option<R> {
 /// `Host.sql_columns! : U64 => List(Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_columns(handle: u64) -> abi::RocList<abi::RocStr> {
-    let names = with_cursor(handle, |cursor| cursor.columns.clone()).unwrap_or_default();
     let host = roc_host();
-    unsafe {
-        let list = abi::RocList::<abi::RocStr>::allocate(names.len(), host);
-        for (index, name) in names.iter().enumerate() {
-            list.elements.add(index).write(roc_str(name));
+    // Read the names straight off the live statement on demand — only the
+    // by-name `Sql.query!` path calls this, so positional/streaming readers
+    // never pay for the column-name `Vec<String>`.
+    with_cursor(handle, |cursor| {
+        // SAFETY: `stmt` is this cursor's live boxed statement.
+        let stmt = unsafe { &*cursor.stmt };
+        let count = stmt.column_count();
+        unsafe {
+            let list = abi::RocList::<abi::RocStr>::allocate(count, host);
+            for index in 0..count {
+                let name = stmt.column_name(index).unwrap_or("");
+                list.elements.add(index).write(roc_str(name));
+            }
+            list
         }
-        list
-    }
+    })
+    .unwrap_or_else(|| unsafe { abi::RocList::<abi::RocStr>::allocate(0, host) })
 }
 
 /// `Host.sql_col_type! : U64, U64 => Host.ColType`.

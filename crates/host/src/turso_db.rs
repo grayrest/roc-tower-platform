@@ -189,7 +189,6 @@ fn require_token(cursor_generation: u64, tok: u64) {
 }
 
 struct Cursor {
-    columns: Vec<String>,
     stmt: Box<TursoStatement>,
     /// Held so the connection outlives the statement, and returned to the pool
     /// when the cursor is finalized. Declared AFTER `stmt` so the statement
@@ -325,10 +324,7 @@ fn build_cursor(pooled: PooledConn, sql: &str, params: &[SqlValue]) -> Result<Cu
     for (i, value) in params.iter().enumerate() {
         stmt.bind_positional(i + 1, to_turso(value)).map_err(|e| format!("bind param {}: {e:?}", i + 1))?;
     }
-    let columns: Vec<String> = (0..stmt.column_count())
-        .map(|i| stmt.column_name(i).unwrap_or_default())
-        .collect();
-    Ok(Cursor { columns, stmt, _conn: pooled, has_row: false, generation: 0 })
+    Ok(Cursor { stmt, _conn: pooled, has_row: false, generation: 0 })
 }
 
 /// `Host.sql_step! : U64 => Try(Bool, Str)`.
@@ -436,7 +432,14 @@ fn with_value<R>(handle: u64, index: u64, f: impl FnOnce(Value) -> R) -> Option<
 /// `Host.sql_columns! : U64 => List(Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_columns(handle: u64) -> abi::RocList<abi::RocStr> {
-    let names = with_cursor(handle, |cursor| cursor.columns.clone()).unwrap_or_default();
+    // On demand from the live statement (only the by-name path calls this), so
+    // positional/streaming readers never build a column-name Vec. See cursor.rs.
+    let names = with_cursor(handle, |cursor| {
+        (0..cursor.stmt.column_count())
+            .map(|i| cursor.stmt.column_name(i).unwrap_or_default())
+            .collect::<Vec<String>>()
+    })
+    .unwrap_or_default();
     let host = roc_host();
     unsafe {
         let list = abi::RocList::<abi::RocStr>::allocate(names.len(), host);
