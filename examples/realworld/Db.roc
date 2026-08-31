@@ -243,6 +243,19 @@ Db := [].{
         \\FROM comments c JOIN users u ON u.id = c.author_id
         \\WHERE c.article_id = :article_id ORDER BY c.id
 
+    ## Named-binding write builders (@sql resolves :name -> positional at
+    ## codegen), so a param order can never drift from the SQL. The register
+    ## flow uses these instead of hand-built positional DbWrite payloads.
+    ## @params id: I64, email: Str, username: Str, password_hash: Str
+    ## @sql
+    insert_user =
+        \\INSERT INTO users (id, email, username, password_hash) VALUES (:id, :email, :username, :password_hash)
+
+    ## @params token: Str, user_id: I64
+    ## @sql
+    insert_token =
+        \\INSERT INTO tokens (token, user_id) VALUES (:token, :user_id)
+
     load_comments! = |ctx, db, viewer, article_id| {
         rows = DbGen.comments_q!(ctx, db, { viewer: viewer, article_id: article_id })?
         Ok(rows.map(Db.comment_from_row))
@@ -293,6 +306,8 @@ Db := [].{
 ## columns (trigger-maintained), so the only per-row work left is the two viewer
 ## flags. Read by name via `Sql.query!`; `:viewer` is param 1 (SQLite reuses it
 ## for both flags), page_where `?` follow it.
+## @params slug: Str, title: Str, description: Str, created_at: Str, updated_at: Str, username: Str, bio: Str?, image: Str?, favorites_count: I64, favorited: I64, following: I64, tag_list: Str?
+## @reader article_summary
 article_summary_select =
     \\SELECT a.slug, a.title, a.description, a.created_at, a.updated_at,
     \\       u.username, u.bio, u.image,
@@ -316,32 +331,21 @@ article_summary_select_anon =
     \\       a.tag_list
     \\FROM articles a JOIN users u ON u.id = a.author_id
 
-## Internal: one `Sql.query!` row (by name) to an ArticleSummary; 500 on a
-## corrupt cell (impossible for this fixed shape, but typed all the way).
-article_summary_from_row = |row| {
-    slug = row.str("slug") ? |_| Fail(500.U16, "body", "corrupt article row")
-    title = row.str("title") ? |_| Fail(500.U16, "body", "corrupt article row")
-    description = row.str("description") ? |_| Fail(500.U16, "body", "corrupt article row")
-    created_at = row.str("created_at") ? |_| Fail(500.U16, "body", "corrupt article row")
-    updated_at = row.str("updated_at") ? |_| Fail(500.U16, "body", "corrupt article row")
-    username = row.str("username") ? |_| Fail(500.U16, "body", "corrupt article row")
-    bio = row.nullable_str("bio") ? |_| Fail(500.U16, "body", "corrupt article row")
-    image = row.nullable_str("image") ? |_| Fail(500.U16, "body", "corrupt article row")
-    favorites_count = row.i64("favorites_count") ? |_| Fail(500.U16, "body", "corrupt article row")
-    favorited = row.i64("favorited") ? |_| Fail(500.U16, "body", "corrupt article row")
-    following = row.i64("following") ? |_| Fail(500.U16, "body", "corrupt article row")
-    tag_list = row.nullable_str("tag_list") ? |_| Fail(500.U16, "body", "corrupt article row")
-    Ok({
-        slug: slug,
-        title: title,
-        description: description,
-        tagList: Db.split_tags(tag_list),
-        createdAt: created_at,
-        updatedAt: updated_at,
-        favorited: JsonBool.from(favorited != 0),
-        favoritesCount: favorites_count,
-        author: { username: username, bio: bio, image: image, following: JsonBool.from(following != 0) },
-    })
+## Internal: one flat reader row (positional, from `DbGen.read_article_summary!`)
+## to an ArticleSummary — a PURE shape transform (split the tag string, wrap the
+## flags as JSON booleans, nest the author). No per-cell decode: the positional
+## reader already typed every column, so this can never fail (contrast the old
+## by-name `Sql.Row` version, which the list regression traced to).
+article_summary_of = |r| {
+    slug: r.slug,
+    title: r.title,
+    description: r.description,
+    tagList: Db.split_tags(r.tag_list),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    favorited: JsonBool.from(r.favorited != 0),
+    favoritesCount: r.favorites_count,
+    author: { username: r.username, bio: r.bio, image: r.image, following: JsonBool.from(r.following != 0) },
 }
 
 ## Internal: read the page as typed rows (body-less), read the count, and hand
@@ -359,16 +363,15 @@ run_article_page! = |ctx, db, viewer, page_where, count_sql, where_params, limit
         .concat(where_params)
         .append(Integer(limit))
         .append(Integer(offset))
-    rows = Sql.query!(ctx, db, page_sql, page_params)?
-    # Seed the accumulator at the row count so the per-row `append` never
-    # reallocates the backing buffer (the page size is known up front).
-    articles = rows.fold(Ok(List.with_capacity(List.len(rows))), |acc, row| match acc {
-        Err(e) => Err(e)
-        Ok(list) => match article_summary_from_row(row) {
-            Err(e) => Err(e)
-            Ok(summary) => Ok(list.append(summary))
-        }
-    })?
+    # Positional reader (DbGen.read_article_summary!) over the dynamic page SQL:
+    # the SELECT emits the reader's declared column order, so cells decode by
+    # index — no by-name `Sql.Row` lookups (the list regression).
+    handle = Host.sql_begin!({ ctx: ctx, db: db, sql: page_sql, params: page_params }) ? |message| Fail(500.U16, "body", message)
+    raw_rows = DbGen.read_article_summary!(handle, []) ? |err| match err {
+        DbErr(message) => Fail(500.U16, "body", message)
+    }
+    Host.sql_finish!(handle)
+    articles = raw_rows.map(article_summary_of)
 
     count_rows = Sql.query!(ctx, db, count_sql, where_params)?
     count_row = Sql.first(count_rows) ? |_| Fail(500.U16, "body", "count returned no rows")

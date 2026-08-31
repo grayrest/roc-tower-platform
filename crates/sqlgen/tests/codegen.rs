@@ -34,6 +34,9 @@ all_profiles =
 ## @sql
 insert_user =
     \\INSERT INTO users (id, username) VALUES (:id, :username)
+
+## @params username: Str, bio: Str?, following: Bool
+## @reader profile_row
 "#;
 
 fn scan_ok() -> Scanned {
@@ -153,4 +156,26 @@ fn returning_write_is_rejected() {
     };
     let err = emit_module("Db", &s).unwrap_err();
     assert!(err.contains("RETURNING"), "got: {err}");
+}
+
+#[test]
+fn emits_a_declared_reader_from_params() {
+    let module = emit_module("Db", &scan_ok()).expect("emit");
+    // A positional reader method in the nominal, from the declared column set.
+    assert!(
+        module.contains("read_profile_row! : U64, List({ username : Str, bio : NullableStr, following : JsonBool })"),
+        "reader method with the declared record type"
+    );
+    // Positional reads, in declaration order.
+    assert!(module.contains("username: Host.sql_col_str!(handle, 0)"));
+    assert!(module.contains("bio: col_nullable_str!(handle, 1)"));
+    assert!(module.contains("following: JsonBool.from(Host.sql_col_i64!(handle, 2) != 0)"));
+}
+
+#[test]
+fn reader_without_params_is_an_error() {
+    let src = "## @reader lonely
+";
+    let err = scan(src).unwrap_err();
+    assert!(err.contains("needs a preceding @params"), "got: {err}");
 }

@@ -85,6 +85,7 @@ fn generate(dir: &Path, mode: Mode) -> Result<bool, String> {
             schema: schema.clone(),
             fragments: scanned.fragments.clone(),
             queries: scanned.queries.clone(),
+            readers: scanned.readers.clone(),
         };
         let generated = emit::emit_module(&module, &merged)
             .map_err(|e| format!("{}: {e}", path.display()))?;

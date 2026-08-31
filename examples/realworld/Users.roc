@@ -8,6 +8,7 @@ import pf.JsonEnc
 import Api
 import Auth
 import Db
+import DbGen
 
 ## Users & authentication: register, login, current user, update user.
 ## Body decode + validation are their own coeffects (`registration!`,
@@ -76,19 +77,13 @@ Users := [].{
             UniqueViolation(detail) => Api.reply(409, unique_field(detail), "has already been taken")
             _ => Api.reply(500, "body", "registration failed")
         }
+        # Named-binding write builders (DbGen, @sql): the param order is
+        # resolved from :name at codegen, so it can never drift from the SQL.
         Res.fx_err(
-                DbWrite({
-                    db: Db.db_path,
-                    sql: "INSERT INTO users (id, email, username, password_hash) VALUES (?, ?, ?, ?)",
-                    params: [Integer(id), Text(reg.email), Text(reg.username), Text(reg.hash)],
-                }),
+                DbWrite(DbGen.insert_user({ db: Db.db_path, id: id, email: reg.email, username: reg.username, password_hash: reg.hash })),
                 on_error,
             )
-            .fx(DbWrite({
-                db: Db.db_path,
-                sql: "INSERT INTO tokens (token, user_id) VALUES (?, ?)",
-                params: [Text(token), Integer(id)],
-            }))
+            .fx(DbWrite(DbGen.insert_token({ db: Db.db_path, token: token, user_id: id })))
             .json(201, Users.user_body({
                 id: id,
                 email: reg.email,
@@ -131,11 +126,7 @@ Users := [].{
     ## PURE handler: store the fresh token, answer the user envelope.
     login : Auth.User -> Res.Response
     login = |user| {
-        Res.fx(DbWrite({
-                db: Db.db_path,
-                sql: "INSERT INTO tokens (token, user_id) VALUES (?, ?)",
-                params: [Text(user.token), Integer(user.id)],
-            }))
+        Res.fx(DbWrite(DbGen.insert_token({ db: Db.db_path, token: user.token, user_id: user.id })))
             .json(200, Users.user_body(user))
     }
 

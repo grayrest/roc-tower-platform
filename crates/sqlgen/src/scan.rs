@@ -34,6 +34,17 @@ pub struct ParamAnnot {
     pub ty: String,
 }
 
+/// A `## @reader name` directive: emit a positional row reader for a DECLARED
+/// column set, decoupled from any statement. For a dynamic query whose SQL is
+/// assembled at runtime (so there is no literal to analyze), but whose result
+/// columns are a fixed, known shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reader {
+    pub name: String,
+    /// Columns in POSITIONAL read order (the order the SELECT must emit them).
+    pub fields: Vec<ParamAnnot>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fragment {
     pub name: String,
@@ -58,6 +69,7 @@ pub struct Scanned {
     pub schema: Vec<String>,
     pub fragments: Vec<Fragment>,
     pub queries: Vec<Query>,
+    pub readers: Vec<Reader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +93,21 @@ pub fn scan(source: &str) -> Result<Scanned, String> {
 
         if let Some(rest) = trimmed.strip_prefix("## @params") {
             pending_params = parse_params(rest)?;
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("## @reader") {
+            let name = rest.trim();
+            if name.is_empty() {
+                return Err("@reader needs a name (## @reader my_reader)".to_string());
+            }
+            let fields = std::mem::take(&mut pending_params);
+            if fields.is_empty() {
+                return Err(format!(
+                    "@reader {name:?} needs a preceding @params declaring its columns in order"
+                ));
+            }
+            scanned.readers.push(Reader { name: name.to_string(), fields });
             i += 1;
             continue;
         }

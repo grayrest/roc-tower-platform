@@ -32,6 +32,10 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+    insert_user : { db : Str, email : Str, id : I64, password_hash : Str, username : Str } -> { db : Str, sql : Str, params : List(Host.SqlValue) }
+    insert_user = |params| { db: params.db, sql: "INSERT INTO users (id, email, username, password_hash) VALUES (:id, :email, :username, :password_hash)", params: [Integer(params.id), Text(params.email), Text(params.username), Text(params.password_hash)] }
+    insert_token : { db : Str, token : Str, user_id : I64 } -> { db : Str, sql : Str, params : List(Host.SqlValue) }
+    insert_token = |params| { db: params.db, sql: "INSERT INTO tokens (token, user_id) VALUES (:token, :user_id)", params: [Text(params.token), Integer(params.user_id)] }
     comment_meta_q! : U64, Str, { article_id : I64, comment_id : I64 } => Try({ id : I64, author_id : I64 }, [NoRows, DbErr(Str), ..])
     comment_meta_q! = |ctx, db, params| {
         handle = Host.sql_begin!({ ctx: ctx, db: db, sql: "SELECT c.id, c.author_id FROM comments c WHERE c.id = :comment_id AND c.article_id = :article_id", params: [Integer(params.comment_id), Integer(params.article_id)] }) ? |message| DbErr(message)
@@ -46,6 +50,18 @@ DbGen := [].{
         Host.sql_finish!(handle)
         result
     }
+    read_article_summary! : U64, List({ slug : Str, title : Str, description : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }) => Try(List({ slug : Str, title : Str, description : Str, created_at : Str, updated_at : Str, username : Str, bio : NullableStr, image : NullableStr, favorites_count : I64, favorited : I64, following : I64, tag_list : NullableStr }), [DbErr(Str), ..])
+             read_article_summary! = |handle, acc| {
+                 match Host.sql_step!(handle) {
+                     Err(message) => Err(DbErr(message))
+                     Ok(has_row) =>
+                         if has_row {
+                             read_article_summary!(handle, acc.append({ slug: Host.sql_col_str!(handle, 0), title: Host.sql_col_str!(handle, 1), description: Host.sql_col_str!(handle, 2), created_at: Host.sql_col_str!(handle, 3), updated_at: Host.sql_col_str!(handle, 4), username: Host.sql_col_str!(handle, 5), bio: col_nullable_str!(handle, 6), image: col_nullable_str!(handle, 7), favorites_count: Host.sql_col_i64!(handle, 8), favorited: Host.sql_col_i64!(handle, 9), following: Host.sql_col_i64!(handle, 10), tag_list: col_nullable_str!(handle, 11) }))
+                         } else {
+                             Ok(acc)
+                         }
+                 }
+             }
 }
 
 ## Read a nullable TEXT cell into NullableStr.
