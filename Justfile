@@ -50,8 +50,29 @@ host: glue
     cp target/release/libtower_platform_host.a "platform/targets/{{ target_dir }}/libhost.a"
 
 # Full pipeline: glue -> host staticlib -> link a Roc app (output: ./main).
+#
+# `roc build` exits 2 when it emits warnings, even on a build that fully
+# succeeded ("0 errors and N warnings found ... while successfully
+# building"). A plain recipe propagates that, which fails the build and
+# takes every e2e test with it, since all three shell out to `just build`.
+# The platform currently carries one such warning on purpose:
+# `sql_row_str` in platform/Host.roc is a hosted read typed PURE, and the
+# "effectful function name" check fires on any hosted pure arrow.
+#
+# So: stream the output, keep roc's own exit status, and downgrade it to
+# success ONLY when roc itself reported the build finished. A non-zero exit
+# without that line, including a genuine exit 2 with errors, still fails.
 build app="examples/hello/main.roc": host
-    "{{ roc }}" build "{{ app }}"
+    #!/usr/bin/env bash
+    set -uo pipefail
+    log=$(mktemp)
+    trap 'rm -f "$log"' EXIT
+    "{{ roc }}" build "{{ app }}" 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    if [[ $rc -ne 0 ]] && grep -q "^0 errors .* while successfully building:" "$log"; then
+        rc=0
+    fi
+    exit $rc
 
 # --- Turso backend (experimental: `--features turso`) ----------------------
 # The typed-API-on-Turso experiment. Swaps the DB backend to Turso; the roc

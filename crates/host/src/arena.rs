@@ -716,7 +716,18 @@ mod tests {
             s.decref(&*host);
         }
     }
-    extern "C" fn noop_callable(_: *mut abi::RocHost, _: *mut u8, _: *const u8, _: *mut u8) {}
+    // Trailing params are the erased-callable ABI's `reuse` pointer and
+    // descriptor out-param; this stub ignores both. Declining reuse means
+    // there is nothing to consume.
+    extern "C" fn noop_callable(
+        _: *mut abi::RocHost,
+        _: *mut u8,
+        _: *const u8,
+        _: *mut u8,
+        _: *mut u8,
+        _: *mut *const core::ffi::c_void,
+    ) {
+    }
 
     #[test]
     fn erased_callable_teardown_from_no_tls_thread() {

@@ -123,7 +123,10 @@ pub fn run_effects(
     for effect in effects {
         match effect.tag {
             RocEffectTag::Must => {
-                let payload = effect.payload_must();
+                // SAFETY: the match arm establishes the tag. Borrowed, not
+                // taken: `_0` is only read by `read_action` and `_1` is a
+                // Copy callable pointer.
+                let payload = unsafe { effect.borrow_payload_must_unchecked() };
                 let item = MustItem {
                     action: read_action(&payload._0),
                     err_handler: payload._1,
@@ -143,7 +146,10 @@ pub fn run_effects(
                     ext_musts.push(item);
                 }
             }
-            RocEffectTag::Opt => opts.push(read_action(&effect.payload_opt())),
+            // SAFETY: the match arm establishes the tag.
+            RocEffectTag::Opt => {
+                opts.push(read_action(unsafe { effect.borrow_payload_opt_unchecked() }))
+            }
         }
     }
 
@@ -175,7 +181,8 @@ pub fn run_effects(
 fn read_action(action: &abi::DbWriteOrHttpSendOrLog) -> Action {
     match action.tag {
         RocEffectActionTag::DbWrite => {
-            let write: RocDbWrite = action.payload_db_write();
+            // SAFETY: the match arm establishes the tag.
+            let write: &RocDbWrite = unsafe { action.borrow_payload_db_write_unchecked() };
             Action::Db {
                 db: string_of(&write.db),
                 sql: string_of(&write.sql),
@@ -183,7 +190,8 @@ fn read_action(action: &abi::DbWriteOrHttpSendOrLog) -> Action {
             }
         }
         RocEffectActionTag::HttpSend => {
-            let send: RocHttpSend = action.payload_http_send();
+            // SAFETY: the match arm establishes the tag.
+            let send: &RocHttpSend = unsafe { action.borrow_payload_http_send_unchecked() };
             Action::Http {
                 method: string_of(&send.method),
                 url: string_of(&send.url),
@@ -192,7 +200,10 @@ fn read_action(action: &abi::DbWriteOrHttpSendOrLog) -> Action {
                 timeout_ms: send.timeout_ms,
             }
         }
-        RocEffectActionTag::Log => Action::Log(string_of(&action.payload_log())),
+        // SAFETY: the match arm establishes the tag.
+        RocEffectActionTag::Log => {
+            Action::Log(string_of(unsafe { action.borrow_payload_log_unchecked() }))
+        }
     }
 }
 
@@ -390,6 +401,15 @@ fn invoke_err_handler(callable: abi::RocErasedCallable, err: &EffectErr) -> Resp
             ret.as_mut_ptr() as *mut u8,
             &args as *const ErrArgs as *const u8,
             capture,
+            // The erased-callable ABI's trailing `reuse` pointer, plus the
+            // descriptor out-param. Null declines reuse: the spec says a
+            // non-null reuse pointer transfers one owned reference that the
+            // callee consumes exactly once, and we have no allocation to
+            // hand over. The callee drops whatever it is given, so these
+            // MUST be passed: omitting them leaves the callee decref'ing an
+            // uninitialized register (see examples/repro-keepalive/README.md).
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
         );
         let reply = ret.assume_init();
         // Error-handler replies are small and off the hot path — copy the body

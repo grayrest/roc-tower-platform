@@ -73,11 +73,17 @@ pub(crate) fn roc_kv_list(pairs: &[(String, String)]) -> abi::RocList<RocKeyValu
 
 /// Call `roc_init` once at startup and unwrap the app's Model.
 pub fn init_model() -> Result<RocModel, String> {
-    let result = unsafe { abi::roc_init() };
+    let mut result = unsafe { abi::roc_init() };
     match result.tag {
-        abi::InitForHostResultTag::Ok => Ok(RocModel(result.payload_ok())),
+        // SAFETY for both arms: the match establishes the tag. These TAKE
+        // rather than borrow: the Ok payload is moved into the long-lived
+        // `RocModel`, and the Err payload is decref'd below, so both need
+        // the owned value that `roc_init` handed us.
+        abi::InitForHostResultTag::Ok => {
+            Ok(RocModel(unsafe { result.take_payload_ok_unchecked() }))
+        }
         abi::InitForHostResultTag::Err => {
-            let message = result.payload_err();
+            let message = unsafe { result.take_payload_err_unchecked() };
             let text = String::from_utf8_lossy(message.as_slice()).into_owned();
             unsafe { message.decref(roc_host()) };
             Err(text)
@@ -131,6 +137,15 @@ pub fn call_handler(
             ret.as_mut_ptr() as *mut u8,
             &args as *const Args as *const u8,
             capture,
+            // The erased-callable ABI's trailing `reuse` pointer, plus the
+            // descriptor out-param. Null declines reuse: the spec says a
+            // non-null reuse pointer transfers one owned reference that the
+            // callee consumes exactly once, and we have no allocation to
+            // hand over. The callee drops whatever it is given, so these
+            // MUST be passed: omitting them leaves the callee decref'ing an
+            // uninitialized register (see examples/repro-keepalive/README.md).
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
         );
         let mut response = ret.assume_init();
 

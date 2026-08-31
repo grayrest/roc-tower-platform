@@ -194,7 +194,8 @@ fn seed(db: &str) {
 
 fn handle_of(result: abi::HostSqlBeginResult) -> u64 {
     assert_eq!(result.tag, abi::HostSqlBeginResultTag::Ok, "sql_begin! failed");
-    result.payload_ok()
+    // SAFETY: tag asserted immediately above.
+    unsafe { *result.borrow_payload_ok_unchecked() }
 }
 
 #[test]
@@ -227,7 +228,8 @@ fn cursor_round_trip_reads_typed_cells() {
     // First (only) row.
     let step = roc_sql_step(handle);
     assert_eq!(step.tag, abi::HostSqlStepResultTag::Ok);
-    assert!(step.payload_ok(), "expected a row");
+    // SAFETY: tag asserted immediately above.
+    assert!(unsafe { *step.borrow_payload_ok_unchecked() }, "expected a row");
 
     assert_eq!(roc_sql_col_i64(handle, 0), 7);
     assert_eq!(roc_sql_col_type(handle, 0), abi::HostColType::Integer);
@@ -242,7 +244,9 @@ fn cursor_round_trip_reads_typed_cells() {
 
     // End of results.
     let done = roc_sql_step(handle);
-    assert!(!done.payload_ok(), "expected end of rows");
+    assert_eq!(done.tag, abi::HostSqlStepResultTag::Ok);
+    // SAFETY: tag asserted immediately above.
+    assert!(!unsafe { *done.borrow_payload_ok_unchecked() }, "expected end of rows");
 
     roc_sql_finish(handle);
     // finish removed it: a ctx sweep finds nothing left to finalize.
@@ -292,9 +296,11 @@ fn cursor_begin_reports_sql_errors() {
     use crate::cursor::*;
     let db = temp_db("badsql");
     seed(&db);
-    let result = roc_sql_begin(begin_args(7_400_004, &db, "SELECT nope FROM missing_table"));
+    let mut result = roc_sql_begin(begin_args(7_400_004, &db, "SELECT nope FROM missing_table"));
     assert_eq!(result.tag, abi::HostSqlBeginResultTag::Err);
-    let message = result.payload_err();
+    // SAFETY: tag asserted immediately above. TAKEN, not borrowed: the
+    // message is decref'd below, so this needs the owned value.
+    let message = unsafe { result.take_payload_err_unchecked() };
     let text = String::from_utf8_lossy(message.as_slice()).into_owned();
     unsafe { message.decref(crate::roc_host()) };
     assert!(text.contains("missing_table") || text.contains("no such"), "got: {text}");

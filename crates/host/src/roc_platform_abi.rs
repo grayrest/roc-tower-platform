@@ -5,7 +5,12 @@
 //!
 //! Hosted argument ownership:
 //! - Roc transfers ownership of refcounted arguments to the hosted function.
-//! - The hosted function must decref owned refcounted arguments when done.
+//! - The hosted function must release owned refcounted arguments when done, using
+//!   the release call named in each hosted symbol's doc comment below.
+//! - Releasing a container releases its elements only when the container's own
+//!   count reaches zero, which is what compiled Roc code does when it drops one
+//!   it owns. Releasing the elements unconditionally double-frees them whenever
+//!   the Roc caller still holds the container.
 //! - If the host stores or returns an argument, it must retain or transfer ownership explicitly.
 //!
 //! Import this module from the platform host and implement the listed hosted symbols
@@ -177,7 +182,13 @@ fn shifted_capacity(capacity: usize) -> usize {
 }
 
 /// Uniform ABI function pointer stored in `RocErasedCallablePayload`.
-pub type RocErasedCallableFn = extern "C" fn(*mut RocHost, *mut u8, *const u8, *mut u8);
+///
+/// The final `reuse` pointer is nullable. Non-null must be the callable data
+/// pointer whose inline capture begins at `capture`; it transfers one owned
+/// reference to the callee. The caller must not use or decref that ownership
+/// unit after the call. The callee consumes it exactly once, whether or not the
+/// result can reuse the allocation.
+pub type RocErasedCallableFn = extern "C" fn(*mut RocHost, *mut u8, *const u8, *mut u8, *mut u8, *mut *const c_void);
 
 /// Final-drop callback for inline erased-callable captures.
 pub type RocErasedCallableOnDrop = extern "C" fn(*mut u8, *mut RocHost);
@@ -592,7 +603,7 @@ impl RocStr {
         }
         let rc = unsafe { (alloc_ptr as *mut AtomicIsize).sub(1) };
         if unsafe { (*rc).load(Ordering::Relaxed) } == 0 {
-            return; // REFCOUNT_STATIC_DATA — bytes are in read-only memory
+            return; // REFCOUNT_STATIC_DATA—bytes are in read-only memory
         }
         let prev = unsafe { (*rc).fetch_sub(1, Ordering::Release) };
         if prev == 1 {
@@ -816,7 +827,13 @@ impl<T, const ELEMENTS_REFCOUNTED: bool> RocListWith<T, ELEMENTS_REFCOUNTED> {
         list
     }
 
-    /// Decrement the reference count; frees the allocation when it reaches zero.
+    /// Drop this reference to the list allocation, freeing it when this was the
+    /// last one.
+    ///
+    /// Shallow: it never touches the elements. To release an owned list whose
+    /// elements are refcounted, call that list's generated `decref_list_of_...`
+    /// helper instead, which drops the elements when this reference is the last
+    /// one and then calls this.
     ///
     /// # Safety
     /// `self` must own one live Roc list reference. Calling this more than once
@@ -833,7 +850,7 @@ impl<T, const ELEMENTS_REFCOUNTED: bool> RocListWith<T, ELEMENTS_REFCOUNTED> {
         let header_bytes = Self::header_bytes();
         let rc = unsafe { (alloc_ptr as *mut AtomicIsize).sub(1) };
         if unsafe { (*rc).load(Ordering::Relaxed) } == 0 {
-            return; // REFCOUNT_STATIC_DATA — elements are in read-only memory
+            return; // REFCOUNT_STATIC_DATA—elements are in read-only memory
         }
         let prev = unsafe { (*rc).fetch_sub(1, Ordering::Release) };
         if prev == 1 {
@@ -842,6 +859,46 @@ impl<T, const ELEMENTS_REFCOUNTED: bool> RocListWith<T, ELEMENTS_REFCOUNTED> {
             unsafe {
                 roc_host.dealloc(base, align);
             }
+        }
+    }
+
+    /// Recursively release this list and its elements.
+    ///
+    /// The reference-count decrement claims the final reference atomically
+    /// before reading any elements, so concurrent releases cannot skip or
+    /// duplicate element teardown.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc list reference, and `P` must exactly
+    /// describe how Roc releases one initialized `T` element.
+    pub unsafe fn release_with<P>(self, roc_host: &RocHost)
+    where
+        P: RocRelease<T>,
+    {
+        if self.elements.is_null() {
+            return;
+        }
+        let alloc_ptr = self.get_allocation_ptr();
+        if alloc_ptr.is_null() {
+            return;
+        }
+        let align = core::mem::align_of::<T>().max(core::mem::align_of::<usize>());
+        let header_bytes = Self::header_bytes();
+        let rc = unsafe { (alloc_ptr as *mut AtomicIsize).sub(1) };
+        if unsafe { (*rc).load(Ordering::Relaxed) } == 0 {
+            return; // REFCOUNT_STATIC_DATA—elements are in read-only memory
+        }
+        let prev = unsafe { (*rc).fetch_sub(1, Ordering::Release) };
+        if prev == 1 {
+            fence(Ordering::Acquire);
+            if ELEMENTS_REFCOUNTED {
+                for item_ref in self.allocation_items() {
+                    let item = unsafe { core::ptr::read(item_ref) };
+                    unsafe { P::release(item, roc_host); }
+                }
+            }
+            let base = unsafe { alloc_ptr.sub(header_bytes) } as *mut c_void;
+            unsafe { roc_host.dealloc(base, align); }
         }
     }
 
@@ -896,6 +953,148 @@ impl<T, const ELEMENTS_REFCOUNTED: bool> RocListWith<T, ELEMENTS_REFCOUNTED> {
 impl<T: core::fmt::Debug, const ELEMENTS_REFCOUNTED: bool> core::fmt::Debug for RocListWith<T, ELEMENTS_REFCOUNTED> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.as_slice().iter()).finish()
+    }
+}
+
+/// Statically describes how to release one owned Roc ABI value of type `T`.
+///
+/// # Safety
+/// Implementations must match Roc's exact allocation and nested ownership layout.
+pub unsafe trait RocRelease<T> {
+    unsafe fn release(value: T, roc_host: &RocHost);
+}
+
+/// An owning host-language wrapper around a value returned by Roc.
+///
+/// The release policy is zero-sized, so this wrapper adds no runtime metadata.
+/// Dropping it recursively releases the value through the host's direct Roc
+/// runtime symbols. Use `into_raw` to transfer ownership elsewhere.
+#[repr(transparent)]
+pub struct RocOwned<T, P: RocRelease<T>> {
+    value: core::mem::ManuallyDrop<T>,
+    policy: core::marker::PhantomData<P>,
+}
+
+impl<T, P: RocRelease<T>> RocOwned<T, P> {
+    /// Take ownership of a raw value returned by a Roc-provided entrypoint.
+    ///
+    /// # Safety
+    /// `value` must be one live owned result whose concrete release plan is `P`.
+    pub unsafe fn from_raw(value: T) -> Self {
+        Self { value: core::mem::ManuallyDrop::new(value), policy: core::marker::PhantomData }
+    }
+
+    pub fn as_ref(&self) -> &T {
+        &self.value
+    }
+
+    /// Transfer ownership back to raw host code without releasing the value.
+    pub fn into_raw(self) -> T {
+        let mut this = core::mem::ManuallyDrop::new(self);
+        unsafe { core::mem::ManuallyDrop::take(&mut this.value) }
+    }
+}
+
+impl<T, P: RocRelease<T>> core::ops::Deref for RocOwned<T, P> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.as_ref()
+    }
+}
+
+impl<T, P: RocRelease<T>> Drop for RocOwned<T, P> {
+    fn drop(&mut self) {
+        let value = unsafe { core::mem::ManuallyDrop::take(&mut self.value) };
+        let roc_host = direct_roc_host();
+        unsafe { P::release(value, &roc_host); }
+    }
+}
+
+pub struct RocNoopRelease;
+
+unsafe impl<T> RocRelease<T> for RocNoopRelease {
+    unsafe fn release(_value: T, _roc_host: &RocHost) {}
+}
+
+pub struct RocStrRelease;
+
+unsafe impl RocRelease<RocStr> for RocStrRelease {
+    unsafe fn release(value: RocStr, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
+pub struct RocListRelease<P>(core::marker::PhantomData<P>);
+
+unsafe impl<T, P> RocRelease<RocListWith<T, true>> for RocListRelease<P>
+where
+    P: RocRelease<T>,
+{
+    unsafe fn release(value: RocListWith<T, true>, roc_host: &RocHost) {
+        unsafe { value.release_with::<P>(roc_host); }
+    }
+}
+
+pub struct RocListSpineRelease;
+
+unsafe impl<T> RocRelease<RocListWith<T, false>> for RocListSpineRelease {
+    unsafe fn release(value: RocListWith<T, false>, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
+pub struct RocErasedCallableRelease;
+
+unsafe impl RocRelease<RocErasedCallable> for RocErasedCallableRelease {
+    unsafe fn release(value: RocErasedCallable, roc_host: &RocHost) {
+        unsafe { decref_erased_callable(value, roc_host); }
+    }
+}
+
+pub struct RocBoxRelease<T, P>(core::marker::PhantomData<(T, P)>);
+
+extern "C" fn release_box_payload<T, P>(data_ptr: *mut c_void, roc_host: *mut RocHost)
+where
+    P: RocRelease<T>,
+{
+    if data_ptr.is_null() || roc_host.is_null() {
+        return;
+    }
+    let value = unsafe { core::ptr::read(data_ptr as *const T) };
+    unsafe { P::release(value, &*roc_host); }
+}
+
+unsafe impl<T, P> RocRelease<*mut T> for RocBoxRelease<T, P>
+where
+    P: RocRelease<T>,
+{
+    unsafe fn release(value: *mut T, roc_host: &RocHost) {
+        unsafe {
+            decref_box_with(
+                value as RocBox,
+                core::mem::align_of::<T>(),
+                true,
+                Some(release_box_payload::<T, P>),
+                roc_host,
+            );
+        }
+    }
+}
+
+pub struct RocBoxSpineRelease<T>(core::marker::PhantomData<T>);
+
+unsafe impl<T> RocRelease<*mut T> for RocBoxSpineRelease<T> {
+    unsafe fn release(value: *mut T, roc_host: &RocHost) {
+        unsafe {
+            decref_box_with(
+                value as RocBox,
+                core::mem::align_of::<T>(),
+                false,
+                None,
+                roc_host,
+            );
+        }
     }
 }
 
@@ -1299,14 +1498,40 @@ pub struct HostEnvVarResult {
 }
 
 impl HostEnvVarResult {
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostEnvVarResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> RocStr {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostEnvVarResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostEnvVarResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostEnvVarResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -1364,24 +1589,76 @@ pub struct HostHttpSendResult {
 }
 
 impl HostHttpSendResult {
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Err` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_err(&self) -> RocStr {
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Err` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.err as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.err) }
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.err) }
     }
 
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> AnonStructA14cd3b7d5755441 {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &AnonStructA14cd3b7d5755441 {
+        unsafe { &*(self.payload.as_ptr() as *const AnonStructA14cd3b7d5755441) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &AnonStructA14cd3b7d5755441 {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<AnonStructA14cd3b7d5755441> as *const AnonStructA14cd3b7d5755441) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> AnonStructA14cd3b7d5755441 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructA14cd3b7d5755441) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostHttpSendResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> AnonStructA14cd3b7d5755441 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> AnonStructA14cd3b7d5755441 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -1439,24 +1716,76 @@ pub struct HostSqlBeginResult {
 }
 
 impl HostSqlBeginResult {
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Err` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_err(&self) -> RocStr {
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Err` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.err as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.err) }
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.err) }
     }
 
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> u64 {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &u64 {
+        unsafe { &*(self.payload.as_ptr() as *const u64) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &u64 {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<u64> as *const u64) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> u64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlBeginResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> u64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -1520,44 +1849,148 @@ pub struct HostSqlValue {
 }
 
 impl HostSqlValue {
+    /// Borrow the `Blob` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Blob` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_blob(&self) -> RocListWith<u8, false> {
+    pub unsafe fn borrow_payload_blob_unchecked(&self) -> &RocListWith<u8, false> {
+        unsafe { &*(self.payload.as_ptr() as *const RocListWith<u8, false>) }
+    }
+
+    /// Borrow the `Blob` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Blob` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_blob_unchecked(&self) -> &RocListWith<u8, false> {
+        unsafe { &*(&self.payload.blob as *const core::mem::ManuallyDrop<RocListWith<u8, false>> as *const RocListWith<u8, false>) }
+    }
+
+    /// Move the `Blob` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Blob`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_blob_unchecked(&mut self) -> RocListWith<u8, false> {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocListWith<u8, false>) }
     }
 
+    /// Move the `Blob` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Blob`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_blob(&self) -> RocListWith<u8, false> {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.blob) }
+    pub unsafe fn take_payload_blob_unchecked(&mut self) -> RocListWith<u8, false> {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.blob) }
     }
 
+    /// Borrow the `Integer` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Integer` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_integer(&self) -> i64 {
+    pub unsafe fn borrow_payload_integer_unchecked(&self) -> &i64 {
+        unsafe { &*(self.payload.as_ptr() as *const i64) }
+    }
+
+    /// Borrow the `Integer` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Integer` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_integer_unchecked(&self) -> &i64 {
+        unsafe { &*(&self.payload.integer as *const core::mem::ManuallyDrop<i64> as *const i64) }
+    }
+
+    /// Move the `Integer` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Integer`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_integer_unchecked(&mut self) -> i64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const i64) }
     }
 
+    /// Move the `Integer` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Integer`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_integer(&self) -> i64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.integer) }
+    pub unsafe fn take_payload_integer_unchecked(&mut self) -> i64 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.integer) }
     }
 
+    /// Borrow the `Real` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Real` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_real(&self) -> f64 {
+    pub unsafe fn borrow_payload_real_unchecked(&self) -> &f64 {
+        unsafe { &*(self.payload.as_ptr() as *const f64) }
+    }
+
+    /// Borrow the `Real` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Real` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_real_unchecked(&self) -> &f64 {
+        unsafe { &*(&self.payload.real as *const core::mem::ManuallyDrop<f64> as *const f64) }
+    }
+
+    /// Move the `Real` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Real`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_real_unchecked(&mut self) -> f64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const f64) }
     }
 
+    /// Move the `Real` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Real`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_real(&self) -> f64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.real) }
+    pub unsafe fn take_payload_real_unchecked(&mut self) -> f64 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.real) }
     }
 
+    /// Borrow the `Text` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Text` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_text(&self) -> RocStr {
+    pub unsafe fn borrow_payload_text_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Text` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Text` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_text_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.text as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Text` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Text`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_text_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Text` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlValueTag::Text`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_text(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.text) }
+    pub unsafe fn take_payload_text_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.text) }
     }
 
 }
@@ -1615,24 +2048,76 @@ pub struct HostSqlStepResult {
 }
 
 impl HostSqlStepResult {
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Err` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_err(&self) -> RocStr {
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Err` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.err as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.err) }
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.err) }
     }
 
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> bool {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &bool {
+        unsafe { &*(self.payload.as_ptr() as *const bool) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &bool {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<bool> as *const bool) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> bool {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const bool) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostSqlStepResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> bool {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> bool {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -1710,14 +2195,40 @@ pub struct HostCookieResult {
 }
 
 impl HostCookieResult {
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostCookieResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> RocStr {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostCookieResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostCookieResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostCookieResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -1775,14 +2286,40 @@ pub struct HostMemoGetResult {
 }
 
 impl HostMemoGetResult {
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostMemoGetResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> RocErasedCallable {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocErasedCallable {
+        unsafe { &*(self.payload.as_ptr() as *const RocErasedCallable) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostMemoGetResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocErasedCallable {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<RocErasedCallable> as *const RocErasedCallable) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostMemoGetResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocErasedCallable {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocErasedCallable) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `HostMemoGetResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> RocErasedCallable {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocErasedCallable {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -1867,24 +2404,76 @@ pub struct MustOrOpt {
 }
 
 impl MustOrOpt {
+    /// Borrow the `Must` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Must` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_must(&self) -> MustOrOptMustPayload {
+    pub unsafe fn borrow_payload_must_unchecked(&self) -> &MustOrOptMustPayload {
+        unsafe { &*(self.payload.as_ptr() as *const MustOrOptMustPayload) }
+    }
+
+    /// Borrow the `Must` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Must` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_must_unchecked(&self) -> &MustOrOptMustPayload {
+        unsafe { &*(&self.payload.must as *const core::mem::ManuallyDrop<MustOrOptMustPayload> as *const MustOrOptMustPayload) }
+    }
+
+    /// Move the `Must` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Must`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_must_unchecked(&mut self) -> MustOrOptMustPayload {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const MustOrOptMustPayload) }
     }
 
+    /// Move the `Must` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Must`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_must(&self) -> MustOrOptMustPayload {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.must) }
+    pub unsafe fn take_payload_must_unchecked(&mut self) -> MustOrOptMustPayload {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.must) }
     }
 
+    /// Borrow the `Opt` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Opt` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_opt(&self) -> DbWriteOrHttpSendOrLog {
+    pub unsafe fn borrow_payload_opt_unchecked(&self) -> &DbWriteOrHttpSendOrLog {
+        unsafe { &*(self.payload.as_ptr() as *const DbWriteOrHttpSendOrLog) }
+    }
+
+    /// Borrow the `Opt` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Opt` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_opt_unchecked(&self) -> &DbWriteOrHttpSendOrLog {
+        unsafe { &*(&self.payload.opt as *const core::mem::ManuallyDrop<DbWriteOrHttpSendOrLog> as *const DbWriteOrHttpSendOrLog) }
+    }
+
+    /// Move the `Opt` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Opt`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_opt_unchecked(&mut self) -> DbWriteOrHttpSendOrLog {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const DbWriteOrHttpSendOrLog) }
     }
 
+    /// Move the `Opt` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `MustOrOptTag::Opt`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_opt(&self) -> DbWriteOrHttpSendOrLog {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.opt) }
+    pub unsafe fn take_payload_opt_unchecked(&mut self) -> DbWriteOrHttpSendOrLog {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.opt) }
     }
 
 }
@@ -1944,34 +2533,112 @@ pub struct DbWriteOrHttpSendOrLog {
 }
 
 impl DbWriteOrHttpSendOrLog {
+    /// Borrow the `DbWrite` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::DbWrite` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_db_write(&self) -> AnonStruct156b5cf265b1adab {
+    pub unsafe fn borrow_payload_db_write_unchecked(&self) -> &AnonStruct156b5cf265b1adab {
+        unsafe { &*(self.payload.as_ptr() as *const AnonStruct156b5cf265b1adab) }
+    }
+
+    /// Borrow the `DbWrite` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::DbWrite` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_db_write_unchecked(&self) -> &AnonStruct156b5cf265b1adab {
+        unsafe { &*(&self.payload.db_write as *const core::mem::ManuallyDrop<AnonStruct156b5cf265b1adab> as *const AnonStruct156b5cf265b1adab) }
+    }
+
+    /// Move the `DbWrite` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::DbWrite`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_db_write_unchecked(&mut self) -> AnonStruct156b5cf265b1adab {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStruct156b5cf265b1adab) }
     }
 
+    /// Move the `DbWrite` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::DbWrite`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_db_write(&self) -> AnonStruct156b5cf265b1adab {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.db_write) }
+    pub unsafe fn take_payload_db_write_unchecked(&mut self) -> AnonStruct156b5cf265b1adab {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.db_write) }
     }
 
+    /// Borrow the `HttpSend` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::HttpSend` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_http_send(&self) -> AnonStruct305711d6494b9bb2 {
+    pub unsafe fn borrow_payload_http_send_unchecked(&self) -> &AnonStruct305711d6494b9bb2 {
+        unsafe { &*(self.payload.as_ptr() as *const AnonStruct305711d6494b9bb2) }
+    }
+
+    /// Borrow the `HttpSend` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::HttpSend` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_http_send_unchecked(&self) -> &AnonStruct305711d6494b9bb2 {
+        unsafe { &*(&self.payload.http_send as *const core::mem::ManuallyDrop<AnonStruct305711d6494b9bb2> as *const AnonStruct305711d6494b9bb2) }
+    }
+
+    /// Move the `HttpSend` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::HttpSend`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_http_send_unchecked(&mut self) -> AnonStruct305711d6494b9bb2 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStruct305711d6494b9bb2) }
     }
 
+    /// Move the `HttpSend` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::HttpSend`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_http_send(&self) -> AnonStruct305711d6494b9bb2 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.http_send) }
+    pub unsafe fn take_payload_http_send_unchecked(&mut self) -> AnonStruct305711d6494b9bb2 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.http_send) }
     }
 
+    /// Borrow the `Log` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::Log` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_log(&self) -> RocStr {
+    pub unsafe fn borrow_payload_log_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Log` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::Log` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_log_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.log as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Log` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::Log`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_log_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Log` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `DbWriteOrHttpSendOrLogTag::Log`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_log(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.log) }
+    pub unsafe fn take_payload_log_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.log) }
     }
 
 }
@@ -2035,44 +2702,148 @@ pub struct BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
 }
 
 impl BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
+    /// Borrow the `ForeignKeyViolation` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_foreign_key_violation(&self) -> RocStr {
+    pub unsafe fn borrow_payload_foreign_key_violation_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `ForeignKeyViolation` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_foreign_key_violation_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.foreign_key_violation as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `ForeignKeyViolation` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_foreign_key_violation_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `ForeignKeyViolation` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_foreign_key_violation(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.foreign_key_violation) }
+    pub unsafe fn take_payload_foreign_key_violation_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.foreign_key_violation) }
     }
 
+    /// Borrow the `HttpFailed` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_http_failed(&self) -> RocStr {
+    pub unsafe fn borrow_payload_http_failed_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `HttpFailed` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_http_failed_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.http_failed as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `HttpFailed` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_http_failed_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `HttpFailed` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_http_failed(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.http_failed) }
+    pub unsafe fn take_payload_http_failed_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.http_failed) }
     }
 
+    /// Borrow the `Other` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_other(&self) -> RocStr {
+    pub unsafe fn borrow_payload_other_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Other` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_other_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.other as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Other` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_other_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Other` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_other(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.other) }
+    pub unsafe fn take_payload_other_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.other) }
     }
 
+    /// Borrow the `UniqueViolation` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_unique_violation(&self) -> RocStr {
+    pub unsafe fn borrow_payload_unique_violation_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `UniqueViolation` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_unique_violation_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.unique_violation as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `UniqueViolation` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_unique_violation_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `UniqueViolation` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_unique_violation(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.unique_violation) }
+    pub unsafe fn take_payload_unique_violation_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.unique_violation) }
     }
 
 }
@@ -2144,74 +2915,256 @@ pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxB
 }
 
 impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs {
+    /// Borrow the `ConcurrencyLimit` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_concurrency_limit(&self) -> u64 {
+    pub unsafe fn borrow_payload_concurrency_limit_unchecked(&self) -> &u64 {
+        unsafe { &*(self.payload.as_ptr() as *const u64) }
+    }
+
+    /// Borrow the `ConcurrencyLimit` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_concurrency_limit_unchecked(&self) -> &u64 {
+        unsafe { &*(&self.payload.concurrency_limit as *const core::mem::ManuallyDrop<u64> as *const u64) }
+    }
+
+    /// Move the `ConcurrencyLimit` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_concurrency_limit_unchecked(&mut self) -> u64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
     }
 
+    /// Move the `ConcurrencyLimit` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_concurrency_limit(&self) -> u64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.concurrency_limit) }
+    pub unsafe fn take_payload_concurrency_limit_unchecked(&mut self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.concurrency_limit) }
     }
 
+    /// Borrow the `CorsAllowOrigins` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_cors_allow_origins(&self) -> RocList<RocStr> {
+    pub unsafe fn borrow_payload_cors_allow_origins_unchecked(&self) -> &RocList<RocStr> {
+        unsafe { &*(self.payload.as_ptr() as *const RocList<RocStr>) }
+    }
+
+    /// Borrow the `CorsAllowOrigins` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_cors_allow_origins_unchecked(&self) -> &RocList<RocStr> {
+        unsafe { &*(&self.payload.cors_allow_origins as *const core::mem::ManuallyDrop<RocList<RocStr>> as *const RocList<RocStr>) }
+    }
+
+    /// Move the `CorsAllowOrigins` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_cors_allow_origins_unchecked(&mut self) -> RocList<RocStr> {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocList<RocStr>) }
     }
 
+    /// Move the `CorsAllowOrigins` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_cors_allow_origins(&self) -> RocList<RocStr> {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.cors_allow_origins) }
+    pub unsafe fn take_payload_cors_allow_origins_unchecked(&mut self) -> RocList<RocStr> {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.cors_allow_origins) }
     }
 
+    /// Borrow the `MaxBodyBytes` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_max_body_bytes(&self) -> u64 {
+    pub unsafe fn borrow_payload_max_body_bytes_unchecked(&self) -> &u64 {
+        unsafe { &*(self.payload.as_ptr() as *const u64) }
+    }
+
+    /// Borrow the `MaxBodyBytes` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_max_body_bytes_unchecked(&self) -> &u64 {
+        unsafe { &*(&self.payload.max_body_bytes as *const core::mem::ManuallyDrop<u64> as *const u64) }
+    }
+
+    /// Move the `MaxBodyBytes` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_max_body_bytes_unchecked(&mut self) -> u64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
     }
 
+    /// Move the `MaxBodyBytes` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_max_body_bytes(&self) -> u64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.max_body_bytes) }
+    pub unsafe fn take_payload_max_body_bytes_unchecked(&mut self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.max_body_bytes) }
     }
 
+    /// Borrow the `Port` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_port(&self) -> u16 {
+    pub unsafe fn borrow_payload_port_unchecked(&self) -> &u16 {
+        unsafe { &*(self.payload.as_ptr() as *const u16) }
+    }
+
+    /// Borrow the `Port` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_port_unchecked(&self) -> &u16 {
+        unsafe { &*(&self.payload.port as *const core::mem::ManuallyDrop<u16> as *const u16) }
+    }
+
+    /// Move the `Port` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_port_unchecked(&mut self) -> u16 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const u16) }
     }
 
+    /// Move the `Port` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_port(&self) -> u16 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.port) }
+    pub unsafe fn take_payload_port_unchecked(&mut self) -> u16 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.port) }
     }
 
+    /// Borrow the `ResponseCache` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_response_cache(&self) -> AnonStructB6f3372b0a228dcf {
+    pub unsafe fn borrow_payload_response_cache_unchecked(&self) -> &AnonStructB6f3372b0a228dcf {
+        unsafe { &*(self.payload.as_ptr() as *const AnonStructB6f3372b0a228dcf) }
+    }
+
+    /// Borrow the `ResponseCache` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_response_cache_unchecked(&self) -> &AnonStructB6f3372b0a228dcf {
+        unsafe { &*(&self.payload.response_cache as *const core::mem::ManuallyDrop<AnonStructB6f3372b0a228dcf> as *const AnonStructB6f3372b0a228dcf) }
+    }
+
+    /// Move the `ResponseCache` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_response_cache_unchecked(&mut self) -> AnonStructB6f3372b0a228dcf {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructB6f3372b0a228dcf) }
     }
 
+    /// Move the `ResponseCache` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_response_cache(&self) -> AnonStructB6f3372b0a228dcf {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.response_cache) }
+    pub unsafe fn take_payload_response_cache_unchecked(&mut self) -> AnonStructB6f3372b0a228dcf {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.response_cache) }
     }
 
+    /// Borrow the `ServeFiles` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_serve_files(&self) -> AnonStructA965a4c67b4c5d53 {
+    pub unsafe fn borrow_payload_serve_files_unchecked(&self) -> &AnonStructA965a4c67b4c5d53 {
+        unsafe { &*(self.payload.as_ptr() as *const AnonStructA965a4c67b4c5d53) }
+    }
+
+    /// Borrow the `ServeFiles` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_serve_files_unchecked(&self) -> &AnonStructA965a4c67b4c5d53 {
+        unsafe { &*(&self.payload.serve_files as *const core::mem::ManuallyDrop<AnonStructA965a4c67b4c5d53> as *const AnonStructA965a4c67b4c5d53) }
+    }
+
+    /// Move the `ServeFiles` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_serve_files_unchecked(&mut self) -> AnonStructA965a4c67b4c5d53 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const AnonStructA965a4c67b4c5d53) }
     }
 
+    /// Move the `ServeFiles` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_serve_files(&self) -> AnonStructA965a4c67b4c5d53 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.serve_files) }
+    pub unsafe fn take_payload_serve_files_unchecked(&mut self) -> AnonStructA965a4c67b4c5d53 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.serve_files) }
     }
 
+    /// Borrow the `TimeoutMs` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_timeout_ms(&self) -> u64 {
+    pub unsafe fn borrow_payload_timeout_ms_unchecked(&self) -> &u64 {
+        unsafe { &*(self.payload.as_ptr() as *const u64) }
+    }
+
+    /// Borrow the `TimeoutMs` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_timeout_ms_unchecked(&self) -> &u64 {
+        unsafe { &*(&self.payload.timeout_ms as *const core::mem::ManuallyDrop<u64> as *const u64) }
+    }
+
+    /// Move the `TimeoutMs` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_timeout_ms_unchecked(&mut self) -> u64 {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const u64) }
     }
 
+    /// Move the `TimeoutMs` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_timeout_ms(&self) -> u64 {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.timeout_ms) }
+    pub unsafe fn take_payload_timeout_ms_unchecked(&mut self) -> u64 {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.timeout_ms) }
     }
 
 }
@@ -2269,24 +3222,76 @@ pub struct InitForHostResult {
 }
 
 impl InitForHostResult {
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Err` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_err(&self) -> RocStr {
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(self.payload.as_ptr() as *const RocStr) }
+    }
+
+    /// Borrow the `Err` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Err` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_err_unchecked(&self) -> &RocStr {
+        unsafe { &*(&self.payload.err as *const core::mem::ManuallyDrop<RocStr> as *const RocStr) }
+    }
+
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocStr) }
     }
 
+    /// Move the `Err` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Err`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_err(&self) -> RocStr {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.err) }
+    pub unsafe fn take_payload_err_unchecked(&mut self) -> RocStr {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.err) }
     }
 
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Ok` and the payload must still be initialized.
     #[cfg(target_pointer_width = "32")]
-    pub fn payload_ok(&self) -> RocBox {
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocBox {
+        unsafe { &*(self.payload.as_ptr() as *const RocBox) }
+    }
+
+    /// Borrow the `Ok` payload without creating another owner.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Ok` and the payload must still be initialized.
+    #[cfg(not(target_pointer_width = "32"))]
+    pub unsafe fn borrow_payload_ok_unchecked(&self) -> &RocBox {
+        unsafe { &*(&self.payload.ok as *const core::mem::ManuallyDrop<RocBox> as *const RocBox) }
+    }
+
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
+    #[cfg(target_pointer_width = "32")]
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocBox {
         unsafe { core::ptr::read(self.payload.as_ptr() as *const RocBox) }
     }
 
+    /// Move the `Ok` payload out of one owned tag-union shell.
+    ///
+    /// # Safety
+    /// `self.tag` must be `InitForHostResultTag::Ok`. After this call, `self` is logically uninitialized and must not be read or destroyed.
     #[cfg(not(target_pointer_width = "32"))]
-    pub fn payload_ok(&self) -> RocBox {
-        unsafe { core::mem::ManuallyDrop::into_inner(self.payload.ok) }
+    pub unsafe fn take_payload_ok_unchecked(&mut self) -> RocBox {
+        unsafe { core::mem::ManuallyDrop::take(&mut self.payload.ok) }
     }
 
 }
@@ -2387,6 +3392,41 @@ const _: () = assert!(core::mem::size_of::<HostHttpSendArgs>() == 56, "HostHttpS
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<HostHttpSendArgs>() == 8, "HostHttpSendArgs alignment mismatch");
 
+impl HostHttpSendArgs {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.body.decref(roc_host); }
+        unsafe { decref_list_of_anon_struct82a96c5d55d63488(value.headers, roc_host); }
+        unsafe { value.method.decref(roc_host); }
+        unsafe { value.url.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.body.incref(amount); }
+        unsafe { value.headers.incref(amount); }
+        unsafe { value.method.incref(amount); }
+        unsafe { value.url.incref(amount); }
+    }
+}
+
+pub struct HostHttpSendArgsRelease;
+
+unsafe impl RocRelease<HostHttpSendArgs> for HostHttpSendArgsRelease {
+    unsafe fn release(value: HostHttpSendArgs, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 /// Arguments for Host.sql_begin!
 /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
 /// Refcounted fields are owned by the hosted function.
@@ -2421,6 +3461,39 @@ const _: () = assert!(core::mem::align_of::<HostSqlBeginArgs>() == 8, "HostSqlBe
 const _: () = assert!(core::mem::size_of::<HostSqlBeginArgs>() == 48, "HostSqlBeginArgs size mismatch");
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<HostSqlBeginArgs>() == 8, "HostSqlBeginArgs alignment mismatch");
+
+impl HostSqlBeginArgs {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        unsafe { value.db.decref(roc_host); }
+        unsafe { decref_list_of_host_sql_value(value.params, roc_host); }
+        unsafe { value.sql.decref(roc_host); }
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        unsafe { value.db.incref(amount); }
+        unsafe { value.params.incref(amount); }
+        unsafe { value.sql.incref(amount); }
+    }
+}
+
+pub struct HostSqlBeginArgsRelease;
+
+unsafe impl RocRelease<HostSqlBeginArgs> for HostSqlBeginArgsRelease {
+    unsafe fn release(value: HostSqlBeginArgs, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
 
 /// Arguments for Host.sql_step!
 /// Roc signature: U64 => Try(Bool, Str)
@@ -2619,12 +3692,12 @@ impl HostEnvVarResult {
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostEnvVarResultTag::Err => {},
             HostEnvVarResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { value.take_payload_ok_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -2641,10 +3714,18 @@ impl HostEnvVarResult {
         match value.tag {
             HostEnvVarResultTag::Err => {},
             HostEnvVarResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_ok_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct HostEnvVarResultRelease;
+
+unsafe impl RocRelease<HostEnvVarResult> for HostEnvVarResultRelease {
+    unsafe fn release(value: HostEnvVarResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2654,15 +3735,15 @@ impl HostHttpSendResult {
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostHttpSendResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { value.take_payload_err_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             HostHttpSendResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { value.take_payload_ok_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -2678,14 +3759,22 @@ impl HostHttpSendResult {
         let _ = amount;
         match value.tag {
             HostHttpSendResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_err_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             HostHttpSendResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_ok_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct HostHttpSendResultRelease;
+
+unsafe impl RocRelease<HostHttpSendResult> for HostHttpSendResultRelease {
+    unsafe fn release(value: HostHttpSendResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2697,16 +3786,7 @@ impl AnonStructA14cd3b7d5755441 {
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
         unsafe { value.body.decref(roc_host); }
-        {
-            let list = value.headers;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_anon_struct82a96c5d55d63488(value.headers, roc_host); }
     }
 
     /// Increment Roc-owned fields.
@@ -2718,6 +3798,14 @@ impl AnonStructA14cd3b7d5755441 {
         let value = self;
         unsafe { value.body.incref(amount); }
         unsafe { value.headers.incref(amount); }
+    }
+}
+
+pub struct AnonStructA14cd3b7d5755441Release;
+
+unsafe impl RocRelease<AnonStructA14cd3b7d5755441> for AnonStructA14cd3b7d5755441Release {
+    unsafe fn release(value: AnonStructA14cd3b7d5755441, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2744,6 +3832,14 @@ impl AnonStruct82a96c5d55d63488 {
     }
 }
 
+pub struct AnonStruct82a96c5d55d63488Release;
+
+unsafe impl RocRelease<AnonStruct82a96c5d55d63488> for AnonStruct82a96c5d55d63488Release {
+    unsafe fn release(value: AnonStruct82a96c5d55d63488, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl AnonStruct305711d6494b9bb2 {
     /// Recursively decrement Roc-owned fields.
     ///
@@ -2752,16 +3848,7 @@ impl AnonStruct305711d6494b9bb2 {
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
         unsafe { value.body.decref(roc_host); }
-        {
-            let list = value.headers;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_anon_struct82a96c5d55d63488(value.headers, roc_host); }
         unsafe { value.method.decref(roc_host); }
         unsafe { value.url.decref(roc_host); }
     }
@@ -2780,17 +3867,25 @@ impl AnonStruct305711d6494b9bb2 {
     }
 }
 
+pub struct AnonStruct305711d6494b9bb2Release;
+
+unsafe impl RocRelease<AnonStruct305711d6494b9bb2> for AnonStruct305711d6494b9bb2Release {
+    unsafe fn release(value: AnonStruct305711d6494b9bb2, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl HostSqlBeginResult {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostSqlBeginResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { value.take_payload_err_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             HostSqlBeginResultTag::Ok => {},
@@ -2807,11 +3902,19 @@ impl HostSqlBeginResult {
         let _ = amount;
         match value.tag {
             HostSqlBeginResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_err_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             HostSqlBeginResultTag::Ok => {},
         }
+    }
+}
+
+pub struct HostSqlBeginResultRelease;
+
+unsafe impl RocRelease<HostSqlBeginResult> for HostSqlBeginResultRelease {
+    unsafe fn release(value: HostSqlBeginResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2823,16 +3926,7 @@ impl AnonStruct81f0667ceb55f2c1 {
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
         unsafe { value.db.decref(roc_host); }
-        {
-            let list = value.params;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_host_sql_value(value.params, roc_host); }
         unsafe { value.sql.decref(roc_host); }
     }
 
@@ -2849,24 +3943,32 @@ impl AnonStruct81f0667ceb55f2c1 {
     }
 }
 
+pub struct AnonStruct81f0667ceb55f2c1Release;
+
+unsafe impl RocRelease<AnonStruct81f0667ceb55f2c1> for AnonStruct81f0667ceb55f2c1Release {
+    unsafe fn release(value: AnonStruct81f0667ceb55f2c1, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl HostSqlValue {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostSqlValueTag::Blob => {
-                let payload = value.payload_blob();
+                let payload = unsafe { value.take_payload_blob_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             HostSqlValueTag::Integer => {},
             HostSqlValueTag::Null => {},
             HostSqlValueTag::Real => {},
             HostSqlValueTag::Text => {
-                let payload = value.payload_text();
+                let payload = unsafe { value.take_payload_text_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -2882,17 +3984,25 @@ impl HostSqlValue {
         let _ = amount;
         match value.tag {
             HostSqlValueTag::Blob => {
-                let payload = value.payload_blob();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_blob_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             HostSqlValueTag::Integer => {},
             HostSqlValueTag::Null => {},
             HostSqlValueTag::Real => {},
             HostSqlValueTag::Text => {
-                let payload = value.payload_text();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_text_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct HostSqlValueRelease;
+
+unsafe impl RocRelease<HostSqlValue> for HostSqlValueRelease {
+    unsafe fn release(value: HostSqlValue, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2902,11 +4012,11 @@ impl HostSqlStepResult {
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostSqlStepResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { value.take_payload_err_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             HostSqlStepResultTag::Ok => {},
@@ -2923,11 +4033,19 @@ impl HostSqlStepResult {
         let _ = amount;
         match value.tag {
             HostSqlStepResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_err_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             HostSqlStepResultTag::Ok => {},
         }
+    }
+}
+
+pub struct HostSqlStepResultRelease;
+
+unsafe impl RocRelease<HostSqlStepResult> for HostSqlStepResultRelease {
+    unsafe fn release(value: HostSqlStepResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2952,18 +4070,26 @@ impl HostColType {
     }
 }
 
+pub struct HostColTypeRelease;
+
+unsafe impl RocRelease<HostColType> for HostColTypeRelease {
+    unsafe fn release(value: HostColType, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl HostCookieResult {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostCookieResultTag::Err => {},
             HostCookieResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { value.take_payload_ok_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -2980,10 +4106,18 @@ impl HostCookieResult {
         match value.tag {
             HostCookieResultTag::Err => {},
             HostCookieResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_ok_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct HostCookieResultRelease;
+
+unsafe impl RocRelease<HostCookieResult> for HostCookieResultRelease {
+    unsafe fn release(value: HostCookieResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -2993,12 +4127,12 @@ impl HostMemoGetResult {
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             HostMemoGetResultTag::Err => {},
             HostMemoGetResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { value.take_payload_ok_unchecked() };
                 unsafe { decref_erased_callable(payload, roc_host); }
             },
         }
@@ -3015,10 +4149,18 @@ impl HostMemoGetResult {
         match value.tag {
             HostMemoGetResultTag::Err => {},
             HostMemoGetResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_ok_unchecked()) };
                 unsafe { incref_erased_callable(payload, amount); }
             },
         }
+    }
+}
+
+pub struct HostMemoGetResultRelease;
+
+unsafe impl RocRelease<HostMemoGetResult> for HostMemoGetResultRelease {
+    unsafe fn release(value: HostMemoGetResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3029,26 +4171,8 @@ impl AnonStruct4bc38282ead38c10 {
     /// `self` must own one live Roc reference for each refcounted field.
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
-        {
-            let list = value.routes;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        {
-            let list = value.settings;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_anon_struct5c679ee432c3d89b(value.routes, roc_host); }
+        unsafe { decref_list_of_compression_or_concurrency_limit_or_cors_allow_origins_or_cors_permissive_or_max_body_bytes_or_port_or_response_cache_or_serve_files_or_timeout_ms(value.settings, roc_host); }
     }
 
     /// Increment Roc-owned fields.
@@ -3060,6 +4184,14 @@ impl AnonStruct4bc38282ead38c10 {
         let value = self;
         unsafe { value.routes.incref(amount); }
         unsafe { value.settings.incref(amount); }
+    }
+}
+
+pub struct AnonStruct4bc38282ead38c10Release;
+
+unsafe impl RocRelease<AnonStruct4bc38282ead38c10> for AnonStruct4bc38282ead38c10Release {
+    unsafe fn release(value: AnonStruct4bc38282ead38c10, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3088,6 +4220,14 @@ impl AnonStruct5c679ee432c3d89b {
     }
 }
 
+pub struct AnonStruct5c679ee432c3d89bRelease;
+
+unsafe impl RocRelease<AnonStruct5c679ee432c3d89b> for AnonStruct5c679ee432c3d89bRelease {
+    unsafe fn release(value: AnonStruct5c679ee432c3d89b, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl AnonStruct99a9039501750314 {
     /// Recursively decrement Roc-owned fields.
     ///
@@ -3095,28 +4235,10 @@ impl AnonStruct99a9039501750314 {
     /// `self` must own one live Roc reference for each refcounted field.
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
-        {
-            let list = value.headers;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_anon_struct82a96c5d55d63488(value.headers, roc_host); }
         unsafe { value.method.decref(roc_host); }
         unsafe { decref_box(value.model as RocBox, roc_host); }
-        {
-            let list = value.params;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_anon_struct82a96c5d55d63488(value.params, roc_host); }
         unsafe { value.path.decref(roc_host); }
         unsafe { value.query.decref(roc_host); }
     }
@@ -3137,6 +4259,14 @@ impl AnonStruct99a9039501750314 {
     }
 }
 
+pub struct AnonStruct99a9039501750314Release;
+
+unsafe impl RocRelease<AnonStruct99a9039501750314> for AnonStruct99a9039501750314Release {
+    unsafe fn release(value: AnonStruct99a9039501750314, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl AnonStructC56ced036812b588 {
     /// Recursively decrement Roc-owned fields.
     ///
@@ -3145,26 +4275,8 @@ impl AnonStructC56ced036812b588 {
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
         unsafe { value.body.decref(roc_host); }
-        {
-            let list = value.effects;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        {
-            let list = value.headers;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_must_or_opt(value.effects, roc_host); }
+        unsafe { decref_list_of_anon_struct82a96c5d55d63488(value.headers, roc_host); }
     }
 
     /// Increment Roc-owned fields.
@@ -3180,22 +4292,30 @@ impl AnonStructC56ced036812b588 {
     }
 }
 
+pub struct AnonStructC56ced036812b588Release;
+
+unsafe impl RocRelease<AnonStructC56ced036812b588> for AnonStructC56ced036812b588Release {
+    unsafe fn release(value: AnonStructC56ced036812b588, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl MustOrOpt {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             MustOrOptTag::Must => {
-                let payload = value.payload_must();
+                let payload = unsafe { value.take_payload_must_unchecked() };
                 unsafe { payload._0.decref(roc_host); }
                 unsafe { decref_erased_callable(payload._1, roc_host); }
             },
             MustOrOptTag::Opt => {
-                let payload = value.payload_opt();
+                let payload = unsafe { value.take_payload_opt_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -3211,15 +4331,23 @@ impl MustOrOpt {
         let _ = amount;
         match value.tag {
             MustOrOptTag::Must => {
-                let payload = value.payload_must();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_must_unchecked()) };
                 unsafe { payload._0.incref(amount); }
                 unsafe { incref_erased_callable(payload._1, amount); }
             },
             MustOrOptTag::Opt => {
-                let payload = value.payload_opt();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_opt_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct MustOrOptRelease;
+
+unsafe impl RocRelease<MustOrOpt> for MustOrOptRelease {
+    unsafe fn release(value: MustOrOpt, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3229,19 +4357,19 @@ impl DbWriteOrHttpSendOrLog {
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             DbWriteOrHttpSendOrLogTag::DbWrite => {
-                let payload = value.payload_db_write();
+                let payload = unsafe { value.take_payload_db_write_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             DbWriteOrHttpSendOrLogTag::HttpSend => {
-                let payload = value.payload_http_send();
+                let payload = unsafe { value.take_payload_http_send_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             DbWriteOrHttpSendOrLogTag::Log => {
-                let payload = value.payload_log();
+                let payload = unsafe { value.take_payload_log_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -3257,18 +4385,26 @@ impl DbWriteOrHttpSendOrLog {
         let _ = amount;
         match value.tag {
             DbWriteOrHttpSendOrLogTag::DbWrite => {
-                let payload = value.payload_db_write();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_db_write_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             DbWriteOrHttpSendOrLogTag::HttpSend => {
-                let payload = value.payload_http_send();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_http_send_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             DbWriteOrHttpSendOrLogTag::Log => {
-                let payload = value.payload_log();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_log_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct DbWriteOrHttpSendOrLogRelease;
+
+unsafe impl RocRelease<DbWriteOrHttpSendOrLog> for DbWriteOrHttpSendOrLogRelease {
+    unsafe fn release(value: DbWriteOrHttpSendOrLog, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3280,16 +4416,7 @@ impl AnonStruct156b5cf265b1adab {
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
         unsafe { value.db.decref(roc_host); }
-        {
-            let list = value.params;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_host_sql_value(value.params, roc_host); }
         unsafe { value.sql.decref(roc_host); }
     }
 
@@ -3306,30 +4433,38 @@ impl AnonStruct156b5cf265b1adab {
     }
 }
 
+pub struct AnonStruct156b5cf265b1adabRelease;
+
+unsafe impl RocRelease<AnonStruct156b5cf265b1adab> for AnonStruct156b5cf265b1adabRelease {
+    unsafe fn release(value: AnonStruct156b5cf265b1adab, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Busy => {},
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation => {
-                let payload = value.payload_foreign_key_violation();
+                let payload = unsafe { value.take_payload_foreign_key_violation_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed => {
-                let payload = value.payload_http_failed();
+                let payload = unsafe { value.take_payload_http_failed_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other => {
-                let payload = value.payload_other();
+                let payload = unsafe { value.take_payload_other_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation => {
-                let payload = value.payload_unique_violation();
+                let payload = unsafe { value.take_payload_unique_violation_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
         }
@@ -3346,22 +4481,30 @@ impl BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation {
         match value.tag {
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Busy => {},
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::ForeignKeyViolation => {
-                let payload = value.payload_foreign_key_violation();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_foreign_key_violation_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::HttpFailed => {
-                let payload = value.payload_http_failed();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_http_failed_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::Other => {
-                let payload = value.payload_other();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_other_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationTag::UniqueViolation => {
-                let payload = value.payload_unique_violation();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_unique_violation_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
         }
+    }
+}
+
+pub struct BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationRelease;
+
+unsafe impl RocRelease<BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation> for BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolationRelease {
+    unsafe fn release(value: BusyOrForeignKeyViolationOrHttpFailedOrOtherOrUniqueViolation, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3371,33 +4514,24 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Compression => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
-                let payload = value.payload_cors_allow_origins();
-                {
-                    let list = payload;
-                    if list.has_one_ref() {
-                        for item_ref in list.allocation_items() {
-                            let item = *item_ref;
-                                unsafe { item.decref(roc_host); }
-                        }
-                    }
-                    unsafe { list.decref(roc_host); }
-                }
+                let payload = unsafe { value.take_payload_cors_allow_origins_unchecked() };
+                unsafe { decref_list_of_str(payload, roc_host); }
             },
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache => {
-                let payload = value.payload_response_cache();
+                let payload = unsafe { value.take_payload_response_cache_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles => {
-                let payload = value.payload_serve_files();
+                let payload = unsafe { value.take_payload_serve_files_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
@@ -3416,22 +4550,30 @@ impl CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyByt
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Compression => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ConcurrencyLimit => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsAllowOrigins => {
-                let payload = value.payload_cors_allow_origins();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_cors_allow_origins_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::CorsPermissive => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::MaxBodyBytes => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::Port => {},
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ResponseCache => {
-                let payload = value.payload_response_cache();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_response_cache_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::ServeFiles => {
-                let payload = value.payload_serve_files();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_serve_files_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsTag::TimeoutMs => {},
         }
+    }
+}
+
+pub struct CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsRelease;
+
+unsafe impl RocRelease<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs> for CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsRelease {
+    unsafe fn release(value: CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3442,26 +4584,8 @@ impl AnonStructB6f3372b0a228dcf {
     /// `self` must own one live Roc reference for each refcounted field.
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
-        {
-            let list = value.bypass_headers;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        {
-            let list = value.methods;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_str(value.bypass_headers, roc_host); }
+        unsafe { decref_list_of_str(value.methods, roc_host); }
     }
 
     /// Increment Roc-owned fields.
@@ -3473,6 +4597,14 @@ impl AnonStructB6f3372b0a228dcf {
         let value = self;
         unsafe { value.bypass_headers.incref(amount); }
         unsafe { value.methods.incref(amount); }
+    }
+}
+
+pub struct AnonStructB6f3372b0a228dcfRelease;
+
+unsafe impl RocRelease<AnonStructB6f3372b0a228dcf> for AnonStructB6f3372b0a228dcfRelease {
+    unsafe fn release(value: AnonStructB6f3372b0a228dcf, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
     }
 }
 
@@ -3499,6 +4631,14 @@ impl AnonStructA965a4c67b4c5d53 {
     }
 }
 
+pub struct AnonStructA965a4c67b4c5d53Release;
+
+unsafe impl RocRelease<AnonStructA965a4c67b4c5d53> for AnonStructA965a4c67b4c5d53Release {
+    unsafe fn release(value: AnonStructA965a4c67b4c5d53, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl AnonStructCb9f69505fcdcfaf {
     /// Recursively decrement Roc-owned fields.
     ///
@@ -3506,26 +4646,8 @@ impl AnonStructCb9f69505fcdcfaf {
     /// `self` must own one live Roc reference for each refcounted field.
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
-        {
-            let list = value.routes;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
-        {
-            let list = value.settings;
-            if list.has_one_ref() {
-                for item_ref in list.allocation_items() {
-                    let item = *item_ref;
-                        unsafe { item.decref(roc_host); }
-                }
-            }
-            unsafe { list.decref(roc_host); }
-        }
+        unsafe { decref_list_of_anon_struct5c679ee432c3d89b(value.routes, roc_host); }
+        unsafe { decref_list_of_compression_or_concurrency_limit_or_cors_allow_origins_or_cors_permissive_or_max_body_bytes_or_port_or_response_cache_or_serve_files_or_timeout_ms(value.settings, roc_host); }
     }
 
     /// Increment Roc-owned fields.
@@ -3540,21 +4662,29 @@ impl AnonStructCb9f69505fcdcfaf {
     }
 }
 
+pub struct AnonStructCb9f69505fcdcfafRelease;
+
+unsafe impl RocRelease<AnonStructCb9f69505fcdcfaf> for AnonStructCb9f69505fcdcfafRelease {
+    unsafe fn release(value: AnonStructCb9f69505fcdcfaf, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
 impl InitForHostResult {
     /// Recursively decrement Roc-owned payloads.
     ///
     /// # Safety
     /// `self` must own one live Roc reference for each refcounted payload.
     pub unsafe fn decref(self, roc_host: &RocHost) {
-        let value = self;
+        let mut value = self;
         let _ = roc_host;
         match value.tag {
             InitForHostResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { value.take_payload_err_unchecked() };
                 unsafe { payload.decref(roc_host); }
             },
             InitForHostResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { value.take_payload_ok_unchecked() };
                 unsafe { decref_box(payload as RocBox, roc_host); }
             },
         }
@@ -3570,15 +4700,89 @@ impl InitForHostResult {
         let _ = amount;
         match value.tag {
             InitForHostResultTag::Err => {
-                let payload = value.payload_err();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_err_unchecked()) };
                 unsafe { payload.incref(amount); }
             },
             InitForHostResultTag::Ok => {
-                let payload = value.payload_ok();
+                let payload = unsafe { core::ptr::read(value.borrow_payload_ok_unchecked()) };
                 unsafe { incref_box(payload as RocBox, amount); }
             },
         }
     }
+}
+
+pub struct InitForHostResultRelease;
+
+unsafe impl RocRelease<InitForHostResult> for InitForHostResultRelease {
+    unsafe fn release(value: InitForHostResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
+/// Release one owned reference to a `RocList<AnonStruct82a96c5d55d63488>`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+///
+/// # Safety
+/// `value` must own one live Roc list reference.
+pub unsafe fn decref_list_of_anon_struct82a96c5d55d63488(value: RocList<AnonStruct82a96c5d55d63488>, roc_host: &RocHost) {
+    unsafe { value.release_with::<AnonStruct82a96c5d55d63488Release>(roc_host); }
+}
+
+/// Release one owned reference to a `RocList<HostSqlValue>`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+///
+/// # Safety
+/// `value` must own one live Roc list reference.
+pub unsafe fn decref_list_of_host_sql_value(value: RocList<HostSqlValue>, roc_host: &RocHost) {
+    unsafe { value.release_with::<HostSqlValueRelease>(roc_host); }
+}
+
+/// Release one owned reference to a `RocList<RocStr>`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+///
+/// # Safety
+/// `value` must own one live Roc list reference.
+pub unsafe fn decref_list_of_str(value: RocList<RocStr>, roc_host: &RocHost) {
+    unsafe { value.release_with::<RocStrRelease>(roc_host); }
+}
+
+/// Release one owned reference to a `RocList<AnonStruct5c679ee432c3d89b>`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+///
+/// # Safety
+/// `value` must own one live Roc list reference.
+pub unsafe fn decref_list_of_anon_struct5c679ee432c3d89b(value: RocList<AnonStruct5c679ee432c3d89b>, roc_host: &RocHost) {
+    unsafe { value.release_with::<AnonStruct5c679ee432c3d89bRelease>(roc_host); }
+}
+
+/// Release one owned reference to a `RocList<MustOrOpt>`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+///
+/// # Safety
+/// `value` must own one live Roc list reference.
+pub unsafe fn decref_list_of_must_or_opt(value: RocList<MustOrOpt>, roc_host: &RocHost) {
+    unsafe { value.release_with::<MustOrOptRelease>(roc_host); }
+}
+
+/// Release one owned reference to a `RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>`.
+///
+/// The allocation's final reference is claimed atomically before any element
+/// is read, so concurrent owners cannot skip or duplicate element teardown.
+///
+/// # Safety
+/// `value` must own one live Roc list reference.
+pub unsafe fn decref_list_of_compression_or_concurrency_limit_or_cors_allow_origins_or_cors_permissive_or_max_body_bytes_or_port_or_response_cache_or_serve_files_or_timeout_ms(value: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>, roc_host: &RocHost) {
+    unsafe { value.release_with::<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMsRelease>(roc_host); }
 }
 
 
@@ -3596,6 +4800,42 @@ unsafe extern "C" {
     pub fn roc_crashed(bytes: *const u8, len: usize);
 }
 
+extern "C" fn direct_roc_alloc(_host: *mut RocHost, length: usize, alignment: usize) -> *mut c_void {
+    unsafe { roc_alloc(length, alignment) }
+}
+
+extern "C" fn direct_roc_dealloc(_host: *mut RocHost, ptr: *mut c_void, alignment: usize) {
+    unsafe { roc_dealloc(ptr, alignment); }
+}
+
+extern "C" fn direct_roc_realloc(_host: *mut RocHost, ptr: *mut c_void, new_length: usize, alignment: usize) -> *mut c_void {
+    unsafe { roc_realloc(ptr, new_length, alignment) }
+}
+
+extern "C" fn direct_roc_dbg(_host: *mut RocHost, bytes: *const u8, len: usize) {
+    unsafe { roc_dbg(bytes, len); }
+}
+
+extern "C" fn direct_roc_expect_failed(_host: *mut RocHost, bytes: *const u8, len: usize) {
+    unsafe { roc_expect_failed(bytes, len); }
+}
+
+extern "C" fn direct_roc_crashed(_host: *mut RocHost, bytes: *const u8, len: usize) {
+    unsafe { roc_crashed(bytes, len); }
+}
+
+fn direct_roc_host() -> RocHost {
+    RocHost {
+        env: core::ptr::null_mut(),
+        roc_alloc: direct_roc_alloc,
+        roc_dealloc: direct_roc_dealloc,
+        roc_realloc: direct_roc_realloc,
+        roc_dbg: direct_roc_dbg,
+        roc_expect_failed: direct_roc_expect_failed,
+        roc_crashed: direct_roc_crashed,
+    }
+}
+
 // Hosted Symbols
 //
 // The platform host must export these symbols with the exact direct C ABI signatures.
@@ -3605,10 +4845,17 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// Hosted symbol for Host.log!
     /// Roc signature: Str => {}
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
     pub fn roc_log(arg0: RocStr);
 
     /// Hosted symbol for Host.env_var!
     /// Roc signature: Str => Try(Str, [EnvVarNotFound])
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_env_var(arg0: RocStr) -> HostEnvVarResult;
 
     /// Hosted symbol for Host.now_ms!
@@ -3617,30 +4864,49 @@ unsafe extern "C" {
 
     /// Hosted symbol for Host.random_bytes!
     /// Roc signature: U64 => List(U8)
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_random_bytes(arg0: u64) -> RocListWith<u8, false>;
 
     /// Hosted symbol for Host.password_hash!
     /// Roc signature: Str => Str
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn password_hash(arg0: RocStr) -> RocStr;
 
     /// Hosted symbol for Host.password_verify!
     /// Roc signature: Str, Str => Bool
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    ///     unsafe { arg1.decref(roc_host); }
     pub fn password_verify(arg0: RocStr, arg1: RocStr) -> bool;
 
     /// Hosted symbol for Host.http_send!
     /// Roc signature: { body : List(U8), headers : List({ name : Str, value : Str }), method : Str, timeout_ms : U64, url : Str } => Try({ body : List(U8), headers : List({ name : Str, value : Str }), status : U16 }, Str)
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_http_send(arg0: HostHttpSendArgs) -> HostHttpSendResult;
 
     /// Hosted symbol for Host.sql_begin!
     /// Roc signature: { ctx : U64, db : Str, params : List(Host.SqlValue), sql : Str } => Try(U64, Str)
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_begin(arg0: HostSqlBeginArgs) -> HostSqlBeginResult;
 
     /// Hosted symbol for Host.sql_step!
     /// Roc signature: U64 => Try(Bool, Str)
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_step(arg0: u64) -> HostSqlStepResult;
 
     /// Hosted symbol for Host.sql_columns!
     /// Roc signature: U64 => List(Str)
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_columns(arg0: u64) -> RocList<RocStr>;
 
     /// Hosted symbol for Host.sql_col_type!
@@ -3657,18 +4923,22 @@ unsafe extern "C" {
 
     /// Hosted symbol for Host.sql_col_str!
     /// Roc signature: U64, U64 => Str
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_col_str(arg0: u64, arg1: u64) -> RocStr;
 
     /// Hosted symbol for Host.sql_step_row!
     /// Roc signature: U64 => Try(U64, Str)
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_step_row(arg0: u64) -> HostSqlBeginResult;
 
     /// Hosted symbol for Host.sql_row_str
     /// Roc signature: U64, U64, U64 -> Str
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_row_str(arg0: u64, arg1: u64, arg2: u64) -> RocStr;
 
     /// Hosted symbol for Host.sql_col_blob!
     /// Roc signature: U64, U64 => List(U8)
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_sql_col_blob(arg0: u64, arg1: u64) -> RocListWith<u8, false>;
 
     /// Hosted symbol for Host.sql_finish!
@@ -3677,10 +4947,14 @@ unsafe extern "C" {
 
     /// Hosted symbol for Host.next_id!
     /// Roc signature: Str => I64
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg0.decref(roc_host); }
     pub fn roc_next_id(arg0: RocStr) -> i64;
 
     /// Hosted symbol for Host.request_body!
     /// Roc signature: U64 => List(U8)
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_request_body(arg0: u64) -> RocListWith<u8, false>;
 
     /// Hosted symbol for Host.set_body_key!
@@ -3697,6 +4971,10 @@ unsafe extern "C" {
 
     /// Hosted symbol for Host.cookie!
     /// Roc signature: U64, Str => Try(Str, [NoCookie])
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg1.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_cookie(arg0: u64, arg1: RocStr) -> HostCookieResult;
 
     /// Hosted symbol for Host.reserve_id!
@@ -3709,10 +4987,18 @@ unsafe extern "C" {
 
     /// Hosted symbol for Host.memo_get!
     /// Roc signature: U64, Str => Try(Box({} => rigid), [Miss])
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg1.decref(roc_host); }
+    /// The result is owned by Roc: return exactly one owned reference.
     pub fn roc_memo_get(arg0: u64, arg1: RocStr) -> HostMemoGetResult;
 
     /// Hosted symbol for Host.memo_put!
     /// Roc signature: U64, Str, Box({} => rigid) => {}
+    /// Owned arguments. Release each exactly once before returning, unless it is
+    /// moved into storage or into the result:
+    ///     unsafe { arg1.decref(roc_host); }
+    ///     unsafe { decref_erased_callable(arg2, roc_host); }
     pub fn roc_memo_put(arg0: u64, arg1: RocStr, arg2: RocErasedCallable);
 
     /// Hosted symbol for Host.ctx_registry_size!
@@ -3868,3 +5154,30 @@ unsafe extern "C" {
     pub fn roc_init() -> InitForHostResult;
 
 }
+
+const _: () = assert!(core::mem::size_of::<RocOwned<AnonStructCb9f69505fcdcfaf, AnonStructCb9f69505fcdcfafRelease>>() == core::mem::size_of::<AnonStructCb9f69505fcdcfaf>(), "roc_app owned result size mismatch");
+const _: () = assert!(core::mem::align_of::<RocOwned<AnonStructCb9f69505fcdcfaf, AnonStructCb9f69505fcdcfafRelease>>() == core::mem::align_of::<AnonStructCb9f69505fcdcfaf>(), "roc_app owned result alignment mismatch");
+
+/// Owning wrapper for `roc_app`. The returned value is recursively
+/// released on Drop with no runtime descriptor or extra storage.
+///
+/// # Safety
+/// The raw entrypoint and its arguments must satisfy the generated host ABI.
+pub unsafe fn roc_app_owned() -> RocOwned<AnonStructCb9f69505fcdcfaf, AnonStructCb9f69505fcdcfafRelease> {
+    let value = unsafe { roc_app() };
+    unsafe { RocOwned::from_raw(value) }
+}
+
+const _: () = assert!(core::mem::size_of::<RocOwned<InitForHostResult, InitForHostResultRelease>>() == core::mem::size_of::<InitForHostResult>(), "roc_init owned result size mismatch");
+const _: () = assert!(core::mem::align_of::<RocOwned<InitForHostResult, InitForHostResultRelease>>() == core::mem::align_of::<InitForHostResult>(), "roc_init owned result alignment mismatch");
+
+/// Owning wrapper for `roc_init`. The returned value is recursively
+/// released on Drop with no runtime descriptor or extra storage.
+///
+/// # Safety
+/// The raw entrypoint and its arguments must satisfy the generated host ABI.
+pub unsafe fn roc_init_owned() -> RocOwned<InitForHostResult, InitForHostResultRelease> {
+    let value = unsafe { roc_init() };
+    unsafe { RocOwned::from_raw(value) }
+}
+

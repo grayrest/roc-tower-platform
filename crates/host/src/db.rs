@@ -23,12 +23,22 @@ pub enum SqlValue {
 pub fn param_from_host(value: &abi::HostSqlValue) -> SqlValue {
     match value.tag {
         abi::HostSqlValueTag::Null => SqlValue::Null,
-        abi::HostSqlValueTag::Integer => SqlValue::Int(value.payload_integer()),
-        abi::HostSqlValueTag::Real => SqlValue::Real(value.payload_real()),
-        abi::HostSqlValueTag::Text => {
-            SqlValue::Text(String::from_utf8_lossy(value.payload_text().as_slice()).into_owned())
+        // SAFETY for every `_unchecked` below: the match arm has already
+        // established the tag. These borrow rather than take: the payload
+        // stays owned by `value`, and each arm copies out into owned Rust.
+        abi::HostSqlValueTag::Integer => {
+            SqlValue::Int(unsafe { *value.borrow_payload_integer_unchecked() })
         }
-        abi::HostSqlValueTag::Blob => SqlValue::Blob(value.payload_blob().as_slice().to_vec()),
+        abi::HostSqlValueTag::Real => {
+            SqlValue::Real(unsafe { *value.borrow_payload_real_unchecked() })
+        }
+        abi::HostSqlValueTag::Text => SqlValue::Text(
+            String::from_utf8_lossy(unsafe { value.borrow_payload_text_unchecked() }.as_slice())
+                .into_owned(),
+        ),
+        abi::HostSqlValueTag::Blob => SqlValue::Blob(
+            unsafe { value.borrow_payload_blob_unchecked() }.as_slice().to_vec(),
+        ),
     }
 }
 

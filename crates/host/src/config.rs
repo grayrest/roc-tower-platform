@@ -120,18 +120,20 @@ pub fn load_app() -> Result<LoadedApp, String> {
 
 fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), String> {
     match setting.tag {
-        RocSettingTag::Port => config.port = setting.payload_port(),
+        // SAFETY for every `_unchecked` below: the match arm establishes the tag.
+        RocSettingTag::Port => config.port = unsafe { *setting.borrow_payload_port_unchecked() },
         RocSettingTag::TimeoutMs => {
-            config.timeout = Duration::from_millis(setting.payload_timeout_ms());
+            config.timeout =
+                Duration::from_millis(unsafe { *setting.borrow_payload_timeout_ms_unchecked() });
         }
         RocSettingTag::MaxBodyBytes => {
-            config.max_body_bytes = usize::try_from(setting.payload_max_body_bytes())
+            config.max_body_bytes =
+                usize::try_from(unsafe { *setting.borrow_payload_max_body_bytes_unchecked() })
                 .map_err(|_| "MaxBodyBytes does not fit in usize".to_string())?;
         }
         RocSettingTag::CorsPermissive => config.cors = CorsMode::Permissive,
         RocSettingTag::CorsAllowOrigins => {
-            let origins = setting
-                .payload_cors_allow_origins()
+            let origins = unsafe { setting.borrow_payload_cors_allow_origins_unchecked() }
                 .as_slice()
                 .iter()
                 .map(|origin| String::from_utf8_lossy(origin.as_slice()).into_owned())
@@ -140,7 +142,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
         }
         RocSettingTag::Compression => config.compression = true,
         RocSettingTag::ConcurrencyLimit => {
-            let limit = setting.payload_concurrency_limit();
+            let limit = unsafe { *setting.borrow_payload_concurrency_limit_unchecked() };
             if limit == 0 {
                 return Err("ConcurrencyLimit must be greater than zero".to_string());
             }
@@ -150,7 +152,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
             );
         }
         RocSettingTag::ServeFiles => {
-            let payload = setting.payload_serve_files();
+            let payload = unsafe { setting.borrow_payload_serve_files_unchecked() };
             let url_prefix = String::from_utf8_lossy(payload.url_prefix.as_slice()).into_owned();
             let dir =
                 PathBuf::from(String::from_utf8_lossy(payload.dir.as_slice()).into_owned());
@@ -162,7 +164,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
             config.serve_files = Some(ServeFilesConfig { url_prefix, dir });
         }
         RocSettingTag::ResponseCache => {
-            let payload = setting.payload_response_cache();
+            let payload = unsafe { setting.borrow_payload_response_cache_unchecked() };
             if payload.ttl_ms == 0 {
                 return Err("ResponseCache ttl_ms must be greater than zero".to_string());
             }
