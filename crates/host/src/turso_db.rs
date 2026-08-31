@@ -170,6 +170,24 @@ fn classify(err: &TursoError) -> DbError {
 // Cursor: an owned statement plus the connection keeping it alive.
 // ---------------------------------------------------------------------------
 
+/// Process-global row-generation counter (H1); see `cursor.rs`.
+static ROW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The H1 soundness guard: a pure cell read must present the row token minted by
+/// the `sql_step_row!` that produced the row it reads. A mismatch means the
+/// cursor advanced past that row (a read outlived its step), so the read would
+/// observe different data than the token names — hard-error rather than serve
+/// it silently. Extracted so the guard is unit-testable without the roc runtime.
+#[inline]
+fn require_token(cursor_generation: u64, tok: u64) {
+    if cursor_generation != tok {
+        panic!(
+            "sql_row_str: stale row token {tok} (cursor at generation {cursor_generation}) \
+             — a cell read outlived its step"
+        );
+    }
+}
+
 struct Cursor {
     columns: Vec<String>,
     stmt: Box<TursoStatement>,
@@ -180,6 +198,8 @@ struct Cursor {
     _conn: PooledConn,
     /// True after a step that produced a row; getters read the current row.
     has_row: bool,
+    /// Row-generation token of the current row (H1); `sql_row_str` checks it.
+    generation: u64,
 }
 
 fn registry() -> &'static Mutex<HashMap<u64, u64>> {
@@ -308,7 +328,7 @@ fn build_cursor(pooled: PooledConn, sql: &str, params: &[SqlValue]) -> Result<Cu
     let columns: Vec<String> = (0..stmt.column_count())
         .map(|i| stmt.column_name(i).unwrap_or_default())
         .collect();
-    Ok(Cursor { columns, stmt, _conn: pooled, has_row: false })
+    Ok(Cursor { columns, stmt, _conn: pooled, has_row: false, generation: 0 })
 }
 
 /// `Host.sql_step! : U64 => Try(Bool, Str)`.
@@ -335,6 +355,70 @@ pub extern "C" fn roc_sql_step(handle: u64) -> abi::HostSqlStepResult {
     }) {
         Some(result) => result,
         None => step_err("sql_step! on an unknown cursor handle"),
+    }
+}
+
+/// `Host.sql_step_row! : U64 => Try(U64, Str)` (H1). Mirrors `roc_sql_step` but
+/// returns a fresh generation TOKEN for the new row (`Ok(0)` = Done); a pure
+/// `sql_row_str` read keyed by the token is sound.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_sql_step_row(handle: u64) -> abi::HostSqlBeginResult {
+    let _t = crate::profile::exec();
+    match with_cursor(handle, |cursor| match cursor.stmt.step(None) {
+        Ok(TursoStatusCode::Row) => {
+            let token = ROW_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            cursor.has_row = true;
+            cursor.generation = token;
+            begin_ok(token)
+        }
+        Ok(TursoStatusCode::Done) => {
+            cursor.has_row = false;
+            begin_ok(0)
+        }
+        Ok(TursoStatusCode::Io) => {
+            cursor.has_row = false;
+            begin_err("turso returned Io under async_io=false")
+        }
+        Err(err) => {
+            cursor.has_row = false;
+            begin_err(&format!("{err:?}"))
+        }
+    }) {
+        Some(result) => result,
+        None => begin_err("sql_step_row! on an unknown cursor handle"),
+    }
+}
+
+/// `Host.sql_row_str : U64, U64, U64 -> Str` (rung 0 + H1) — the PURE cell read.
+/// A token mismatch means the cursor advanced past the row the token names:
+/// hard-error (loud beats silently serving the wrong row). See `cursor.rs`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_sql_row_str(handle: u64, tok: u64, index: u64) -> abi::RocStr {
+    crate::profile::getter();
+    let host = roc_host();
+    match with_cursor(handle, |cursor| {
+        require_token(cursor.generation, tok);
+        if !cursor.has_row {
+            return abi::RocStr::from_slice(&[], host);
+        }
+        match cursor.stmt.row_value(index as usize) {
+            Ok(v) => match &v {
+                Value::Text(_) => abi::RocStr::from_slice(v.to_text().unwrap_or("").as_bytes(), host),
+                Value::Blob(b) => abi::RocStr::from_slice(b, host),
+                Value::Numeric(_) => {
+                    if let Some(i) = v.as_int() {
+                        abi::RocStr::from_slice(i.to_string().as_bytes(), host)
+                    } else {
+                        abi::RocStr::from_slice(v.to_float_or_zero().to_string().as_bytes(), host)
+                    }
+                }
+                Value::Null => abi::RocStr::from_slice(&[], host),
+            },
+            Err(_) => abi::RocStr::from_slice(&[], host),
+        }
+    }) {
+        Some(s) => s,
+        None => abi::RocStr::from_slice(&[], host),
     }
 }
 
@@ -508,5 +592,26 @@ pub fn reserve_next_id(db: &str) -> Result<i64, String> {
         }
         Ok(other) => Err(format!("reserved_id RETURNING yielded {other:?}")),
         Err(err) => Err(format!("{err:?}")),
+    }
+}
+
+
+#[cfg(test)]
+mod row_token_tests {
+    use super::require_token;
+
+    /// A read presenting the current row's token is accepted.
+    #[test]
+    fn matching_token_is_accepted() {
+        require_token(7, 7);
+    }
+
+    /// A read presenting a token from an earlier step (the cursor has since
+    /// advanced) hard-errors — the H1 read-after-step guard.
+    #[test]
+    #[should_panic(expected = "stale row token")]
+    fn stale_token_after_step_panics() {
+        // cursor stepped on to generation 8; caller still holds token 7.
+        require_token(8, 7);
     }
 }

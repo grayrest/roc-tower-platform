@@ -373,12 +373,16 @@ stream_page! = |ctx, db, page_sql, page_params, count_sql, count_params| {
 ## Step the cursor, append each article object (comma-separated), recurse.
 stream_rows! : U64, List(U8), Bool => Try(List(U8), [Fail(U16, Str, Str), ..])
 stream_rows! = |handle, out, first| {
-    match Host.sql_step!(handle) {
+    # `sql_step_row!` advances the cursor and returns a fresh generation TOKEN
+    # for the new row (0 = Done). Threading that token into the PURE
+    # `sql_row_str` reads is what makes them sound: the token pins the row, so
+    # a read can never silently observe a later step's data (H1).
+    match Host.sql_step_row!(handle) {
         Err(m) => Err(Fail(500.U16, "body", m))
-        Ok(has_row) =>
-            if has_row {
+        Ok(tok) =>
+            if tok != 0 {
                 separated = if first out else JsonEnc.raw_into(out, ",")
-                stream_rows!(handle, stream_article!(handle, separated), False)
+                stream_rows!(handle, stream_article!(handle, tok, separated), False)
             } else {
                 Ok(out)
             }
@@ -388,52 +392,54 @@ stream_rows! = |handle, out, first| {
 ## One article object, read cell-by-cell (column order: slug 0, title 1,
 ## description 2, created_at 3, updated_at 4, username 5, bio 6, image 7,
 ## favorites_count 8, favorited 9, following 10, tag_list 11). JSON keys are
-## emitted alphabetically to match the derived encoder.
-stream_article! : U64, List(U8) => List(U8)
-stream_article! = |h, out|
+## emitted alphabetically to match the derived encoder. String cells are read
+## through the PURE `Host.sql_row_str(handle, tok, idx)`; int/type reads still
+## use the effectful getters (col_str-first scope).
+stream_article! : U64, U64, List(U8) => List(U8)
+stream_article! = |h, tok, out|
     out
     |> JsonEnc.raw_into("{\"author\":{\"bio\":")
-    |> nullable_into!(h, 6)
+    |> nullable_into!(h, tok, 6)
     |> JsonEnc.raw_into(",\"following\":")
     |> JsonEnc.bool_into(Host.sql_col_i64!(h, 10) != 0)
     |> JsonEnc.raw_into(",\"image\":")
-    |> nullable_into!(h, 7)
+    |> nullable_into!(h, tok, 7)
     |> JsonEnc.raw_into(",\"username\":")
-    |> JsonEnc.str_into(Host.sql_col_str!(h, 5))
+    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 5))
     |> JsonEnc.raw_into("},\"createdAt\":")
-    |> JsonEnc.str_into(Host.sql_col_str!(h, 3))
+    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 3))
     |> JsonEnc.raw_into(",\"description\":")
-    |> JsonEnc.str_into(Host.sql_col_str!(h, 2))
+    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 2))
     |> JsonEnc.raw_into(",\"favorited\":")
     |> JsonEnc.bool_into(Host.sql_col_i64!(h, 9) != 0)
     |> JsonEnc.raw_into(",\"favoritesCount\":")
     |> JsonEnc.i64_into(Host.sql_col_i64!(h, 8))
     |> JsonEnc.raw_into(",\"slug\":")
-    |> JsonEnc.str_into(Host.sql_col_str!(h, 0))
+    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 0))
     |> JsonEnc.raw_into(",\"tagList\":")
-    |> tags_into!(h, 11)
+    |> tags_into!(h, tok, 11)
     |> JsonEnc.raw_into(",\"title\":")
-    |> JsonEnc.str_into(Host.sql_col_str!(h, 1))
+    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 1))
     |> JsonEnc.raw_into(",\"updatedAt\":")
-    |> JsonEnc.str_into(Host.sql_col_str!(h, 4))
+    |> JsonEnc.str_into(Host.sql_row_str(h, tok, 4))
     |> JsonEnc.raw_into("}")
 
 ## A nullable TEXT cell: JSON null, or the quoted string.
-nullable_into! : List(U8), U64, U64 => List(U8)
-nullable_into! = |out, h, idx|
+nullable_into! : List(U8), U64, U64, U64 => List(U8)
+nullable_into! = |out, h, tok, idx|
     match Host.sql_col_type!(h, idx) {
         Null => JsonEnc.null_into(out)
-        _ => JsonEnc.str_into(out, Host.sql_col_str!(h, idx))
+        _ => JsonEnc.str_into(out, Host.sql_row_str(h, tok, idx))
     }
 
 ## The tagList array: split the comma-joined tag_list cell, quote each tag.
-tags_into! : List(U8), U64, U64 => List(U8)
-tags_into! = |out, h, idx| {
+tags_into! : List(U8), U64, U64, U64 => List(U8)
+tags_into! = |out, h, tok, idx| {
     opened = JsonEnc.raw_into(out, "[")
     filled = match Host.sql_col_type!(h, idx) {
         Null => opened
         _ => {
-            text = Host.sql_col_str!(h, idx)
+            text = Host.sql_row_str(h, tok, idx)
             if text.is_empty() {
                 opened
             } else {

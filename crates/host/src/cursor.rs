@@ -50,6 +50,27 @@ use crate::effects::{checkout_sqlite, decref_list_with, to_rusqlite, PooledSqlit
 use crate::roc_call::roc_str;
 use crate::roc_host;
 
+/// Process-global monotonic row-generation counter (H1). Every advancing
+/// `sql_step_row!` mints a fresh value, so a row token names ONE step event and
+/// nothing else ever carries it — the basis for typing cell reads pure soundly.
+/// Starts at 1; token 0 is the Done sentinel.
+static ROW_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The H1 soundness guard: a pure cell read must present the row token minted by
+/// the `sql_step_row!` that produced the row it reads. A mismatch means the
+/// cursor advanced past that row (a read outlived its step), so the read would
+/// observe different data than the token names — hard-error rather than serve
+/// it silently. Extracted so the guard is unit-testable without the roc runtime.
+#[inline]
+fn require_token(cursor_generation: u64, tok: u64) {
+    if cursor_generation != tok {
+        panic!(
+            "sql_row_str: stale row token {tok} (cursor at generation {cursor_generation}) \
+             — a cell read outlived its step"
+        );
+    }
+}
+
 /// A suspended statement plus the connection and row iterator it borrows.
 /// The three pointers form a self-reference (rows → stmt → conn); they are
 /// dropped in that order and the heap boxes never move.
@@ -59,6 +80,10 @@ struct Cursor {
     /// The current row after a successful `step`, or null before the first
     /// step / after `Done`. Borrows `rows`; replaced on each step.
     current: *const Row<'static>,
+    /// The row-generation token of `current` (H1). `sql_row_str` checks a
+    /// caller's token against this and hard-errors on a mismatch, so a read
+    /// after an advance can never silently serve the new row.
+    generation: u64,
     rows: *mut Rows<'static>,
     stmt: *mut CachedStatement<'static>,
     conn: *mut PooledSqlite,
@@ -261,6 +286,7 @@ fn build_cursor(
     Ok(Cursor {
         columns,
         current: std::ptr::null(),
+        generation: 0,
         rows,
         stmt,
         conn,
@@ -383,6 +409,67 @@ pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
     .unwrap_or_else(|| abi::RocStr::from_slice(&[], host))
 }
 
+/// `Host.sql_step_row! : U64 => Try(U64, Str)` (H1). Advance the cursor and
+/// return a fresh generation TOKEN for the new row (`Ok(0)` = Done). The token
+/// pins the position so cell reads keyed by it are sound to type pure.
+#[unsafe(no_mangle)]
+pub extern "C" fn roc_sql_step_row(handle: u64) -> abi::HostSqlBeginResult {
+    let _t = crate::profile::exec();
+    match with_cursor(handle, |cursor| {
+        // SAFETY: as in `roc_sql_step` — `rows` borrows the live statement; the
+        // row reference is valid until the next step replaces `current`.
+        let rows = unsafe { &mut *cursor.rows };
+        match rows.next() {
+            Ok(Some(row)) => {
+                let token = ROW_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                cursor.current = row as *const Row<'static>;
+                cursor.generation = token;
+                begin_ok(token)
+            }
+            Ok(None) => {
+                cursor.current = std::ptr::null();
+                begin_ok(0)
+            }
+            Err(err) => {
+                cursor.current = std::ptr::null();
+                begin_err(&err.to_string())
+            }
+        }
+    }) {
+        Some(result) => result,
+        None => begin_err("sql_step_row! on an unknown cursor handle"),
+    }
+}
+
+/// `Host.sql_row_str : U64, U64, U64 -> Str` (rung 0 + H1) — the PURE cell read.
+/// `tok` is the row token from `sql_step_row!`. A mismatch against the cursor's
+/// current generation means the cursor has advanced past that row, so the read
+/// would be against different data than the caller's token names: hard-error
+/// (loud beats silently serving the wrong row). `C-unwind` so the panic unwinds
+/// to the router's catch and becomes a 500, like `roc_next_id`.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_sql_row_str(handle: u64, tok: u64, index: u64) -> abi::RocStr {
+    crate::profile::getter();
+    let host = roc_host();
+    match with_cursor(handle, |cursor| {
+        require_token(cursor.generation, tok);
+        if cursor.current.is_null() {
+            return abi::RocStr::from_slice(&[], host);
+        }
+        // SAFETY: token matched, so `current` is the row `tok` names and is live.
+        let row = unsafe { &*cursor.current };
+        match row.get_ref(index as usize) {
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => abi::RocStr::from_slice(b, host),
+            Ok(ValueRef::Integer(n)) => abi::RocStr::from_slice(n.to_string().as_bytes(), host),
+            Ok(ValueRef::Real(f)) => abi::RocStr::from_slice(f.to_string().as_bytes(), host),
+            _ => abi::RocStr::from_slice(&[], host),
+        }
+    }) {
+        Some(s) => s,
+        None => abi::RocStr::from_slice(&[], host),
+    }
+}
+
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {
@@ -497,4 +584,25 @@ fn classify(err: &rusqlite::Error) -> DbError {
         return DbError::Other(detail);
     }
     DbError::Other(err.to_string())
+}
+
+
+#[cfg(test)]
+mod row_token_tests {
+    use super::require_token;
+
+    /// A read presenting the current row's token is accepted.
+    #[test]
+    fn matching_token_is_accepted() {
+        require_token(7, 7);
+    }
+
+    /// A read presenting a token from an earlier step (the cursor has since
+    /// advanced) hard-errors — the H1 read-after-step guard.
+    #[test]
+    #[should_panic(expected = "stale row token")]
+    fn stale_token_after_step_panics() {
+        // cursor stepped on to generation 8; caller still holds token 7.
+        require_token(8, 7);
+    }
 }

@@ -92,6 +92,8 @@ platform ""
         "roc_sql_col_i64": Host.sql_col_i64!,
         "roc_sql_col_f64": Host.sql_col_f64!,
         "roc_sql_col_str": Host.sql_col_str!,
+        "roc_sql_step_row": Host.sql_step_row!,
+        "roc_sql_row_str": Host.sql_row_str,
         "roc_sql_col_blob": Host.sql_col_blob!,
         "roc_sql_finish": Host.sql_finish!,
         "roc_next_id": Host.next_id!,

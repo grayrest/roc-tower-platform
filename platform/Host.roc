@@ -73,6 +73,25 @@ Host := [].{
     ## Column `index` of the current row as Str (NULL and non-text coerce).
     sql_col_str! : U64, U64 => Str
 
+    ## Step a cursor, returning a per-row GENERATION TOKEN (H1). `Ok(0)` means
+    ## Done (no more rows); `Ok(tok)` with `tok > 0` is a live row whose cells
+    ## are read by `sql_row_str` etc. The token is a process-global monotonic
+    ## id, minted fresh on every advancing step, so it names ONE step event and
+    ## nothing else ever carries it. Effectful: it runs the VDBE and advances.
+    sql_step_row! : U64 => Try(U64, Str)
+
+    ## Read column `index` of the row named by `tok` as Str — the PURE
+    ## companion to `sql_col_str!` (rung 0 + H1). It is a genuine function: the
+    ## token identifies a specific step event, and the host hard-errors if the
+    ## cursor has since advanced past it (generation mismatch), so it can never
+    ## silently return a different row's cell. Because `tok` is loop-carried and
+    ## data-dependent on `sql_step_row!`, no optimizer pass can hoist or CSE a
+    ## read across a step — the purity is sound by SSA dataflow, not convention.
+    ## Typed pure (`->`), which trips the `effectful function name` warning on a
+    ## hosted declaration; that is expected until the compiler can express
+    ## deliberate purity (note rung 1).
+    sql_row_str : U64, U64, U64 -> Str
+
     ## Column `index` of the current row as a byte blob.
     sql_col_blob! : U64, U64 => List(U8)
 

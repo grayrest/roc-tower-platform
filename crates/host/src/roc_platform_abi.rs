@@ -2480,6 +2480,26 @@ pub struct HostSqlColStrArgs {
     pub arg1: u64,
 }
 
+/// Arguments for Host.sql_step_row!
+/// Roc signature: U64 => Try(U64, Str)
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlStepRowArgs {
+    pub arg0: u64,
+}
+
+/// Arguments for Host.sql_row_str
+/// Roc signature: U64, U64, U64 -> Str
+/// Refcounted fields are owned by the hosted function.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostSqlRowStrArgs {
+    pub arg0: u64,
+    pub arg1: u64,
+    pub arg2: u64,
+}
+
 /// Arguments for Host.sql_col_blob!
 /// Roc signature: U64, U64 => List(U8)
 /// Refcounted fields are owned by the hosted function.
@@ -2578,6 +2598,9 @@ pub type HostSqlBeginArg0 = AnonStruct81f0667ceb55f2c1;
 pub type HostSqlBeginArg0Params = HostSqlValue;
 pub type HostSqlBeginArg0ParamsPayload = HostSqlValuePayload;
 pub type HostSqlBeginArg0ParamsTag = HostSqlValueTag;
+pub type HostSqlStepRowResult = HostSqlBeginResult;
+pub type HostSqlStepRowResultPayload = HostSqlBeginResultPayload;
+pub type HostSqlStepRowResultTag = HostSqlBeginResultTag;
 pub type AppForHost = AnonStructCb9f69505fcdcfaf;
 pub type AppForHostRoutes = AnonStruct5c679ee432c3d89b;
 pub type AppForHostSettings = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs;
@@ -3635,6 +3658,14 @@ unsafe extern "C" {
     /// Hosted symbol for Host.sql_col_str!
     /// Roc signature: U64, U64 => Str
     pub fn roc_sql_col_str(arg0: u64, arg1: u64) -> RocStr;
+
+    /// Hosted symbol for Host.sql_step_row!
+    /// Roc signature: U64 => Try(U64, Str)
+    pub fn roc_sql_step_row(arg0: u64) -> HostSqlBeginResult;
+
+    /// Hosted symbol for Host.sql_row_str
+    /// Roc signature: U64, U64, U64 -> Str
+    pub fn roc_sql_row_str(arg0: u64, arg1: u64, arg2: u64) -> RocStr;
 
     /// Hosted symbol for Host.sql_col_blob!
     /// Roc signature: U64, U64 => List(U8)
