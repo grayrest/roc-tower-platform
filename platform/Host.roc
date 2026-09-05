@@ -109,6 +109,21 @@ Host := [].{
     ## one-copy sink that replaces the Roc-side `split_on` + per-tag `str_into`.
     sql_col_taglist_json_into : List(U8), U64, U64, U64 -> List(U8)
 
+    ## Fold every remaining row of a cursor into a byte buffer via an INTERNAL
+    ## iterator (H3). Effectful (`=>`): it drives the VDBE. For each row the host
+    ## builds a `List(SqlValue)` whose Text/Blob cells BORROW the live SQLite
+    ## bytes — zero copy, and immortal to Roc (a seamless slice over a static
+    ## refcount, so Roc reads it with native ops but never frees or mutates it) —
+    ## then calls `reducer` with the accumulator and that row. The borrowed row
+    ## is valid ONLY for the duration of that reducer call: it is invalidated by
+    ## the next step, so a cell must not escape into the returned accumulator
+    ## (serializing copies the bytes out, which is the intended use). The reducer
+    ## is genuinely PURE (`->`): it reads the row and returns the grown buffer via
+    ## the ordinary `List(U8)` append path — no behind-the-glue list growth and no
+    ## pure-typed cell reads, the two hacks H1/H2 traded away. `Ok(buffer)` at end
+    ## of rows; `Err(msg)` on a step failure.
+    sql_fold_bytes! : U64, List(U8), Box((List(U8), List(SqlValue) -> List(U8))) => Try(List(U8), Str)
+
     ## Column `index` of the current row as a byte blob.
     sql_col_blob! : U64, U64 => List(U8)
 

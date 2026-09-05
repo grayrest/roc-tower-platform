@@ -742,6 +742,198 @@ pub extern "C-unwind" fn roc_sql_col_taglist_json_into(
     }
 }
 
+// ---------------------------------------------------------------------------
+// H3: internal-iteration fold with borrowed-slice rows.
+//
+// `sql_fold_bytes!` drives the cursor and, for each row, hands a
+// `List(SqlValue)` whose Text/Blob cells BORROW the live SQLite bytes (zero
+// copy, immortal to Roc — see `borrow.rs`) to a PURE reducer that appends into
+// the accumulator via the ordinary Roc `List(U8)` growth path. No generation
+// token is needed: internal iteration bounds the borrow structurally — the row
+// is consumed inside the reducer, before the next step that would invalidate it.
+// This is the variant that trades away BOTH H1/H2 hacks at once: the step is
+// honestly effectful, the reducer honestly pure, and the buffer grows through
+// the supported append path rather than behind the glue.
+// ---------------------------------------------------------------------------
+
+/// The reducer's arguments, in Roc parameter order `(acc, row)`. The
+/// erased-callable ABI consumes both (transfers ownership to the callee) and
+/// writes the new accumulator to the return slot.
+#[repr(C)]
+struct FoldArgs {
+    arg0: abi::RocListWith<u8, false>,
+    arg1: abi::RocList<abi::HostSqlValue>,
+}
+
+/// The outcome of one step, carried out of the `with_cursor` critical section.
+enum FoldStep {
+    Row(abi::RocList<abi::HostSqlValue>),
+    Done,
+    Err(String),
+}
+
+/// Build the current row as a `List(SqlValue)` whose Text/Blob cells borrow the
+/// live SQLite bytes (valid only until the next step). Integer/Real/Null cells
+/// are inline scalars — no allocation; only the spine is allocated (rc=1,
+/// Roc-owned, freed by the reducer's decref).
+fn build_row(
+    row: &Row<'static>,
+    count: usize,
+    host: &abi::RocHost,
+) -> abi::RocList<abi::HostSqlValue> {
+    unsafe {
+        let list = abi::RocList::<abi::HostSqlValue>::allocate(count, host);
+        for index in 0..count {
+            let cell = match row.get_ref(index) {
+                Ok(ValueRef::Text(b)) => abi::HostSqlValue {
+                    payload: abi::HostSqlValuePayload {
+                        text: core::mem::ManuallyDrop::new(crate::borrow::borrowed_str(
+                            b.as_ptr(),
+                            b.len(),
+                        )),
+                    },
+                    tag: abi::HostSqlValueTag::Text,
+                },
+                Ok(ValueRef::Blob(b)) => abi::HostSqlValue {
+                    payload: abi::HostSqlValuePayload {
+                        blob: core::mem::ManuallyDrop::new(crate::borrow::borrowed_bytes(
+                            b.as_ptr(),
+                            b.len(),
+                        )),
+                    },
+                    tag: abi::HostSqlValueTag::Blob,
+                },
+                Ok(ValueRef::Integer(n)) => abi::HostSqlValue {
+                    payload: abi::HostSqlValuePayload {
+                        integer: core::mem::ManuallyDrop::new(n),
+                    },
+                    tag: abi::HostSqlValueTag::Integer,
+                },
+                Ok(ValueRef::Real(f)) => abi::HostSqlValue {
+                    payload: abi::HostSqlValuePayload {
+                        real: core::mem::ManuallyDrop::new(f),
+                    },
+                    tag: abi::HostSqlValueTag::Real,
+                },
+                _ => abi::HostSqlValue {
+                    payload: abi::HostSqlValuePayload { null: [] },
+                    tag: abi::HostSqlValueTag::Null,
+                },
+            };
+            list.elements.add(index).write(cell);
+        }
+        list
+    }
+}
+
+/// Invoke the pure reducer `(acc, row) -> acc` through the erased-callable ABI,
+/// consuming `acc` and `row` and returning the new accumulator. Calling BORROWS
+/// the closure (the same way a route handler is invoked on every request), so
+/// the fold calls it once per row and decrefs it once at the end.
+fn invoke_reducer(
+    reducer: abi::RocErasedCallable,
+    acc: abi::RocListWith<u8, false>,
+    row: abi::RocList<abi::HostSqlValue>,
+    host: &abi::RocHost,
+) -> abi::RocListWith<u8, false> {
+    let args = FoldArgs { arg0: acc, arg1: row };
+    let mut ret = core::mem::MaybeUninit::<abi::RocListWith<u8, false>>::uninit();
+    unsafe {
+        let payload = abi::roc_erased_callable_payload_ptr(reducer);
+        let capture = abi::roc_erased_callable_capture_ptr(reducer);
+        // Same six-argument shape as `call_handler`: host, return slot, args,
+        // capture, then the trailing reuse + descriptor out-params (both null =
+        // decline reuse). Omitting the last two makes the callee decref an
+        // uninitialized register (examples/repro-keepalive/README.md).
+        ((*payload).callable_fn_ptr)(
+            host as *const abi::RocHost as *mut abi::RocHost,
+            ret.as_mut_ptr() as *mut u8,
+            &args as *const FoldArgs as *const u8,
+            capture,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+        );
+        ret.assume_init()
+    }
+}
+
+fn fold_ok(buffer: abi::RocListWith<u8, false>) -> abi::HostSqlFoldBytesResult {
+    abi::HostSqlFoldBytesResult {
+        tag: abi::HostSqlFoldBytesResultTag::Ok,
+        payload: abi::HostSqlFoldBytesResultPayload {
+            ok: core::mem::ManuallyDrop::new(buffer),
+        },
+    }
+}
+
+fn fold_err(message: &str) -> abi::HostSqlFoldBytesResult {
+    abi::HostSqlFoldBytesResult {
+        tag: abi::HostSqlFoldBytesResultTag::Err,
+        payload: abi::HostSqlFoldBytesResultPayload {
+            err: core::mem::ManuallyDrop::new(roc_str(message)),
+        },
+    }
+}
+
+/// `Host.sql_fold_bytes! : U64, List(U8), Box((List(U8), List(SqlValue) -> List(U8))) => Try(List(U8), Str)`.
+/// `C-unwind` so a panic out of the reducer unwinds to the router (→ 500), like
+/// the other cursor calls that re-enter Roc-adjacent code.
+#[unsafe(no_mangle)]
+pub extern "C-unwind" fn roc_sql_fold_bytes(
+    handle: u64,
+    acc: abi::RocListWith<u8, false>,
+    reducer: abi::RocErasedCallable,
+) -> abi::HostSqlFoldBytesResult {
+    let host = roc_host();
+    let mut acc = acc;
+    let result = loop {
+        // Step and build the borrowed row inside one critical section so the
+        // borrowed cell pointers stay valid; the reducer then consumes the row
+        // before the next iteration's step invalidates it.
+        let outcome = with_cursor(handle, |cursor| {
+            let _t = crate::profile::exec();
+            // SAFETY: `rows` borrows the live statement; the row reference is
+            // valid until the next step replaces `current`.
+            let rows = unsafe { &mut *cursor.rows };
+            match rows.next() {
+                Ok(Some(row)) => {
+                    let count = unsafe { &*cursor.stmt }.column_count();
+                    cursor.current = row as *const Row<'static>;
+                    // SAFETY: just set from the live step.
+                    let row_ref = unsafe { &*cursor.current };
+                    FoldStep::Row(build_row(row_ref, count, host))
+                }
+                Ok(None) => {
+                    cursor.current = std::ptr::null();
+                    FoldStep::Done
+                }
+                Err(err) => {
+                    cursor.current = std::ptr::null();
+                    FoldStep::Err(err.to_string())
+                }
+            }
+        });
+        match outcome {
+            None => break Err("sql_fold_bytes! on an unknown cursor handle".to_string()),
+            Some(FoldStep::Done) => break Ok(acc),
+            Some(FoldStep::Err(message)) => break Err(message),
+            Some(FoldStep::Row(row)) => acc = invoke_reducer(reducer, acc, row, host),
+        }
+    };
+    // The fold owns the reducer (a host-owned hosted-fn argument); release it now
+    // that the loop is done, exactly once.
+    unsafe { abi::decref_erased_callable(reducer, host) };
+    match result {
+        Ok(buffer) => fold_ok(buffer),
+        Err(message) => {
+            // `acc` was never transferred into an `Ok`; release it so an error
+            // path doesn't leak the accumulator built so far.
+            unsafe { acc.decref(host) };
+            fold_err(&message)
+        }
+    }
+}
+
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {

@@ -151,6 +151,93 @@ fn empty_list_allocates_nothing() {
 }
 
 // ---------------------------------------------------------------------------
+// Borrowed slices (borrow::borrowed_str) — the zero-copy host-owned-buffer trick.
+// A seamless slice over the shared static (rc==0) backing must read back the
+// borrowed bytes, allocate nothing, and be a no-op under incref/decref so the
+// borrowed buffer is never freed.
+// ---------------------------------------------------------------------------
+
+const BORROWED_TEXT: &[u8] = b"borrowed bytes owned by the host, not by Roc";
+
+#[test]
+fn borrowed_slice_reads_back_without_allocating() {
+    let counters = Counters::default();
+    let _host = counting_host(&counters);
+    let s = unsafe { crate::borrow::borrowed_str(BORROWED_TEXT.as_ptr(), BORROWED_TEXT.len()) };
+    assert!(!s.is_small_str(), "a borrow must be a big string, never SSO");
+    assert!(s.is_seamless_slice(), "a borrow must be tagged a seamless slice");
+    assert_eq!(s.len(), BORROWED_TEXT.len());
+    assert_eq!(s.as_slice(), BORROWED_TEXT);
+    // bytes point straight at the host buffer — no copy was made.
+    assert_eq!(s.as_u8_ptr(), BORROWED_TEXT.as_ptr());
+    assert_eq!(counters.allocs.load(Ordering::SeqCst), 0, "a borrow must not allocate");
+}
+
+#[test]
+fn borrowed_slice_is_immortal_under_refcounting() {
+    let counters = Counters::default();
+    let host = counting_host(&counters);
+    let s = unsafe { crate::borrow::borrowed_str(BORROWED_TEXT.as_ptr(), BORROWED_TEXT.len()) };
+    // rc==0 (static): incref and decref both read the count and do nothing.
+    assert!(s.is_unique(), "static data reports unique");
+    unsafe {
+        s.incref(5);
+        s.decref(&host);
+        s.decref(&host);
+    }
+    assert_eq!(counters.live.load(Ordering::SeqCst), 0, "a borrow must never free anything");
+    assert_eq!(counters.allocs.load(Ordering::SeqCst), 0);
+    // The borrowed buffer is untouched and still readable.
+    assert_eq!(s.as_slice(), BORROWED_TEXT);
+}
+
+#[test]
+fn borrowed_short_cell_is_still_a_big_string() {
+    // A cell shorter than the SSO threshold must NOT become a small string:
+    // we always hand Roc the seamless-slice form so `bytes` keeps pointing at
+    // the host buffer. (The list serializer relies on this for short cells.)
+    let short = b"vue";
+    let s = unsafe { crate::borrow::borrowed_str(short.as_ptr(), short.len()) };
+    assert!(!s.is_small_str());
+    assert!(s.is_seamless_slice());
+    assert_eq!(s.as_slice(), short);
+    assert_eq!(s.as_u8_ptr(), short.as_ptr());
+}
+
+#[test]
+fn borrowed_empty_cell_is_a_small_empty_string() {
+    let s = unsafe { crate::borrow::borrowed_str(BORROWED_TEXT.as_ptr(), 0) };
+    assert!(s.is_empty());
+    assert!(s.is_small_str(), "an empty borrow is the small empty string");
+}
+
+#[test]
+fn borrowed_str_row_spine_frees_only_itself() {
+    // A List(Str) of borrowed cells: the SPINE is a normal refcounted list
+    // allocation Roc owns and frees; its elements are immortal borrows. The
+    // recursive teardown must free exactly one allocation (the spine) and leave
+    // every borrowed buffer alive.
+    let counters = Counters::default();
+    let host = counting_host(&counters);
+    let cells: [&[u8]; 3] = [b"react", b"angular", BORROWED_TEXT];
+    let list = unsafe { abi::RocList::<abi::RocStr>::allocate(cells.len(), &host) };
+    for (index, cell) in cells.iter().enumerate() {
+        unsafe {
+            list.elements
+                .add(index)
+                .write(crate::borrow::borrowed_str(cell.as_ptr(), cell.len()));
+        }
+    }
+    assert_eq!(counters.live.load(Ordering::SeqCst), 1, "only the spine is allocated");
+    // Same recursive teardown the generated decref_list_of_str helper performs.
+    unsafe { list.release_with::<abi::RocStrRelease>(&host) };
+    assert_eq!(counters.live.load(Ordering::SeqCst), 0, "the spine must be freed");
+    assert_eq!(counters.allocs.load(Ordering::SeqCst), 1, "exactly one allocation total");
+    // Borrowed buffers survive the list teardown.
+    assert_eq!(cells[2], BORROWED_TEXT);
+}
+
+// ---------------------------------------------------------------------------
 // Cursor FFI (Host.sql_begin! … sql_finish!).
 // ---------------------------------------------------------------------------
 

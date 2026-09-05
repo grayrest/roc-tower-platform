@@ -10,6 +10,7 @@ mod abi;
 
 mod arena;
 mod body;
+mod borrow;
 mod cache;
 mod db;
 mod config;

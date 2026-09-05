@@ -97,6 +97,7 @@ platform ""
         "roc_sql_col_str_json_into": Host.sql_col_str_json_into,
         "roc_sql_col_nullable_str_json_into": Host.sql_col_nullable_str_json_into,
         "roc_sql_col_taglist_json_into": Host.sql_col_taglist_json_into,
+        "roc_sql_fold_bytes": Host.sql_fold_bytes!,
         "roc_sql_col_blob": Host.sql_col_blob!,
         "roc_sql_finish": Host.sql_finish!,
         "roc_next_id": Host.next_id!,
