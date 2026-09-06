@@ -51,6 +51,20 @@ pub struct Fragment {
     pub sql: String,
 }
 
+/// A `## @row name` directive: analyze a static SELECT's column shape (via the
+/// same EXPLAIN pass as `@sql`) and emit a typed row record + a
+/// `List(Host.SqlValue) -> record` borrowed-cell decoder — WITHOUT a
+/// begin/read/finish query wrapper. For a dynamic query (assembled at runtime
+/// with a fixed column list) fed through the borrowed-slice cursor fold: the
+/// bound SELECT names the columns, the decoder types them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowShape {
+    /// The binding name; becomes the decoder name (`decode_<name>`).
+    pub name: String,
+    /// SQL with fragments already spliced (analyzed for its result columns).
+    pub sql: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Query {
     /// The binding name; becomes the generated function name.
@@ -70,6 +84,7 @@ pub struct Scanned {
     pub fragments: Vec<Fragment>,
     pub queries: Vec<Query>,
     pub readers: Vec<Reader>,
+    pub rows: Vec<RowShape>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +92,7 @@ enum Marker {
     Schema,
     Fragment(String),
     Sql { one: bool },
+    Row(String),
 }
 
 /// Scan one Roc source file's marked items.
@@ -146,6 +162,13 @@ pub fn scan(source: &str) -> Result<Scanned, String> {
                     }
                     scanned.queries.push(Query { name, sql: spliced, one, params });
                 }
+                Marker::Row(row_name) => {
+                    if !params.is_empty() {
+                        return Err(format!("@params is not valid on @row ({row_name})"));
+                    }
+                    let spliced = splice_fragments(&sql, &scanned.fragments)?;
+                    scanned.rows.push(RowShape { name: row_name, sql: spliced });
+                }
             }
             i = next;
             continue;
@@ -175,6 +198,13 @@ fn parse_marker(trimmed: &str) -> Result<Option<Marker>, String> {
         Ok(Some(Marker::Sql { one: true }))
     } else if rest == "sql json" || rest == "sql json one" {
         Err("@sql json was removed — assemble the JSON envelope in Roc from a typed @sql / @sql one query".to_string())
+    } else if let Some(name) = rest.strip_prefix("row") {
+        let name = name.trim();
+        if name.is_empty() {
+            Err("@row requires a name (## @row article_summary)".to_string())
+        } else {
+            Ok(Some(Marker::Row(name.to_string())))
+        }
     } else if rest.starts_with("params") {
         // handled by the caller
         Ok(None)

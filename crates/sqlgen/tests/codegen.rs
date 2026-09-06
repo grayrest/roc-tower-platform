@@ -37,6 +37,10 @@ insert_user =
 
 ## @params username: Str, bio: Str?, following: Bool
 ## @reader profile_row
+
+## @row profile_shape
+profile_shape_select =
+    \\SELECT u.id, u.username, u.bio FROM users u
 "#;
 
 fn scan_ok() -> Scanned {
@@ -178,4 +182,42 @@ fn reader_without_params_is_an_error() {
 ";
     let err = scan(src).unwrap_err();
     assert!(err.contains("needs a preceding @params"), "got: {err}");
+}
+
+#[test]
+fn emits_a_row_decoder_from_the_analyzed_shape() {
+    let module = emit_module("Db", &scan_ok()).expect("emit");
+    // A `@row` analyzes the SELECT's columns (no begin/read/finish wrapper) and
+    // emits a typed record + a List(SqlValue) -> record borrowed-cell decoder.
+    assert!(
+        module.contains(
+            "decode_profile_shape : List(Host.SqlValue) -> { id : I64, username : Str, bio : NullableStr }"
+        ),
+        "row decoder signature missing:\n{module}"
+    );
+    // Cells read positionally from the borrowed row: I64 non-null, Str non-null,
+    // nullable TEXT via the borrowed nullable helper.
+    assert!(module.contains(
+        "decode_profile_shape = |cols| { id: cell_i64(cols, 0), username: cell_str(cols, 1), bio: cell_nullable_str(cols, 2) }"
+    ));
+    // The pure cell helpers are emitted for exactly the kinds used.
+    assert!(module.contains("cell_i64 : List(Host.SqlValue), U64 -> I64"));
+    assert!(module.contains("cell_str : List(Host.SqlValue), U64 -> Str"));
+    assert!(module.contains("cell_nullable_str : List(Host.SqlValue), U64 -> NullableStr"));
+    // ...and NOT the unused ones.
+    assert!(!module.contains("cell_f64 :"), "unused cell_f64 helper emitted");
+    assert!(!module.contains("cell_blob :"), "unused cell_blob helper emitted");
+}
+
+#[test]
+fn row_rejects_params_annotation() {
+    let src = "## @params x: I64\n## @row bad\nbad_select =\n    \\\\SELECT 1\n";
+    let err = scan(src).unwrap_err();
+    assert!(err.contains("@params is not valid on @row"), "got: {err}");
+}
+
+#[test]
+fn row_without_name_is_an_error() {
+    let err = scan("## @row\nx =\n    \\\\SELECT 1\n").unwrap_err();
+    assert!(err.contains("@row requires a name"), "got: {err}");
 }

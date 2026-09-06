@@ -77,7 +77,7 @@ fn generate(dir: &Path, mode: Mode) -> Result<bool, String> {
     // Pass 2: emit a Gen module per file that has queries.
     let mut drift = false;
     for (path, scanned) in &scans {
-        if scanned.queries.is_empty() {
+        if scanned.queries.is_empty() && scanned.rows.is_empty() {
             continue;
         }
         let module = module_name(path);
@@ -86,6 +86,7 @@ fn generate(dir: &Path, mode: Mode) -> Result<bool, String> {
             fragments: scanned.fragments.clone(),
             queries: scanned.queries.clone(),
             readers: scanned.readers.clone(),
+            rows: scanned.rows.clone(),
         };
         let generated = emit::emit_module(&module, &merged)
             .map_err(|e| format!("{}: {e}", path.display()))?;
