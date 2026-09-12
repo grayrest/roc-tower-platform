@@ -1223,7 +1223,7 @@ const _: () = assert!(core::mem::align_of::<AnonStruct81f0667ceb55f2c1>() == 8, 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AnonStruct4bc38282ead38c10 {
-    pub init_bang: *mut c_void,
+    pub init_bang: RocErasedCallable,
     pub routes: RocList<AnonStruct5c679ee432c3d89b>,
     pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>,
 }
@@ -1233,7 +1233,7 @@ pub struct AnonStruct4bc38282ead38c10 {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AnonStruct4bc38282ead38c10 {
-    pub init_bang: *mut c_void,
+    pub init_bang: RocErasedCallable,
     pub routes: RocList<AnonStruct5c679ee432c3d89b>,
     pub settings: RocList<CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs>,
 }
@@ -4394,6 +4394,7 @@ impl AnonStruct4bc38282ead38c10 {
     /// `self` must own one live Roc reference for each refcounted field.
     pub unsafe fn decref(self, roc_host: &RocHost) {
         let value = self;
+        unsafe { decref_erased_callable(value.init_bang, roc_host); }
         unsafe { decref_list_of_anon_struct5c679ee432c3d89b(value.routes, roc_host); }
         unsafe { decref_list_of_compression_or_concurrency_limit_or_cors_allow_origins_or_cors_permissive_or_max_body_bytes_or_port_or_response_cache_or_serve_files_or_timeout_ms(value.settings, roc_host); }
     }
@@ -4405,6 +4406,7 @@ impl AnonStruct4bc38282ead38c10 {
     /// be balanced by later decrefs.
     pub unsafe fn incref(self, amount: isize) {
         let value = self;
+        unsafe { incref_erased_callable(value.init_bang, amount); }
         unsafe { value.routes.incref(amount); }
         unsafe { value.settings.incref(amount); }
     }
