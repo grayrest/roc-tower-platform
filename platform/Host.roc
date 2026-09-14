@@ -163,10 +163,10 @@ Host := [].{
     ## route that never reads the query is unaffected (no drop — fail-safe).
     set_query_key! : U64, U64 => {}
 
-    ## The process-wide random seed for canonical body-key hashing. Seeding
-    ## `to_hash` makes canonical-key collisions non-craftable offline; the
-    ## in-memory cache only needs in-process stability.
-    hash_seed! : () => U64
+    ## The process-wide random SipHash key for canonical body and query keys
+    ## (`Hash.of`). Keyed hashing makes canonical-key collisions non-craftable
+    ## without the key; the in-memory cache only needs in-process stability.
+    hash_seed! : () => { k0 : U64, k1 : U64 }
 
     ## The named request cookie's value for the request ctx (RFC 6265
     ## request-cookie parsing; first match wins). The Cookie header is

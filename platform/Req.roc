@@ -104,14 +104,11 @@ Req := [].{
         } else {
         decoded = result.value
         # Report the CANONICAL body key — the structural hash of the decoded
-        # value (derived `to_hash`, seeded per-process) — so the response
-        # cache keys this route's body variant on what the handler actually
-        # received: two raw spellings of one message (whitespace, key order,
-        # junk fields) share one cached entry instead of minting duplicates.
-        # Hashing goes through the BUILTIN `Hasher.hash_of` (like decoding
-        # goes through `Json.parse`): dispatching `to_hash` directly on the
-        # type variable here fails build-time lowering.
-        Host.set_body_key!(req.ctx, Hasher.hash_of(decoded, Host.hash_seed!()))
+        # value (`Hash.of`, keyed per-process) — so the response cache keys
+        # this route's body variant on what the handler actually received:
+        # two raw spellings of one message (whitespace, key order, junk
+        # fields) share one cached entry instead of minting duplicates.
+        Host.set_body_key!(req.ctx, Hash.of(decoded, Host.hash_seed!()))
         Ok(decoded)
         }
     }
@@ -170,7 +167,7 @@ Req := [].{
             # Report the CANONICAL query key so the response cache collapses raw
             # spellings that decode to the same record (junk params, order) onto
             # one entry — the query analogue of `set_body_key!`.
-            Host.set_query_key!(req.ctx, Hasher.hash_of(result.value, Host.hash_seed!()))
+            Host.set_query_key!(req.ctx, Hash.of(result.value, Host.hash_seed!()))
             Ok(result.value)
         }
     }
@@ -261,6 +258,7 @@ Req := [].{
 }
 
 import Host
+import Hash
 import JsonDec
 import QueryDec
 import Cofx
@@ -473,17 +471,25 @@ expect {
 # (compiler quirk, observed 2026-07-12). Composition over a factory is covered
 # by the realworld example's composed coeffects through the e2e gate.
 
-## the canonical-key idiom: derived to_hash over a record, seeded, finished
+## the canonical-key idiom: a keyed structural hash of the decoded record
 expect {
-    seed : U64
-    seed = 7
-    { id: 1.I64, name: "x" }.to_hash(Hasher.new(seed)).finish() != seed
+    key = { k0: 7, k1: 8 }
+    Hash.of({ id: 1.I64, name: "x" }, key) != Hash.of({ id: 1.I64, name: "y" }, key)
 }
 
 ## equal decoded values produce equal canonical keys regardless of source spelling
 expect {
-    a = { id: 1.I64, title: "t" }.to_hash(Hasher.new(9)).finish()
-    b = { id: 1.I64, title: "t" }.to_hash(Hasher.new(9)).finish()
-    a == b
+    key = { k0: 9, k1: 10 }
+    Hash.of({ id: 1.I64, title: "t" }, key) == Hash.of({ title: "t", id: 1.I64 }, key)
+}
+
+## optional query params (`Try(_, [Missing])`) hash, and absence is part of the key
+expect {
+    key = { k0: 1, k1: 2 }
+    present : { limit : Try(I64, [Missing]) }
+    present = { limit: Ok(5) }
+    absent : { limit : Try(I64, [Missing]) }
+    absent = { limit: Err(Missing) }
+    Hash.of(present, key) != Hash.of(absent, key)
 }
 

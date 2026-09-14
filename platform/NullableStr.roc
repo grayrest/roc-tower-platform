@@ -23,12 +23,17 @@ NullableStr := [Null, Val(Str)].{
         _ => False
     }
 
-    ## The encode hook, typed to the platform's `JsonEnc` (see the note on
-    ## `JsonBool.encoder_for` for why it cannot also serve the builtin).
-    ## Derived record/list encoders pick this up for any `NullableStr` field.
-    encoder_for = |_encoding| |nullable, state| match nullable {
-        Null => JsonEnc.encode_null(state)
-        Val(inner) => JsonEnc.encode_str(inner, state)
+    ## The encode hook, generic over the format: the platform's `JsonEnc`
+    ## writes it as JSON, and `HashFormat` hashes it for the canonical body
+    ## key. Derived record/list encoders pick this up for any `NullableStr` field.
+    encoder_for : enc -> (NullableStr, state -> Try(state, err))
+        where [enc.encode_null : state -> Try(state, err), enc.encode_str : Str, state -> Try(state, err)]
+    encoder_for = |_encoding| {
+        Enc : enc
+        |nullable, state| match nullable {
+            Null => Enc.encode_null(state)
+            Val(inner) => Enc.encode_str(inner, state)
+        }
     }
 
     ## The `Json.parse` hook: JSON `null` decodes to `Null`, a string to

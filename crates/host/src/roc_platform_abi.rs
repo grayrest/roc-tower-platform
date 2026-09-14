@@ -1218,6 +1218,33 @@ const _: () = assert!(core::mem::size_of::<AnonStruct81f0667ceb55f2c1>() == 48, 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::align_of::<AnonStruct81f0667ceb55f2c1>() == 8, "AnonStruct81f0667ceb55f2c1 alignment mismatch");
 
+/// Element type for __AnonStruct_8d42ccdca0e2dcf4
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct8d42ccdca0e2dcf4 {
+    pub k0: u64,
+    pub k1: u64,
+}
+
+/// Element type for __AnonStruct_8d42ccdca0e2dcf4
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AnonStruct8d42ccdca0e2dcf4 {
+    pub k0: u64,
+    pub k1: u64,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<AnonStruct8d42ccdca0e2dcf4>() == 16, "AnonStruct8d42ccdca0e2dcf4 size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<AnonStruct8d42ccdca0e2dcf4>() == 8, "AnonStruct8d42ccdca0e2dcf4 alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<AnonStruct8d42ccdca0e2dcf4>() == 16, "AnonStruct8d42ccdca0e2dcf4 size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<AnonStruct8d42ccdca0e2dcf4>() == 8, "AnonStruct8d42ccdca0e2dcf4 alignment mismatch");
+
 /// Element type for __AnonStruct_4bc38282ead38c10
 #[cfg(target_pointer_width = "32")]
 #[repr(C)]
@@ -3436,6 +3463,35 @@ const _: () = assert!(core::mem::align_of::<InitForHostResult>() == 4, "InitForH
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(core::mem::offset_of!(InitForHostResult, tag) == 12, "InitForHostResult tag offset mismatch");
 
+/// Return type record for Host.hash_seed!
+/// Fields ordered by compiler-emitted ABI offsets.
+#[cfg(target_pointer_width = "32")]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostHashSeedRetRecord {
+    pub k0: u64,
+    pub k1: u64,
+}
+
+/// Return type record for Host.hash_seed!
+/// Fields ordered by compiler-emitted ABI offsets.
+#[cfg(not(target_pointer_width = "32"))]
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HostHashSeedRetRecord {
+    pub k0: u64,
+    pub k1: u64,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::size_of::<HostHashSeedRetRecord>() == 16, "HostHashSeedRetRecord size mismatch");
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(core::mem::align_of::<HostHashSeedRetRecord>() == 8, "HostHashSeedRetRecord alignment mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::size_of::<HostHashSeedRetRecord>() == 16, "HostHashSeedRetRecord size mismatch");
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(core::mem::align_of::<HostHashSeedRetRecord>() == 8, "HostHashSeedRetRecord alignment mismatch");
+
 /// Arguments for Host.log!
 /// Roc signature: Str => {}
 /// Refcounted fields are owned by the hosted function.
@@ -3848,6 +3904,7 @@ pub type HostSqlBeginArg0ParamsTag = HostSqlValueTag;
 pub type HostSqlStepRowResult = HostSqlBeginResult;
 pub type HostSqlStepRowResultPayload = HostSqlBeginResultPayload;
 pub type HostSqlStepRowResultTag = HostSqlBeginResultTag;
+pub type HostHashSeed = AnonStruct8d42ccdca0e2dcf4;
 pub type AppForHost = AnonStructCb9f69505fcdcfaf;
 pub type AppForHostRoutes = AnonStruct5c679ee432c3d89b;
 pub type AppForHostSettings = CompressionOrConcurrencyLimitOrCorsAllowOriginsOrCorsPermissiveOrMaxBodyBytesOrPortOrResponseCacheOrServeFilesOrTimeoutMs;
@@ -4297,6 +4354,37 @@ pub struct HostSqlFoldBytesResultRelease;
 
 unsafe impl RocRelease<HostSqlFoldBytesResult> for HostSqlFoldBytesResultRelease {
     unsafe fn release(value: HostSqlFoldBytesResult, roc_host: &RocHost) {
+        unsafe { value.decref(roc_host); }
+    }
+}
+
+impl AnonStruct8d42ccdca0e2dcf4 {
+    /// Recursively decrement Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must own one live Roc reference for each refcounted field.
+    pub unsafe fn decref(self, roc_host: &RocHost) {
+        let value = self;
+        let _ = value;
+        let _ = roc_host;
+    }
+
+    /// Increment Roc-owned fields.
+    ///
+    /// # Safety
+    /// `self` must point at live Roc allocations. The retained references must
+    /// be balanced by later decrefs.
+    pub unsafe fn incref(self, amount: isize) {
+        let value = self;
+        let _ = value;
+        let _ = amount;
+    }
+}
+
+pub struct AnonStruct8d42ccdca0e2dcf4Release;
+
+unsafe impl RocRelease<AnonStruct8d42ccdca0e2dcf4> for AnonStruct8d42ccdca0e2dcf4Release {
+    unsafe fn release(value: AnonStruct8d42ccdca0e2dcf4, roc_host: &RocHost) {
         unsafe { value.decref(roc_host); }
     }
 }
@@ -5224,8 +5312,8 @@ unsafe extern "C" {
     pub fn roc_set_query_key(arg0: u64, arg1: u64);
 
     /// Hosted symbol for Host.hash_seed!
-    /// Roc signature: {} => U64
-    pub fn roc_hash_seed() -> u64;
+    /// Roc signature: {} => { k0 : U64, k1 : U64 }
+    pub fn roc_hash_seed() -> AnonStruct8d42ccdca0e2dcf4;
 
     /// Hosted symbol for Host.cookie!
     /// Roc signature: U64, Str => Try(Str, [NoCookie])

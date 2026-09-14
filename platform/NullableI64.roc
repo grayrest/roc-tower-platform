@@ -14,11 +14,15 @@ NullableI64 := [Null, Val(I64)].{
         _ => False
     }
 
-    ## The encode hook, typed to the platform's `JsonEnc` (see the note on
-    ## `JsonBool.encoder_for`).
-    encoder_for = |_encoding| |nullable, state| match nullable {
-        Null => JsonEnc.encode_null(state)
-        Val(inner) => JsonEnc.encode_i64(inner, state)
+    ## The encode hook, generic over the format (see `NullableStr.encoder_for`).
+    encoder_for : enc -> (NullableI64, state -> Try(state, err))
+        where [enc.encode_null : state -> Try(state, err), enc.encode_i64 : I64, state -> Try(state, err)]
+    encoder_for = |_encoding| {
+        Enc : enc
+        |nullable, state| match nullable {
+            Null => Enc.encode_null(state)
+            Val(inner) => Enc.encode_i64(inner, state)
+        }
     }
 
     ## The `Json.parse` hook: JSON `null` decodes to `Null`, a number to `Val`.

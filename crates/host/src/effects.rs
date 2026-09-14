@@ -606,14 +606,21 @@ pub extern "C" fn roc_set_query_key(ctx: u64, key: u64) {
     }
 }
 
-/// `Host.hash_seed! : () => U64` — the process-wide random seed for canonical
-/// body-key hashing (collisions not offline-craftable; the in-memory cache
-/// only needs in-process stability).
+/// `Host.hash_seed! : () => { k0 : U64, k1 : U64 }` — the process-wide random
+/// SipHash key for canonical body and query keys (`Hash.of`): collisions are
+/// not craftable without it, and the in-memory cache only needs in-process
+/// stability.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_hash_seed() -> u64 {
-    use std::hash::{BuildHasher, Hasher as _};
-    static SEED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-    *SEED.get_or_init(|| std::collections::hash_map::RandomState::new().build_hasher().finish())
+pub extern "C" fn roc_hash_seed() -> abi::HostHashSeed {
+    static KEY: std::sync::OnceLock<(u64, u64)> = std::sync::OnceLock::new();
+    let (k0, k1) = *KEY.get_or_init(|| {
+        let mut bytes = [0u8; 16];
+        // A failing OS entropy source is not something the app can handle.
+        getrandom::fill(&mut bytes).expect("hash_seed: OS entropy source failed");
+        let (lo, hi) = bytes.split_at(8);
+        (u64::from_le_bytes(lo.try_into().unwrap()), u64::from_le_bytes(hi.try_into().unwrap()))
+    });
+    abi::HostHashSeed { k0, k1 }
 }
 
 /// Release one store-held thunk reference.

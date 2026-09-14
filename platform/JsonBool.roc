@@ -8,12 +8,16 @@
 import JsonEnc
 
 JsonBool := { value : Bool }.{
-    ## The encode hook, typed to the PLATFORM's `JsonEnc` format rather than the
-    ## builtin's. A nominal can serve exactly one encoding: a generic
-    ## `encoder_for` spanning two formats panics the compiler (see
-    ## examples/repro/GenericEncoderTwoFormats.roc), so this deliberately gives
-    ## up `Json.to_str` on `JsonBool` — which is now a clean compile error.
-    encoder_for = |_encoding| |wrapped, state| JsonEnc.encode_bool(wrapped.value, state)
+    ## The encode hook, generic over the format: `JsonEnc` writes it as JSON
+    ## and `HashFormat` hashes it. (A generic `encoder_for` spanning two formats
+    ## used to panic the compiler — examples/repro/GenericEncoderTwoFormats.roc;
+    ## it no longer does on roc 10e922df.)
+    encoder_for : enc -> (JsonBool, state -> Try(state, err))
+        where [enc.encode_bool : Bool, state -> Try(state, err)]
+    encoder_for = |_encoding| {
+        Enc : enc
+        |wrapped, state| Enc.encode_bool(wrapped.value, state)
+    }
 
     ## Wrap a Bool for JSON output.
     from : Bool -> JsonBool
