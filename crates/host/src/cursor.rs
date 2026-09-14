@@ -525,7 +525,7 @@ fn list_reserve(
         // SAFETY: realloc preserves the old bytes, including the rc slot in the
         // first header word; `old_base` is the allocation the arena/glue handed
         // out (`elements - header`).
-        let old_base = unsafe { (out.elements as *mut u8).sub(LIST_HDR) };
+        let old_base = unsafe { out.elements.sub(LIST_HDR) };
         let new_base =
             unsafe { host.realloc(old_base as *mut core::ffi::c_void, LIST_ALIGN, new_total) }
                 as *mut u8;
