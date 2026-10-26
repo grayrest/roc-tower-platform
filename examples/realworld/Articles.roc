@@ -31,15 +31,15 @@ Articles := [].{
         tagList : Try(List(Str), [Missing]),
     }
 
-    routes = |{ prefix, route }| [
-        route("POST", prefix, Articles.create_h!),
-        route("GET", "${prefix}/feed", Articles.feed_h!),
-        route("GET", "${prefix}/{slug}", Articles.get_h!),
-        route("PUT", "${prefix}/{slug}", Articles.update_h!),
-        route("DELETE", "${prefix}/{slug}", Articles.delete_h!),
-        route("GET", prefix, Articles.list_h!),
-        route("POST", "${prefix}/{slug}/favorite", Articles.favorite_h!),
-        route("DELETE", "${prefix}/{slug}/favorite", Articles.unfavorite_h!),
+    routes = |{ prefix }| [
+        Api.route("POST", prefix, Articles.create_h!),
+        Api.route("GET", "${prefix}/feed", Articles.feed_h!),
+        Api.route("GET", "${prefix}/{slug}", Articles.get_h!),
+        Api.route("PUT", "${prefix}/{slug}", Articles.update_h!),
+        Api.route("DELETE", "${prefix}/{slug}", Articles.delete_h!),
+        Api.route("GET", prefix, Articles.list_h!),
+        Api.route("POST", "${prefix}/{slug}/favorite", Articles.favorite_h!),
+        Api.route("DELETE", "${prefix}/{slug}/favorite", Articles.unfavorite_h!),
     ]
 
     ## The author profile a brand-new article/comment shows its creator:

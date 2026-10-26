@@ -11,10 +11,10 @@ import Articles
 ## (comments never need the article body); `withN` slot order gives the
 ## spec's 401 → 404 → 422 precedence.
 Comments := [].{
-    routes = |{ prefix, route }| [
-        route("POST", "${prefix}/{slug}/comments", Comments.add_h!),
-        route("GET", "${prefix}/{slug}/comments", Comments.list_h!),
-        route("DELETE", "${prefix}/{slug}/comments/{id}", Comments.delete_h!),
+    routes = |{ prefix }| [
+        Api.route("POST", "${prefix}/{slug}/comments", Comments.add_h!),
+        Api.route("GET", "${prefix}/{slug}/comments", Comments.list_h!),
+        Api.route("DELETE", "${prefix}/{slug}/comments/{id}", Comments.delete_h!),
     ]
 
     ## Coeffect: the target article's row id — the light existence check,

@@ -1,11 +1,12 @@
 import pf.Res
 import pf.Cofx
 import Db
+import Api
 
 ## Tags: the one read-only listing endpoint (`GET /api/tags`).
 Tags := [].{
-    routes = |{ prefix, route }| [
-        route("GET", prefix, Tags.get_h!),
+    routes = |{ prefix }| [
+        Api.route("GET", prefix, Tags.get_h!),
     ]
 
     ## Coeffect: the tags as a typed `List(Str)` (Roc shapes the envelope).

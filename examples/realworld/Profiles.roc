@@ -2,6 +2,7 @@ import pf.Req
 import pf.Res
 import pf.Cofx
 import pf.JsonBool
+import Api
 import Auth
 import Db
 
@@ -9,10 +10,10 @@ import Db
 ## coeffect (`target!`); follow/unfollow bind it after the auth slot, so
 ## 401 precedes 404.
 Profiles := [].{
-    routes = |{ prefix, route }| [
-        route("GET", "${prefix}/{username}", Profiles.get_h!),
-        route("POST", "${prefix}/{username}/follow", Profiles.follow_h!),
-        route("DELETE", "${prefix}/{username}/follow", Profiles.unfollow_h!),
+    routes = |{ prefix }| [
+        Api.route("GET", "${prefix}/{username}", Profiles.get_h!),
+        Api.route("POST", "${prefix}/{username}/follow", Profiles.follow_h!),
+        Api.route("DELETE", "${prefix}/{username}/follow", Profiles.unfollow_h!),
     ]
 
     ## Coeffect: the {username} profile with its user id (for follow

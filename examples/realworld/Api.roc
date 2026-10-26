@@ -1,8 +1,30 @@
 import pf.Res
+import pf.Req
 
 ## RealWorld API conventions: the `{"errors":{"body":[...]}}` error shape,
 ## ISO-8601 timestamps, and slug generation. Pure helpers only.
 Api := [].{
+    ## The route-table entry builder, with the app's error render baked in.
+    ## Each module calls this DIRECTLY (`Api.route(...)`) rather than receiving
+    ## it as a `route` field, so it stays a generalized top-level value and each
+    ## module instantiates its handler-error union independently — the shared
+    ## record-field form pinned one monomorphic union across all modules.
+    route = |method, path, handler| Req.route(method, path, handler, Api.render)
+
+    ## Render a coeffect rejection to its RealWorld wire response. `Fail(status,
+    ## field, message)` is the app's whole domain-error vocabulary (401/403/404/
+    ## 422 are all field-keyed error envelopes); the platform extractor tags get
+    ## their own branches, and the wildcard catches anything new at 500 without
+    ## leaking internals.
+    render = |error| match error {
+        Fail(status, field, message) => Api.field_error(status, field, message)
+        DbErr(message) => Api.field_error(500, "body", "db error: ${message}")
+        MissingParam(name) => Api.field_error(400, "body", "missing path parameter ${name}")
+        InvalidBody(errors) => Api.field_error(422, "body", Req.explain(errors))
+        InvalidQuery(errors) => Api.field_error(400, "query", Req.explain_query(errors))
+        _ => Api.field_error(500, "body", "internal error")
+    }
+
     ## A field-keyed RealWorld error response: `{"errors":{"<field>":["<message>"]}}`
     ## (the shape the official Hurl conformance suite asserts on, e.g.
     ## `errors.username[0] == "can't be blank"`). The key is dynamic, so the

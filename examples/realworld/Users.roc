@@ -33,11 +33,11 @@ Users := [].{
         image : Try(NullableStr, [Missing]),
     }
 
-    routes = |{ prefix, route }| [
-        route("POST", "${prefix}/users", Users.register_h!),
-        route("POST", "${prefix}/users/login", Users.login_h!),
-        route("GET", "${prefix}/user", Users.current_h!),
-        route("PUT", "${prefix}/user", Users.update_h!),
+    routes = |{ prefix }| [
+        Api.route("POST", "${prefix}/users", Users.register_h!),
+        Api.route("POST", "${prefix}/users/login", Users.login_h!),
+        Api.route("GET", "${prefix}/user", Users.current_h!),
+        Api.route("PUT", "${prefix}/user", Users.update_h!),
     ]
 
     ## The RealWorld user envelope every users endpoint responds with.
