@@ -78,17 +78,33 @@ Effect := [
 
 # --- Tag builders ---
 
-expect Effect.log("hi") == Log("hi")
+# `Effect.Tag` carries `List(Host.SqlValue)` (DbWrite) and the `Effect` nominal
+# carries a `Box(fn)` (Must), so neither has a derived `==` under the current
+# compiler. Match the tag and compare its scalar payload instead.
 
-expect Effect.db_write({ db: "app.db", sql: "INSERT INTO t VALUES (?)", params: [Host.SqlValue.Integer(1)] }) == DbWrite({ db: "app.db", sql: "INSERT INTO t VALUES (?)", params: [Host.SqlValue.Integer(1)] })
+expect {
+    match Effect.log("hi") {
+        Log(message) => message == "hi"
+        _ => False
+    }
+}
+
+expect {
+    match Effect.db_write({ db: "app.db", sql: "INSERT INTO t VALUES (?)", params: [Host.SqlValue.Integer(1)] }) {
+        DbWrite(write) => write.db == "app.db" and write.sql == "INSERT INTO t VALUES (?)"
+        _ => False
+    }
+}
 
 # --- opt: fire-and-forget effect ---
-# Effect carries a Box(fn) in its Must variant, so the union has no `==`;
-# destructure and compare the Tag (which does support `==`).
 
 expect {
     match Effect.opt(Effect.log("done")) {
-        Effect.Opt(tag) => tag == Log("done")
+        Effect.Opt(tag) =>
+            match tag {
+                Log(message) => message == "done"
+                _ => False
+            }
         Effect.Must(_, _) => False
     }
 }

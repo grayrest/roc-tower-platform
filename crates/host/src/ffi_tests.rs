@@ -20,7 +20,7 @@ extern "C" fn counting_alloc(
     host: *mut abi::RocHost,
     length: usize,
     alignment: usize,
-) -> *mut c_void {
+) -> core::ptr::NonNull<c_void> {
     let counters = unsafe { &*((*host).env as *const Counters) };
     counters.live.fetch_add(1, Ordering::SeqCst);
     counters.allocs.fetch_add(1, Ordering::SeqCst);
@@ -38,7 +38,7 @@ extern "C" fn counting_realloc(
     ptr: *mut c_void,
     new_length: usize,
     alignment: usize,
-) -> *mut c_void {
+) -> core::ptr::NonNull<c_void> {
     // Net-zero for live count: one allocation replaces another.
     abi::DefaultAllocators::roc_realloc(host, ptr, new_length, alignment)
 }

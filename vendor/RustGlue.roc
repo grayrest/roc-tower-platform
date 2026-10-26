@@ -1,27 +1,26 @@
 ## A glue script for generating a Rust source file with hosted function bindings.
 app [make_glue] { pf: platform glue }
 
-import pf.Types exposing [Types]
-import pf.File exposing [File]
-import pf.RecordFieldInfo exposing [RecordFieldInfo]
-import pf.TypeRepr exposing [TypeRepr]
-import pf.AbiLayout exposing [AbiLayout]
-import pf.AbiFieldLayout exposing [AbiFieldLayout]
-import pf.AbiTagLayout exposing [AbiTagLayout]
-import pf.AbiWidth exposing [AbiWidth]
-import pf.ArgShape exposing [ArgShape]
-import pf.GlueInput exposing [GlueInput]
-import pf.HostedFunctionInfo exposing [HostedFunctionInfo]
-import pf.TypeNamePlan exposing [TypeNamePlan]
-import pf.FunctionRepr exposing [FunctionRepr]
-import pf.RecordRepr exposing [RecordRepr]
-import pf.TagUnionRepr exposing [TagUnionRepr]
-import pf.RecordField exposing [RecordField]
-import pf.TagVariant exposing [TagVariant]
-import pf.ProvidesEntry exposing [ProvidesEntry]
-import pf.TypeInfo exposing [TypeInfo]
-import pf.TypeTable exposing [TypeTable]
-import pf.RocName exposing [RocName]
+import pf.Types
+import pf.File
+import pf.RecordFieldInfo
+import pf.TypeRepr
+import pf.AbiLayout
+import pf.AbiFieldLayout
+import pf.AbiTagLayout
+import pf.AbiWidth
+import pf.ArgShape
+import pf.GlueInput
+import pf.HostedFunctionInfo
+import pf.TypeNamePlan
+import pf.RecordRepr
+import pf.TagUnionRepr
+import pf.RecordField
+import pf.TagVariant
+import pf.ProvidesEntry
+import pf.TypeInfo
+import pf.TypeTable
+import pf.RocName
 
 make_glue : List(Types) -> Try(List(File), Str)
 make_glue = |types_list| {
@@ -93,7 +92,6 @@ type_repr_to_rust = |type_table, duplicate_names, preferred_names, type_id, type
 		RocBool => "bool"
 		RocBox(inner_id) =>
 			match type_table.get(inner_id) {
-				RocFunction(_) => "RocErasedCallable"
 				RocUnknown(_) => "RocBox"
 				_ => {
 					inner_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, inner_id)
@@ -142,7 +140,7 @@ type_repr_to_rust = |type_table, duplicate_names, preferred_names, type_id, type
 		RocTagUnion(tu) => resolve_tag_union_type_rust(type_table, duplicate_names, preferred_names, type_id, tu)
 		# A function stored inside a value is one erased-callable allocation,
 		# exactly like `Box(fn)`.
-		RocFunction(_) => "RocErasedCallable"
+		RocErasedCallable(_) => "RocErasedCallable"
 		RocUnknown(_) => "*mut c_void"
 	}
 }
@@ -431,8 +429,8 @@ type_name_roots_rust = |hosted_functions, provides_list, type_table| {
 		base = name_to_struct_name(entry.name)
 		module_base = hosted_module_name_to_struct_name(entry.name)
 
-		match type_table.get(entry.type_id) {
-			RocFunction(func) => {
+		match entry.exported {
+			ProvidedProcedure(func) => {
 				var $arg_idx = 0
 				for arg_type_id in func.args {
 					arg_fallback = "${base}Arg${U64.to_str($arg_idx)}"
@@ -450,11 +448,11 @@ type_name_roots_rust = |hosted_functions, provides_list, type_table| {
 					type_id: func.ret,
 				})
 			}
-			_ => {
+			ProvidedData(type_id) => {
 				$roots = $roots.append({
-					alias_base: type_name_root_alias_base_rust(type_table, base, entry.type_id),
+					alias_base: type_name_root_alias_base_rust(type_table, base, type_id),
 					module_base,
-					type_id: entry.type_id,
+					type_id,
 				})
 			}
 		}
@@ -520,8 +518,8 @@ type_alias_roots_rust = |hosted_functions, provides_list, type_table| {
 		base = name_to_struct_name(entry.name)
 		module_base = hosted_module_name_to_struct_name(entry.name)
 
-		match type_table.get(entry.type_id) {
-			RocFunction(func) => {
+		match entry.exported {
+			ProvidedProcedure(func) => {
 				var $arg_idx = 0
 				for arg_type_id in func.args {
 					arg_fallback = "${base}Arg${U64.to_str($arg_idx)}"
@@ -531,8 +529,8 @@ type_alias_roots_rust = |hosted_functions, provides_list, type_table| {
 
 				$roots = append_type_alias_roots_rust($roots, type_table, base, module_base, func.ret, [])
 			}
-			_ => {
-				$roots = append_type_alias_roots_rust($roots, type_table, base, module_base, entry.type_id, [])
+			ProvidedData(type_id) => {
+				$roots = append_type_alias_roots_rust($roots, type_table, base, module_base, type_id, [])
 			}
 		}
 	}
@@ -931,6 +929,7 @@ generate_rust_file_header =
 generate_rust_imports : Str
 generate_rust_imports =
 	\\use core::ffi::c_void;
+	\\use core::ptr::NonNull;
 	\\use core::sync::atomic::{fence, AtomicIsize, Ordering};
 	\\#[cfg(not(no_roc_std_helpers))]
 	\\use std::alloc::Layout;
@@ -1029,9 +1028,11 @@ generate_host_abi_types_rust =
 	\\#[repr(C)]
 	\\pub struct RocHost {
 	\\    pub env: *mut c_void,
-	\\    pub roc_alloc: extern "C" fn(*mut RocHost, usize, usize) -> *mut c_void,
+	\\    /// Never returns null; see `roc_alloc` below.
+	\\    pub roc_alloc: extern "C" fn(*mut RocHost, usize, usize) -> NonNull<c_void>,
 	\\    pub roc_dealloc: extern "C" fn(*mut RocHost, *mut c_void, usize),
-	\\    pub roc_realloc: extern "C" fn(*mut RocHost, *mut c_void, usize, usize) -> *mut c_void,
+	\\    /// Never returns null; see `roc_realloc` below.
+	\\    pub roc_realloc: extern "C" fn(*mut RocHost, *mut c_void, usize, usize) -> NonNull<c_void>,
 	\\    pub roc_dbg: extern "C" fn(*mut RocHost, *const u8, usize),
 	\\    pub roc_expect_failed: extern "C" fn(*mut RocHost, *const u8, usize),
 	\\    pub roc_crashed: extern "C" fn(*mut RocHost, *const u8, usize),
@@ -1046,7 +1047,7 @@ generate_host_abi_types_rust =
 	\\    #[inline]
 	\\    pub unsafe fn alloc(&self, alignment: usize, length: usize) -> *mut c_void {
 	\\        let host = self as *const RocHost as *mut RocHost;
-	\\        (self.roc_alloc)(host, length, alignment)
+	\\        (self.roc_alloc)(host, length, alignment).as_ptr()
 	\\    }
 	\\
 	\\    /// Deallocate memory previously allocated with `alloc`.
@@ -1073,7 +1074,7 @@ generate_host_abi_types_rust =
 	\\        new_length: usize,
 	\\    ) -> *mut c_void {
 	\\        let host = self as *const RocHost as *mut RocHost;
-	\\        (self.roc_realloc)(host, old_ptr, new_length, alignment)
+	\\        (self.roc_realloc)(host, old_ptr, new_length, alignment).as_ptr()
 	\\    }
 	\\}
 	\\
@@ -2330,7 +2331,6 @@ release_policy_for_type_id_rust = |type_table, duplicate_names, preferred_names,
 			}
 		RocBox(inner_id) =>
 			match type_table.get(inner_id) {
-				RocFunction(_) => "RocErasedCallableRelease"
 				RocUnknown(_) => ""
 				_ => {
 					inner_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, inner_id)
@@ -2365,7 +2365,7 @@ release_policy_for_type_id_rust = |type_table, duplicate_names, preferred_names,
 						"${tag_union_struct_name(preferred_names, duplicate_names, type_id, tu)}Release"
 					}
 				}
-		RocFunction(_) => "RocErasedCallableRelease"
+		RocErasedCallable(_) => "RocErasedCallableRelease"
 		_ => ""
 	}
 }
@@ -2380,7 +2380,6 @@ type_ident_rust = |type_table, duplicate_names, preferred_names, type_id|
 		RocList(elem_id) => "list_of_${type_ident_rust(type_table, duplicate_names, preferred_names, elem_id)}"
 		RocBox(inner_id) =>
 			match type_table.get(inner_id) {
-				RocFunction(_) => "erased_callable"
 				_ => "box_of_${type_ident_rust(type_table, duplicate_names, preferred_names, inner_id)}"
 			}
 		RocRecord(rec) =>
@@ -2404,7 +2403,7 @@ type_ident_rust = |type_table, duplicate_names, preferred_names, type_id|
 						"type${U64.to_str(type_id)}"
 					}
 				}
-		RocFunction(_) => "erased_callable"
+		RocErasedCallable(_) => "erased_callable"
 		_ => "type${U64.to_str(type_id)}"
 	}
 
@@ -2438,7 +2437,6 @@ decref_stmt_for_repr_rust = |type_table, duplicate_names, preferred_names, _type
 		}
 		RocBox(inner_id) =>
 			match type_table.get(inner_id) {
-				RocFunction(_) => "    unsafe { decref_erased_callable(${expr}, roc_host); }\n"
 				_ => {
 					inner_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, inner_id)
 					if inner_rust == "RocBox" or inner_rust == "*mut c_void" {
@@ -2467,7 +2465,7 @@ decref_stmt_for_repr_rust = |type_table, duplicate_names, preferred_names, _type
 						""
 					}
 				}
-		RocFunction(_) => "    unsafe { decref_erased_callable(${expr}, roc_host); }\n"
+		RocErasedCallable(_) => "    unsafe { decref_erased_callable(${expr}, roc_host); }\n"
 		_ => ""
 	}
 }
@@ -2485,7 +2483,6 @@ incref_stmt_for_repr_rust = |type_table, duplicate_names, preferred_names, _type
 		RocList(_) => "    unsafe { ${expr}.incref(amount); }\n"
 		RocBox(inner_id) =>
 			match type_table.get(inner_id) {
-				RocFunction(_) => "    unsafe { incref_erased_callable(${expr}, amount); }\n"
 				_ => "    unsafe { incref_box(${expr} as RocBox, amount); }\n"
 			}
 		RocRecord(rec) =>
@@ -2505,7 +2502,7 @@ incref_stmt_for_repr_rust = |type_table, duplicate_names, preferred_names, _type
 						""
 					}
 				}
-		RocFunction(_) => "    unsafe { incref_erased_callable(${expr}, amount); }\n"
+		RocErasedCallable(_) => "    unsafe { incref_erased_callable(${expr}, amount); }\n"
 		_ => ""
 	}
 }
@@ -2708,7 +2705,6 @@ generate_box_payload_decref_helpers_rust = |type_table, duplicate_names, preferr
 				if !(List.contains($seen_inner_ids, inner_id)) {
 					$seen_inner_ids = $seen_inner_ids.append(inner_id)
 					match type_table.get(inner_id) {
-						RocFunction(_) => {}
 						_ => {
 							inner_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, inner_id)
 							if inner_rust != "RocBox" and inner_rust != "*mut c_void" and is_type_refcounted(type_table, inner_id) {
@@ -2845,15 +2841,21 @@ generate_runtime_symbol_externs_rust =
 	\\
 	\\#[allow(improper_ctypes)]
 	\\unsafe extern "C" {
-	\\    pub fn roc_alloc(length: usize, alignment: usize) -> *mut c_void;
+	\\    /// Returns `length` bytes aligned to `alignment`. Never returns null: Roc writes through
+	\\    /// the result without checking it, so a host that cannot allocate must stop the Roc
+	\\    /// program and not return, exactly as `roc_crashed` does.
+	\\    pub fn roc_alloc(length: usize, alignment: usize) -> NonNull<c_void>;
 	\\    pub fn roc_dealloc(ptr: *mut c_void, alignment: usize);
-	\\    pub fn roc_realloc(ptr: *mut c_void, new_length: usize, alignment: usize) -> *mut c_void;
+	\\    /// Never returns null, under the same rule as `roc_alloc`.
+	\\    pub fn roc_realloc(ptr: *mut c_void, new_length: usize, alignment: usize) -> NonNull<c_void>;
 	\\    pub fn roc_dbg(bytes: *const u8, len: usize);
 	\\    pub fn roc_expect_failed(bytes: *const u8, len: usize);
+	\\    /// Must never return: end the process. Roc code traps right after this
+	\\    /// call, so returning terminates the process.
 	\\    pub fn roc_crashed(bytes: *const u8, len: usize);
 	\\}
 	\\
-	\\extern "C" fn direct_roc_alloc(_host: *mut RocHost, length: usize, alignment: usize) -> *mut c_void {
+	\\extern "C" fn direct_roc_alloc(_host: *mut RocHost, length: usize, alignment: usize) -> NonNull<c_void> {
 	\\    unsafe { roc_alloc(length, alignment) }
 	\\}
 	\\
@@ -2861,7 +2863,7 @@ generate_runtime_symbol_externs_rust =
 	\\    unsafe { roc_dealloc(ptr, alignment); }
 	\\}
 	\\
-	\\extern "C" fn direct_roc_realloc(_host: *mut RocHost, ptr: *mut c_void, new_length: usize, alignment: usize) -> *mut c_void {
+	\\extern "C" fn direct_roc_realloc(_host: *mut RocHost, ptr: *mut c_void, new_length: usize, alignment: usize) -> NonNull<c_void> {
 	\\    unsafe { roc_realloc(ptr, new_length, alignment) }
 	\\}
 	\\
@@ -2967,10 +2969,10 @@ hosted_ownership_doc_rust = |type_table, duplicate_names, preferred_names, func|
 	Str.concat(arg_doc, ret_doc)
 }
 
-generate_provided_decl_rust : ProvidesEntry, TypeTable, List(Str), TypeNamePlan.PreferredNames, TypeRepr -> Str
-generate_provided_decl_rust = |entry, type_table, duplicate_names, preferred_names, type_repr| {
-	match type_repr {
-		RocFunction(func) => {
+generate_provided_decl_rust : ProvidesEntry, TypeTable, List(Str), TypeNamePlan.PreferredNames -> Str
+generate_provided_decl_rust = |entry, type_table, duplicate_names, preferred_names| {
+	match entry.exported {
+		ProvidedProcedure(func) => {
 			params = direct_param_list_rust(type_table, duplicate_names, preferred_names, func.args)
 			ret_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, func.ret)
 			ret_suffix = if ret_rust == "()" {
@@ -2980,17 +2982,17 @@ generate_provided_decl_rust = |entry, type_table, duplicate_names, preferred_nam
 			}
 			"    /// Entrypoint: ${entry.name}\n    pub fn ${entry.ffi_symbol}(${params})${ret_suffix};\n\n"
 		}
-		_ => {
-			value_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, entry.type_id)
+		ProvidedData(type_id) => {
+			value_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, type_id)
 			"    /// Static provided value: ${entry.name}\n    pub static ${entry.ffi_symbol}: ${value_rust};\n\n"
 		}
 	}
 }
 
-generate_provided_owned_wrapper_rust : ProvidesEntry, TypeTable, List(Str), TypeNamePlan.PreferredNames, TypeRepr -> Str
-generate_provided_owned_wrapper_rust = |entry, type_table, duplicate_names, preferred_names, type_repr| {
-	match type_repr {
-		RocFunction(func) => {
+generate_provided_owned_wrapper_rust : ProvidesEntry, TypeTable, List(Str), TypeNamePlan.PreferredNames -> Str
+generate_provided_owned_wrapper_rust = |entry, type_table, duplicate_names, preferred_names| {
+	match entry.exported {
+		ProvidedProcedure(func) => {
 			if !is_type_refcounted(type_table, func.ret) {
 				return ""
 			}
@@ -3005,7 +3007,7 @@ generate_provided_owned_wrapper_rust = |entry, type_table, duplicate_names, pref
 			ret_rust = type_id_to_rust(type_table, duplicate_names, preferred_names, func.ret)
 			"const _: () = assert!(core::mem::size_of::<RocOwned<${ret_rust}, ${policy}>>() == core::mem::size_of::<${ret_rust}>(), \"${entry.ffi_symbol} owned result size mismatch\");\nconst _: () = assert!(core::mem::align_of::<RocOwned<${ret_rust}, ${policy}>>() == core::mem::align_of::<${ret_rust}>(), \"${entry.ffi_symbol} owned result alignment mismatch\");\n\n/// Owning wrapper for `${entry.ffi_symbol}`. The returned value is recursively\n/// released on Drop with no runtime descriptor or extra storage.\n///\n/// # Safety\n/// The raw entrypoint and its arguments must satisfy the generated host ABI.\npub unsafe fn ${entry.ffi_symbol}_owned(${params}) -> RocOwned<${ret_rust}, ${policy}> {\n    let value = unsafe { ${entry.ffi_symbol}(${args}) };\n    unsafe { RocOwned::from_raw(value) }\n}\n\n"
 		}
-		_ => ""
+		ProvidedData(_) => ""
 	}
 }
 
@@ -3020,9 +3022,8 @@ generate_entrypoint_externs_rust = |provides_list, type_table, duplicate_names, 
 	var $wrappers = ""
 
 	for entry in provides_list {
-		type_repr = type_table.get(entry.type_id)
-		$result = Str.concat($result, generate_provided_decl_rust(entry, type_table, duplicate_names, preferred_names, type_repr))
-		$wrappers = Str.concat($wrappers, generate_provided_owned_wrapper_rust(entry, type_table, duplicate_names, preferred_names, type_repr))
+		$result = Str.concat($result, generate_provided_decl_rust(entry, type_table, duplicate_names, preferred_names))
+		$wrappers = Str.concat($wrappers, generate_provided_owned_wrapper_rust(entry, type_table, duplicate_names, preferred_names))
 	}
 
 	Str.concat(Str.concat($result, "}\n\n"), $wrappers)
@@ -3053,7 +3054,7 @@ generate_default_allocators_direct_rust =
 	\\#[cfg(not(no_roc_std_helpers))]
 	\\impl DefaultAllocators {
 	\\    /// Allocate memory using the Rust global allocator.
-	\\    pub extern "C" fn roc_alloc(_roc_host: *mut RocHost, length: usize, alignment: usize) -> *mut c_void {
+	\\    pub extern "C" fn roc_alloc(_roc_host: *mut RocHost, length: usize, alignment: usize) -> NonNull<c_void> {
 	\\        unsafe {
 	\\            let min_alignment = alignment.max(core::mem::align_of::<usize>());
 	\\            let size_storage_bytes = min_alignment;
@@ -3070,7 +3071,7 @@ generate_default_allocators_direct_rust =
 	\\            let size_ptr = base_ptr.add(size_storage_bytes).sub(core::mem::size_of::<usize>()) as *mut usize;
 	\\            *size_ptr = total_size;
 	\\
-	\\            base_ptr.add(size_storage_bytes) as *mut c_void
+	\\            NonNull::new_unchecked(base_ptr.add(size_storage_bytes) as *mut c_void)
 	\\        }
 	\\    }
 	\\
@@ -3091,7 +3092,7 @@ generate_default_allocators_direct_rust =
 	\\    }
 	\\
 	\\    /// Reallocate memory, preserving existing user data.
-	\\    pub extern "C" fn roc_realloc(_roc_host: *mut RocHost, ptr: *mut c_void, new_length: usize, alignment: usize) -> *mut c_void {
+	\\    pub extern "C" fn roc_realloc(_roc_host: *mut RocHost, ptr: *mut c_void, new_length: usize, alignment: usize) -> NonNull<c_void> {
 	\\        unsafe {
 	\\            let min_alignment = alignment.max(core::mem::align_of::<usize>());
 	\\            let size_storage_bytes = min_alignment;
@@ -3112,7 +3113,7 @@ generate_default_allocators_direct_rust =
 	\\            let new_user_ptr = new_base_ptr.add(size_storage_bytes);
 	\\            let new_size_ptr = new_user_ptr.sub(core::mem::size_of::<usize>()) as *mut usize;
 	\\            *new_size_ptr = new_total_size;
-	\\            new_user_ptr as *mut c_void
+	\\            NonNull::new_unchecked(new_user_ptr as *mut c_void)
 	\\        }
 	\\    }
 	\\}

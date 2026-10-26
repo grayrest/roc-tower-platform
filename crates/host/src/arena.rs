@@ -459,7 +459,7 @@ pub fn roc_alloc(length: usize, alignment: usize) -> *mut c_void {
     if let Some(ptr) = with_current(|arena| arena.and_then(|a| a.try_alloc(length, alignment))) {
         return ptr;
     }
-    abi::DefaultAllocators::roc_alloc(core::ptr::null_mut(), length, alignment)
+    abi::DefaultAllocators::roc_alloc(core::ptr::null_mut(), length, alignment).as_ptr()
 }
 
 /// Arena-aware `roc_dealloc`. Arena pointers are a no-op (bulk-freed at arena
@@ -502,7 +502,8 @@ pub unsafe fn roc_realloc(
             ptr,
             new_length,
             alignment,
-        );
+        )
+        .as_ptr();
     }
 
     let hs = header_size(alignment);
@@ -531,7 +532,8 @@ pub unsafe fn roc_realloc(
     // move to a fresh global block with a plain header. The old arena block is
     // abandoned and reclaimed at arena drop.
     let dst =
-        abi::DefaultAllocators::roc_alloc(core::ptr::null_mut(), new_length, alignment) as *mut u8;
+        abi::DefaultAllocators::roc_alloc(core::ptr::null_mut(), new_length, alignment).as_ptr()
+            as *mut u8;
     // SAFETY: `dst` is a fresh `new_length` allocation; `ptr` holds `old_length`
     // readable bytes; the blocks are distinct.
     unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, dst, copy_len) };
@@ -548,8 +550,9 @@ pub extern "C" fn host_alloc(
     _host: *mut abi::RocHost,
     length: usize,
     alignment: usize,
-) -> *mut c_void {
-    roc_alloc(length, alignment)
+) -> core::ptr::NonNull<c_void> {
+    // `roc_alloc` aborts on OOM, so the result is never null.
+    unsafe { core::ptr::NonNull::new_unchecked(roc_alloc(length, alignment)) }
 }
 
 pub extern "C" fn host_dealloc(_host: *mut abi::RocHost, ptr: *mut c_void, alignment: usize) {
@@ -562,9 +565,10 @@ pub extern "C" fn host_realloc(
     ptr: *mut c_void,
     new_length: usize,
     alignment: usize,
-) -> *mut c_void {
-    // SAFETY: forwarded from a host helper that allocated `ptr` via `host_alloc`.
-    unsafe { roc_realloc(ptr, new_length, alignment) }
+) -> core::ptr::NonNull<c_void> {
+    // SAFETY: forwarded from a host helper that allocated `ptr` via `host_alloc`;
+    // `roc_realloc` aborts on OOM, so the result is never null.
+    unsafe { core::ptr::NonNull::new_unchecked(roc_realloc(ptr, new_length, alignment)) }
 }
 
 #[cfg(test)]

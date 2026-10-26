@@ -15,6 +15,9 @@
 ## acquisition (`query!`/`exec!`) is effectful. This is the dynamic/hand-written
 ## layer — generated readers (sqlgen) skip the `Sql.Row` materialization and
 ## read cells positionally straight into records.
+import Host
+import NullableStr
+
 Sql := [].{
     # NOTE: decode failures are the OPEN union `[NoColumn(Str),
     # TypeMismatch(Str), ..]`, written inline in every decoder signature
@@ -136,9 +139,6 @@ Sql := [].{
         Ok(row)
     }
 }
-
-import Host
-import NullableStr
 
 # --- module-private effectful cursor helpers ---
 #
