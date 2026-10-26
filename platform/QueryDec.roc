@@ -20,12 +20,12 @@ QueryDec := [Default].{
 
     ## The parked value as text, percent-decoded on demand. Never a type error
     ## (any string is a valid Str), so this never accumulates.
-    parse_str : QueryDec, QueryState -> Try({ value : Str, rest : QueryState }, [InvalidJson(Str), ..])
+    parse_str : QueryDec, QueryState -> Try({ value : Str, rest : QueryState }, [InvalidJson(Str)])
     parse_str = |_, state| Ok({ value: percent_decode(state.value), rest: state })
 
     ## The parked value as I64. A non-integer records `InvalidField` and
     ## fabricates 0 so later fields still parse.
-    parse_i64 : QueryDec, QueryState -> Try({ value : I64, rest : QueryState }, [InvalidJson(Str), ..])
+    parse_i64 : QueryDec, QueryState -> Try({ value : I64, rest : QueryState }, [InvalidJson(Str)])
     parse_i64 = |_, state| {
         decoded = percent_decode(state.value)
         match I64.from_str(decoded) {
@@ -38,7 +38,7 @@ QueryDec := [Default].{
     }
 
     ## A query has no opening delimiter, so the walk is always Uncounted.
-    parse_record_start : QueryDec, QueryState -> Try([Counted({ len : U64, rest : QueryState }), Uncounted(QueryState)], [InvalidJson(Str), ..])
+    parse_record_start : QueryDec, QueryState -> Try([Counted({ len : U64, rest : QueryState }), Uncounted(QueryState)], [InvalidJson(Str)])
     parse_record_start = |_, state| Ok(Uncounted(state))
 
     ## Take the next `name=value` pair, name it to the driver, and park the raw
@@ -53,7 +53,7 @@ QueryDec := [Default].{
             Continue(QueryState),
             Done(QueryState),
         ],
-        [InvalidJson(Str), ..],
+        [InvalidJson(Str)],
     )
     parse_record_field = |_, _fields, state| {
         if state.remaining.is_empty() {
@@ -66,14 +66,14 @@ QueryDec := [Default].{
     }
 
     ## Each pair carries its own `&`, already consumed by `take_segment`.
-    parse_record_after_field : QueryDec, QueryState -> Try([Continue(QueryState), Done(QueryState)], [InvalidJson(Str), ..])
+    parse_record_after_field : QueryDec, QueryState -> Try([Continue(QueryState), Done(QueryState)], [InvalidJson(Str)])
     parse_record_after_field = |_, state| Ok(Continue(state))
 
     ## An undemanded pair: its value was already lifted out of `remaining`.
-    skip_record_field : QueryDec, QueryState -> Try(QueryState, [InvalidJson(Str), ..])
+    skip_record_field : QueryDec, QueryState -> Try(QueryState, [InvalidJson(Str)])
     skip_record_field = |_, state| Ok(state)
 
-    invalid_value : QueryDec, QueryState -> [InvalidJson(Str), ..]
+    invalid_value : QueryDec, QueryState -> [InvalidJson(Str)]
     invalid_value = |_, _state| InvalidJson("invalid query value")
 
     ## Decode `raw` into the caller's inferred/annotated query record, returning

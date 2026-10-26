@@ -13,3 +13,6 @@
 # macOS sysroot for the turso host link (machine-specific SDK symlinks); create
 # with `just turso-sysroot`.
 /platform/targets/macos-sysroot
+
+# Example build artifacts (per-example linked binary)
+examples/*/main

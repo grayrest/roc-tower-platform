@@ -40,7 +40,7 @@ Auth := [].{
 
     ## Pure: decode the user columns (id, email, username, bio, image),
     ## attaching the token that proved them. Shared with the login flow.
-    decode_user : Sql.Row, Str -> Try(Auth.User, [NoColumn(Str), TypeMismatch(Str), ..])
+    decode_user : Sql.Row, Str -> Try(Auth.User, [NoColumn(Str), TypeMismatch(Str)])
     decode_user = |row, token| Ok({
         id: row.i64("id")?,
         email: row.str("email")?,

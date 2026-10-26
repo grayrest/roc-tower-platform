@@ -37,7 +37,7 @@ FieldsEncoding := [Default].{
     rename_field : FieldsEncoding, Str -> Str
     rename_field = |_, name| name
 
-    parse_record_start : FieldsEncoding, FieldsState -> Try([Counted({ len : U64, rest : FieldsState }), Uncounted(FieldsState)], [CollectedFields(List(Str)), ..])
+    parse_record_start : FieldsEncoding, FieldsState -> Try([Counted({ len : U64, rest : FieldsState }), Uncounted(FieldsState)], [CollectedFields(List(Str))])
     parse_record_start = |_, state| Ok(Uncounted(state))
 
     ## The whole mechanism: read every demanded name off `FieldNames` and FAIL
@@ -52,7 +52,7 @@ FieldsEncoding := [Default].{
             Continue(FieldsState),
             Done(FieldsState),
         ],
-        [CollectedFields(List(Str)), ..],
+        [CollectedFields(List(Str))],
     )
     parse_record_field = |_, fields, _state| {
         names = Encoding.FieldName.FieldNames.iter(fields)
@@ -60,21 +60,21 @@ FieldsEncoding := [Default].{
         Err(CollectedFields(names))
     }
 
-    parse_record_after_field : FieldsEncoding, FieldsState -> Try([Continue(FieldsState), Done(FieldsState)], [CollectedFields(List(Str)), ..])
+    parse_record_after_field : FieldsEncoding, FieldsState -> Try([Continue(FieldsState), Done(FieldsState)], [CollectedFields(List(Str))])
     parse_record_after_field = |_, state| Ok(Done(state))
 
-    skip_record_field : FieldsEncoding, FieldsState -> Try(FieldsState, [CollectedFields(List(Str)), ..])
+    skip_record_field : FieldsEncoding, FieldsState -> Try(FieldsState, [CollectedFields(List(Str))])
     skip_record_field = |_, state| Ok(state)
 
     ## Scalars are never reached (the walk fails at the first field), but the
     ## derive needs them present for a record of these field types.
-    parse_str : FieldsEncoding, FieldsState -> Try({ value : Str, rest : FieldsState }, [CollectedFields(List(Str)), ..])
+    parse_str : FieldsEncoding, FieldsState -> Try({ value : Str, rest : FieldsState }, [CollectedFields(List(Str))])
     parse_str = |_, state| Ok({ value: "", rest: state })
 
-    parse_i64 : FieldsEncoding, FieldsState -> Try({ value : I64, rest : FieldsState }, [CollectedFields(List(Str)), ..])
+    parse_i64 : FieldsEncoding, FieldsState -> Try({ value : I64, rest : FieldsState }, [CollectedFields(List(Str))])
     parse_i64 = |_, state| Ok({ value: 0, rest: state })
 
-    invalid_value : FieldsEncoding, FieldsState -> [CollectedFields(List(Str)), ..]
+    invalid_value : FieldsEncoding, FieldsState -> [CollectedFields(List(Str))]
     invalid_value = |_, _state| CollectedFields([])
 }
 

@@ -29,7 +29,7 @@ Req := [].{
 
     ## Body bytes as UTF-8 text. (The body is not a request-record field —
     ## get the bytes from the `body!` coeffect / `Host.request_body!`.)
-    body_str : List(U8) -> Try(Str, [InvalidUtf8, ..])
+    body_str : List(U8) -> Try(Str, [InvalidUtf8])
     body_str = |bytes| {
         text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         Ok(text)
@@ -45,7 +45,7 @@ Req := [].{
     }
 
     ## Parse application/x-www-form-urlencoded body bytes.
-    form : List(U8) -> Try(List({ name : Str, value : Str }), [InvalidUtf8, ..])
+    form : List(U8) -> Try(List({ name : Str, value : Str }), [InvalidUtf8])
     form = |bytes| {
         text = Str.from_utf8(bytes) ? |_| InvalidUtf8
         Ok(parse_pairs(text))

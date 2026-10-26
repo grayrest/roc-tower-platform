@@ -27,7 +27,7 @@ JsonDec := [Default].{
     ## return a fabricated "" so the parse continues and later mismatches also
     ## accumulate. The fabricated value never escapes — the caller rejects on a
     ## non-empty `errors` before any handler runs.
-    parse_str : JsonDec, JsonDecState -> Try({ value : Str, rest : JsonDecState }, [InvalidJson(Str), ..])
+    parse_str : JsonDec, JsonDecState -> Try({ value : Str, rest : JsonDecState }, [InvalidJson(Str)])
     parse_str = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "\"") {
@@ -43,7 +43,7 @@ JsonDec := [Default].{
     ## JSON `null`. Used by `NullableStr`, which tries this first and falls back
     ## to `parse_str`; so a FAILURE here must be a plain `Err` (no error
     ## recorded) to let that fallback run.
-    parse_null : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str), ..])
+    parse_null : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str)])
     parse_null = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "null") {
@@ -56,7 +56,7 @@ JsonDec := [Default].{
     ## A JSON number as I64. Reads the bare scalar and parses it. A
     ## non-numeric value is a mismatch: record `InvalidField`, consume, and
     ## fabricate 0 — the same accumulation contract as `parse_str`.
-    parse_i64 : JsonDec, JsonDecState -> Try({ value : I64, rest : JsonDecState }, [InvalidJson(Str), ..])
+    parse_i64 : JsonDec, JsonDecState -> Try({ value : I64, rest : JsonDecState }, [InvalidJson(Str)])
     parse_i64 = |_, state| {
         trimmed = skip_ws(state.input)
         token = take_scalar(trimmed)
@@ -70,7 +70,7 @@ JsonDec := [Default].{
     }
 
     ## A JSON number as U64, same contract as `parse_i64`.
-    parse_u64 : JsonDec, JsonDecState -> Try({ value : U64, rest : JsonDecState }, [InvalidJson(Str), ..])
+    parse_u64 : JsonDec, JsonDecState -> Try({ value : U64, rest : JsonDecState }, [InvalidJson(Str)])
     parse_u64 = |_, state| {
         trimmed = skip_ws(state.input)
         token = take_scalar(trimmed)
@@ -84,7 +84,7 @@ JsonDec := [Default].{
     }
 
     ## An object opens with `{`. No count is knowable up front, so Uncounted.
-    parse_record_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str), ..])
+    parse_record_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str)])
     parse_record_start = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "{") {
@@ -107,7 +107,7 @@ JsonDec := [Default].{
             Continue(JsonDecState),
             Done(JsonDecState),
         ],
-        [InvalidJson(Str), ..],
+        [InvalidJson(Str)],
     )
     parse_record_field = |_, _fields, state| {
         trimmed = skip_ws(state.input)
@@ -129,7 +129,7 @@ JsonDec := [Default].{
 
     ## After a value, a `,` continues and `}` ends. The comma is consumed here
     ## so the next `parse_record_field` starts on a key.
-    parse_record_after_field : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str), ..])
+    parse_record_after_field : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str)])
     parse_record_after_field = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, ",") {
@@ -142,11 +142,11 @@ JsonDec := [Default].{
     }
 
     ## An undemanded field's value — consume one JSON value and move on.
-    skip_record_field : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str), ..])
+    skip_record_field : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str)])
     skip_record_field = |_, state| Ok(with_input(state, skip_value(skip_ws(state.input))))
 
     ## A JSON array opens with `[`.
-    parse_list_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str), ..])
+    parse_list_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str)])
     parse_list_start = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "[") {
@@ -157,7 +157,7 @@ JsonDec := [Default].{
     }
 
     ## Before each element: `]` ends the array, otherwise an Item follows.
-    parse_list_next : JsonDec, JsonDecState -> Try([Item(JsonDecState), Done(JsonDecState)], [InvalidJson(Str), ..])
+    parse_list_next : JsonDec, JsonDecState -> Try([Item(JsonDecState), Done(JsonDecState)], [InvalidJson(Str)])
     parse_list_next = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "]") {
@@ -168,7 +168,7 @@ JsonDec := [Default].{
     }
 
     ## After an element: `,` continues, `]` ends.
-    parse_list_after_item : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str), ..])
+    parse_list_after_item : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str)])
     parse_list_after_item = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, ",") {
@@ -180,7 +180,7 @@ JsonDec := [Default].{
         }
     }
 
-    invalid_value : JsonDec, JsonDecState -> [InvalidJson(Str), ..]
+    invalid_value : JsonDec, JsonDecState -> [InvalidJson(Str)]
     invalid_value = |_, _state| InvalidJson("invalid JSON value")
 
     ## Decode `text` into whatever shape the caller's annotation/accesses fix,
@@ -233,7 +233,7 @@ drop_ws_bytes = |bytes, i| {
 ## Internal: read a `"..."` JSON string (assumes input starts with `"`),
 ## decoding escapes, returning the value and the remaining text after the
 ## closing quote.
-take_json_string : Str -> Try({ value : Str, rest : Str }, [InvalidJson(Str), ..])
+take_json_string : Str -> Try({ value : Str, rest : Str }, [InvalidJson(Str)])
 take_json_string = |s| {
     bytes = s.to_utf8()
     # skip the opening quote (byte 0)
@@ -241,7 +241,7 @@ take_json_string = |s| {
 }
 
 ## Internal: the escape-aware scan. `out` accumulates decoded bytes.
-scan_string : List(U8), U64, List(U8) -> Try({ value : Str, rest : Str }, [InvalidJson(Str), ..])
+scan_string : List(U8), U64, List(U8) -> Try({ value : Str, rest : Str }, [InvalidJson(Str)])
 scan_string = |bytes, i, out| {
     match bytes.get(i) {
         Err(_) => Err(InvalidJson("unterminated string"))
@@ -262,7 +262,7 @@ scan_string = |bytes, i, out| {
 
 ## Internal: decode one escape sequence starting just after the backslash.
 ## Returns the decoded bytes and the index just past the sequence.
-decode_escape : List(U8), U64 -> Try({ bytes : List(U8), next : U64 }, [InvalidJson(Str), ..])
+decode_escape : List(U8), U64 -> Try({ bytes : List(U8), next : U64 }, [InvalidJson(Str)])
 decode_escape = |bytes, i| {
     match bytes.get(i) {
         Err(_) => Err(InvalidJson("unterminated escape"))
@@ -293,7 +293,7 @@ decode_escape = |bytes, i| {
 
 ## Internal: decode a `\uXXXX` escape (i points at the first hex digit),
 ## emitting UTF-8 bytes for the code point.
-decode_unicode_escape : List(U8), U64 -> Try({ bytes : List(U8), next : U64 }, [InvalidJson(Str), ..])
+decode_unicode_escape : List(U8), U64 -> Try({ bytes : List(U8), next : U64 }, [InvalidJson(Str)])
 decode_unicode_escape = |bytes, i| {
     h0 = hex_at(bytes, i)?
     h1 = hex_at(bytes, i + 1)?
@@ -304,7 +304,7 @@ decode_unicode_escape = |bytes, i| {
 }
 
 ## Internal: one hex digit's value at index i.
-hex_at : List(U8), U64 -> Try(U8, [InvalidJson(Str), ..])
+hex_at : List(U8), U64 -> Try(U8, [InvalidJson(Str)])
 hex_at = |bytes, i| match bytes.get(i) {
     Err(_) => Err(InvalidJson("truncated \\u escape"))
     Ok(b) =>

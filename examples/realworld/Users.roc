@@ -199,7 +199,7 @@ Users := [].{
 
 ## Internal: NIST 800-63B minimum (the spec's stated policy): at least 8
 ## chars; blankness is reported first, as its own message.
-valid_password : Str -> Try(Str, [Fail(U16, Str, Str), ..])
+valid_password : Str -> Try(Str, [Fail(U16, Str, Str)])
 valid_password = |password| {
     checked = Api.nonblank("password", password)?
     if checked.count_utf8_bytes() < 8 {

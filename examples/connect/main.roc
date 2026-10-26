@@ -163,7 +163,7 @@ delete_book = |request| {
 
 # --- module-private helpers --------------------------------------------------
 
-decode_book : Sql.Row -> Try(Book, [NoColumn(Str), TypeMismatch(Str), ..])
+decode_book : Sql.Row -> Try(Book, [NoColumn(Str), TypeMismatch(Str)])
 decode_book = |row| Ok({
     id: row.i64("id")?,
     title: row.str("title")?,
@@ -174,7 +174,7 @@ decode_book = |row| Ok({
 ## Decode every row, short-circuiting on the first failure. Folds over a `Try`
 ## accumulator — a form that used to crash the compiler's codegen but builds
 ## since the 2026-07-16 upstream update (see the compiler-bug note).
-decode_books : List(Sql.Row) -> Try(List(Book), [NoColumn(Str), TypeMismatch(Str), ..])
+decode_books : List(Sql.Row) -> Try(List(Book), [NoColumn(Str), TypeMismatch(Str)])
 decode_books = |rows|
     rows.fold(Ok([]), |acc, row|
         match acc {

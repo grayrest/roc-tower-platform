@@ -198,7 +198,7 @@ Db := [].{
     ## straight off the cursor, never materializing the 20 ArticleSummary records
     ## or their ~200 string fields. Each cell is read, written to the buffer, and
     ## dropped in place. Returns the response body bytes for `Res.bytes`.
-    stream_list! : U64, Str, I64, { tag : Str, author : Str, favorited : Str, limit : I64, offset : I64 } => Try(List(U8), [Fail(U16, Str, Str), ..])
+    stream_list! : U64, Str, I64, { tag : Str, author : Str, favorited : Str, limit : I64, offset : I64 } => Try(List(U8), [Fail(U16, Str, Str)])
     stream_list! = |ctx, db, viewer, filters| {
         parts = Db.list_query_parts(filters)
         is_anon = viewer == 0
@@ -210,7 +210,7 @@ Db := [].{
     }
 
     ## STREAMING feed encoder — same, over the feed page SQL.
-    stream_feed! : U64, Str, I64, I64, I64 => Try(List(U8), [Fail(U16, Str, Str), ..])
+    stream_feed! : U64, Str, I64, I64, I64 => Try(List(U8), [Fail(U16, Str, Str)])
     stream_feed! = |ctx, db, viewer, limit, offset| {
         page_sql = "${article_summary_select}${Db.feed_where} ORDER BY a.id DESC LIMIT ? OFFSET ?"
         page_params = [Integer(viewer), Integer(viewer), Integer(limit), Integer(offset)]
@@ -357,7 +357,7 @@ article_summary_select_anon =
 
 ## Open the page cursor, stream every row into the articles array, then read
 ## the count and close the envelope.
-stream_page! : U64, Str, Str, List(Host.SqlValue), Str, List(Host.SqlValue) => Try(List(U8), [Fail(U16, Str, Str), ..])
+stream_page! : U64, Str, Str, List(Host.SqlValue), Str, List(Host.SqlValue) => Try(List(U8), [Fail(U16, Str, Str)])
 stream_page! = |ctx, db, page_sql, page_params, count_sql, count_params| {
     handle = Host.sql_begin!({ ctx: ctx, db: db, sql: page_sql, params: page_params }) ? |m| Fail(500.U16, "body", m)
     # On a mid-stream error the request tears down and the host sweeps this
@@ -371,7 +371,7 @@ stream_page! = |ctx, db, page_sql, page_params, count_sql, count_params| {
 }
 
 ## Step the cursor, append each article object (comma-separated), recurse.
-stream_rows! : U64, List(U8), Bool => Try(List(U8), [Fail(U16, Str, Str), ..])
+stream_rows! : U64, List(U8), Bool => Try(List(U8), [Fail(U16, Str, Str)])
 stream_rows! = |handle, out, first| {
     # `sql_step_row!` advances the cursor and returns a fresh generation TOKEN
     # for the new row (0 = Done). Threading that token into the PURE
