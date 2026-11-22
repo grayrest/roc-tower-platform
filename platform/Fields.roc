@@ -18,7 +18,7 @@ Fields := [].{
     ## feeds — e.g. `cols = Fields.of(phantom)` where `phantom : Meta`.
     of : a -> List(Str)
         where [
-            a.parser_for : FieldsEncoding -> (FieldsState -> Try({ value : a, rest : FieldsState }, [CollectedFields(List(Str)), ..errs])),
+            a.parser_for : FieldsEncoding -> (FieldsState -> Try({ value : a, rest : FieldsState }, [CollectedFields(List(Str))])),
         ]
     of = |_phantom| {
         Shape : a
@@ -34,6 +34,12 @@ Fields := [].{
 ## parser's shape; the real work is in `parse_record_field`, which never lets
 ## the driver get past the first field.
 FieldsEncoding := [Default].{
+    ## Required by the derive for any record with required fields. Never
+    ## reached: `parse_record_field` fails before the driver can notice a field
+    ## is absent. An empty collection matches `invalid_value`.
+    missing_field : FieldsEncoding, Str -> [CollectedFields(List(Str))]
+    missing_field = |_, _name| CollectedFields([])
+
     rename_field : FieldsEncoding, Str -> Str
     rename_field = |_, name| name
 

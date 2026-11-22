@@ -136,9 +136,10 @@ Req := [].{
     ## encoder cannot produce), where an embedded `"` would break the body.
     ##
     ## The union is written INLINE and OPEN rather than as `Json.ParseErr`:
-    ## the builtin dropped that alias, and `Json.parse` now fails with the
-    ## bare open union `[InvalidJson(Str), ..errs]` (`MissingRequiredField`
-    ## comes from the generated record driver). Open is also what lets a
+    ## the builtin dropped that alias. Each format owns its error type, and
+    ## `JsonDec`/`QueryDec` fail with `[InvalidJson(Str), MissingRequiredField(Str)]`
+    ## (`MissingRequiredField` is built by their `missing_field` method when the
+    ## record driver finds a required field absent). Open is what lets a
     ## caller's own tags merge, the same contract as `Sql`'s decoders.
     explain : List([MissingRequiredField(Str), InvalidField(Str, Str), InvalidJson(Str), ..]) -> Str
     explain = |errors| {

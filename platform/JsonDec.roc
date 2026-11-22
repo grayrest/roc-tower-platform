@@ -18,6 +18,12 @@
 ## implemented; a body decoding one is a COMPILE error naming the missing
 ## method, which is the signal to extend this deliberately.
 JsonDec := [Default].{
+    ## The format owns its error type, so the derived record driver asks it to
+    ## build the error for an absent required field. It short-circuits the
+    ## parse with the field's name, distinct from a malformed-JSON failure.
+    missing_field : JsonDec, Str -> [InvalidJson(Str), MissingRequiredField(Str)]
+    missing_field = |_, name| MissingRequiredField(name)
+
     ## Field names arrive from the wire unchanged.
     rename_field : JsonDec, Str -> Str
     rename_field = |_, name| name
@@ -27,7 +33,7 @@ JsonDec := [Default].{
     ## return a fabricated "" so the parse continues and later mismatches also
     ## accumulate. The fabricated value never escapes — the caller rejects on a
     ## non-empty `errors` before any handler runs.
-    parse_str : JsonDec, JsonDecState -> Try({ value : Str, rest : JsonDecState }, [InvalidJson(Str)])
+    parse_str : JsonDec, JsonDecState -> Try({ value : Str, rest : JsonDecState }, [InvalidJson(Str), MissingRequiredField(Str)])
     parse_str = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "\"") {
@@ -43,7 +49,7 @@ JsonDec := [Default].{
     ## JSON `null`. Used by `NullableStr`, which tries this first and falls back
     ## to `parse_str`; so a FAILURE here must be a plain `Err` (no error
     ## recorded) to let that fallback run.
-    parse_null : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str)])
+    parse_null : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str), MissingRequiredField(Str)])
     parse_null = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "null") {
@@ -56,7 +62,7 @@ JsonDec := [Default].{
     ## A JSON number as I64. Reads the bare scalar and parses it. A
     ## non-numeric value is a mismatch: record `InvalidField`, consume, and
     ## fabricate 0 — the same accumulation contract as `parse_str`.
-    parse_i64 : JsonDec, JsonDecState -> Try({ value : I64, rest : JsonDecState }, [InvalidJson(Str)])
+    parse_i64 : JsonDec, JsonDecState -> Try({ value : I64, rest : JsonDecState }, [InvalidJson(Str), MissingRequiredField(Str)])
     parse_i64 = |_, state| {
         trimmed = skip_ws(state.input)
         token = take_scalar(trimmed)
@@ -70,7 +76,7 @@ JsonDec := [Default].{
     }
 
     ## A JSON number as U64, same contract as `parse_i64`.
-    parse_u64 : JsonDec, JsonDecState -> Try({ value : U64, rest : JsonDecState }, [InvalidJson(Str)])
+    parse_u64 : JsonDec, JsonDecState -> Try({ value : U64, rest : JsonDecState }, [InvalidJson(Str), MissingRequiredField(Str)])
     parse_u64 = |_, state| {
         trimmed = skip_ws(state.input)
         token = take_scalar(trimmed)
@@ -84,7 +90,7 @@ JsonDec := [Default].{
     }
 
     ## An object opens with `{`. No count is knowable up front, so Uncounted.
-    parse_record_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str)])
+    parse_record_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str), MissingRequiredField(Str)])
     parse_record_start = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "{") {
@@ -107,7 +113,7 @@ JsonDec := [Default].{
             Continue(JsonDecState),
             Done(JsonDecState),
         ],
-        [InvalidJson(Str)],
+        [InvalidJson(Str), MissingRequiredField(Str)],
     )
     parse_record_field = |_, _fields, state| {
         trimmed = skip_ws(state.input)
@@ -129,7 +135,7 @@ JsonDec := [Default].{
 
     ## After a value, a `,` continues and `}` ends. The comma is consumed here
     ## so the next `parse_record_field` starts on a key.
-    parse_record_after_field : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str)])
+    parse_record_after_field : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str), MissingRequiredField(Str)])
     parse_record_after_field = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, ",") {
@@ -142,11 +148,11 @@ JsonDec := [Default].{
     }
 
     ## An undemanded field's value — consume one JSON value and move on.
-    skip_record_field : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str)])
+    skip_record_field : JsonDec, JsonDecState -> Try(JsonDecState, [InvalidJson(Str), MissingRequiredField(Str)])
     skip_record_field = |_, state| Ok(with_input(state, skip_value(skip_ws(state.input))))
 
     ## A JSON array opens with `[`.
-    parse_list_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str)])
+    parse_list_start : JsonDec, JsonDecState -> Try([Counted({ len : U64, rest : JsonDecState }), Uncounted(JsonDecState)], [InvalidJson(Str), MissingRequiredField(Str)])
     parse_list_start = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "[") {
@@ -157,7 +163,7 @@ JsonDec := [Default].{
     }
 
     ## Before each element: `]` ends the array, otherwise an Item follows.
-    parse_list_next : JsonDec, JsonDecState -> Try([Item(JsonDecState), Done(JsonDecState)], [InvalidJson(Str)])
+    parse_list_next : JsonDec, JsonDecState -> Try([Item(JsonDecState), Done(JsonDecState)], [InvalidJson(Str), MissingRequiredField(Str)])
     parse_list_next = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, "]") {
@@ -168,7 +174,7 @@ JsonDec := [Default].{
     }
 
     ## After an element: `,` continues, `]` ends.
-    parse_list_after_item : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str)])
+    parse_list_after_item : JsonDec, JsonDecState -> Try([Continue(JsonDecState), Done(JsonDecState)], [InvalidJson(Str), MissingRequiredField(Str)])
     parse_list_after_item = |_, state| {
         trimmed = skip_ws(state.input)
         if Str.starts_with(trimmed, ",") {
@@ -180,7 +186,7 @@ JsonDec := [Default].{
         }
     }
 
-    invalid_value : JsonDec, JsonDecState -> [InvalidJson(Str)]
+    invalid_value : JsonDec, JsonDecState -> [InvalidJson(Str), MissingRequiredField(Str)]
     invalid_value = |_, _state| InvalidJson("invalid JSON value")
 
     ## Decode `text` into whatever shape the caller's annotation/accesses fix,
@@ -188,9 +194,9 @@ JsonDec := [Default].{
     ## failure (malformed JSON, an absent required field) short-circuits
     ## through the driver's `Err`; a type mismatch on a present field lands in
     ## `errors` with the value fabricated.
-    parse : Str -> Try({ value : a, errors : List([InvalidField(Str, Str), InvalidJson(Str), MissingRequiredField(Str)]) }, [InvalidJson(Str), MissingRequiredField(Str), ..errs])
+    parse : Str -> Try({ value : a, errors : List([InvalidField(Str, Str), InvalidJson(Str), MissingRequiredField(Str)]) }, [InvalidJson(Str), MissingRequiredField(Str)])
         where [
-            a.parser_for : JsonDec -> (JsonDecState -> Try({ value : a, rest : JsonDecState }, [InvalidJson(Str), MissingRequiredField(Str), ..errs])),
+            a.parser_for : JsonDec -> (JsonDecState -> Try({ value : a, rest : JsonDecState }, [InvalidJson(Str), MissingRequiredField(Str)])),
         ]
     parse = |text| {
         Shape : a
