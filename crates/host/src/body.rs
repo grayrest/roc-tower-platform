@@ -37,10 +37,10 @@ const MAX_ARENA_TO_BODY_RATIO: usize = 32;
 /// hyper stream straight out of arena memory with no copy. `Bytes::from_owner`
 /// keeps this alive until the body has been fully written.
 pub struct RocBodyOwner {
-    /// Declared before `arena`: `Drop::drop` decrefs the list (a no-op for
-    /// arena bytes; the real free for a cap-fallback global body) while the
-    /// arena is still mapped, and the arena reference releases only afterward.
-    body: abi::RocListWith<u8, false>,
+    /// Declared before `arena`: fields drop in order, so the list is released
+    /// (a no-op for arena bytes; the real free for a cap-fallback global body)
+    /// while the arena is still mapped, and the arena reference only afterward.
+    body: abi::RocList<u8>,
     /// Kept solely to hold the backing region mapped for the body's lifetime;
     /// never read directly.
     #[allow(dead_code)]
@@ -48,11 +48,6 @@ pub struct RocBodyOwner {
     /// Arena bytes this owner added to the in-flight gauge, subtracted on drop.
     held_bytes: usize,
 }
-
-// SAFETY: the body list is an owned Roc reference (atomic refcounts) into memory
-// kept alive by `arena`; nothing aliases it mutably. The raw element pointer is
-// only ever read as bytes.
-unsafe impl Send for RocBodyOwner {}
 
 impl AsRef<[u8]> for RocBodyOwner {
     fn as_ref(&self) -> &[u8] {
@@ -62,9 +57,6 @@ impl AsRef<[u8]> for RocBodyOwner {
 
 impl Drop for RocBodyOwner {
     fn drop(&mut self) {
-        // SAFETY: this owner holds exactly one reference to `body`; the response
-        // struct's copy was neutralized before its recursive decref (roc_call).
-        unsafe { self.body.decref(crate::roc_host()) };
         IN_FLIGHT_ARENA_BYTES.fetch_sub(self.held_bytes, Ordering::Relaxed);
     }
 }
@@ -80,13 +72,9 @@ pub enum ResponseBody {
 impl ResponseBody {
     /// Take ownership of a handler's response body list. Borrows it zero-copy
     /// from the arena when that is worthwhile and within the in-flight budget;
-    /// otherwise copies the bytes and releases the list immediately.
-    ///
-    /// # Safety
-    /// `body` must be a live, singly-owned Roc list whose bytes live in `arena`
-    /// (or in a global cap-fallback block), and whose reference this call takes
-    /// over (the caller must have neutralized any other copy of it).
-    pub unsafe fn from_roc(body: abi::RocListWith<u8, false>, arena: Arc<RequestArena>) -> Self {
+    /// otherwise copies the bytes and releases the list immediately. `arena`
+    /// is the arena the list's bytes were bumped from, if they were.
+    pub fn from_roc(body: abi::RocList<u8>, arena: Arc<RequestArena>) -> Self {
         let body_len = body.as_slice().len();
         let reserved = arena.reserved_bytes();
         let would_pin = IN_FLIGHT_ARENA_BYTES.load(Ordering::Relaxed) + reserved;
@@ -95,10 +83,7 @@ impl ResponseBody {
             && would_pin <= MAX_IN_FLIGHT_ARENA_BYTES;
 
         if !worth_borrowing {
-            let copy = body.as_slice().to_vec();
-            // SAFETY: caller transferred the sole reference to `body`.
-            unsafe { body.decref(crate::roc_host()) };
-            return ResponseBody::Copied(copy);
+            return ResponseBody::Copied(body.as_slice().to_vec());
         }
 
         IN_FLIGHT_ARENA_BYTES.fetch_add(reserved, Ordering::Relaxed);
@@ -173,13 +158,12 @@ impl Body for AppBody {
 mod tests {
     use super::*;
     use crate::arena::test_serial;
-    use crate::roc_host;
 
     /// Build a Roc `List(U8)` of `len` bytes (0,1,2,… mod 256) through the
     /// (arena-routed) host allocator, returning the list and the expected bytes.
-    fn arena_body(len: usize) -> (abi::RocListWith<u8, false>, Vec<u8>) {
+    fn arena_body(len: usize) -> (abi::RocList<u8>, Vec<u8>) {
         let data: Vec<u8> = (0..len).map(|i| i as u8).collect();
-        let list = unsafe { abi::RocListWith::<u8, false>::from_slice(&data, roc_host()) };
+        let list = abi::RocList::from_slice(&data);
         (list, data)
     }
 
@@ -191,7 +175,7 @@ mod tests {
         crate::arena::install(arena.clone());
         // A body large relative to the arena's single chunk stays zero-copy.
         let (list, data) = arena_body(32 * 1024);
-        let body = unsafe { ResponseBody::from_roc(list, arena.clone()) };
+        let body = ResponseBody::from_roc(list, arena.clone());
         assert!(matches!(body, ResponseBody::Roc(_)), "large arena body should borrow");
         assert!(IN_FLIGHT_ARENA_BYTES.load(Ordering::Relaxed) > 0, "gauge should reflect the pin");
         let bytes = body.into_bytes();
@@ -207,7 +191,7 @@ mod tests {
         let arena = RequestArena::new();
         crate::arena::install(arena.clone());
         let (list, data) = arena_body(16); // tiny vs a 64 KiB chunk -> copy
-        let body = unsafe { ResponseBody::from_roc(list, arena.clone()) };
+        let body = ResponseBody::from_roc(list, arena.clone());
         assert!(matches!(body, ResponseBody::Copied(_)), "tiny body should copy");
         assert_eq!(IN_FLIGHT_ARENA_BYTES.load(Ordering::Relaxed), 0, "copy must not pin the arena");
         assert_eq!(body.into_bytes().as_ref(), data.as_slice());
@@ -220,7 +204,7 @@ mod tests {
         let arena = RequestArena::new();
         crate::arena::install(arena.clone());
         let (list, _) = arena_body(0);
-        let body = unsafe { ResponseBody::from_roc(list, arena.clone()) };
+        let body = ResponseBody::from_roc(list, arena.clone());
         assert!(matches!(body, ResponseBody::Copied(_)));
         assert!(body.into_bytes().is_empty());
         crate::arena::uninstall();
@@ -245,18 +229,12 @@ mod tests {
             crate::arena::roc_alloc(64 * 1024, 8);
         }
         // Large enough (relative to the ~5 MiB of exhausted arena) to stay on the
-        // zero-copy borrow path even though its bytes are a global block — the
-        // exact case where a stray response.decref would double-free.
+        // zero-copy borrow path even though its bytes are a global block, which
+        // the owner must then free exactly once.
         let (list, data) = arena_body(256 * 1024);
 
-        // Handler path: take the list by Copy, neutralize the response's field.
-        let body_list = list;
-        let neutralized = abi::RocListWith::<u8, false>::empty();
-
-        let body = unsafe { ResponseBody::from_roc(body_list, arena.clone()) };
+        let body = ResponseBody::from_roc(list, arena.clone());
         assert!(matches!(body, ResponseBody::Roc(_)), "large global body should still borrow");
-        // response.decref would touch only the neutralized (empty) field: no-op.
-        unsafe { neutralized.decref(roc_host()) };
 
         let bytes = body.into_bytes();
         assert_eq!(bytes.as_ref(), data.as_slice());
@@ -278,7 +256,7 @@ mod tests {
         let arena = RequestArena::new();
         crate::arena::install(arena.clone());
         let (list, _) = arena_body(32 * 1024);
-        let body = unsafe { ResponseBody::from_roc(list, arena.clone()) };
+        let body = ResponseBody::from_roc(list, arena.clone());
         assert!(matches!(body, ResponseBody::Roc(_)), "test needs the borrow path");
         let ctx = crate::effects::mint_ctx(arena.clone(), bytes::Bytes::new(), Vec::new());
         crate::arena::uninstall();

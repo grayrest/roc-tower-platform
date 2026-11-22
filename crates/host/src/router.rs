@@ -16,7 +16,9 @@ use tower_http::services::ServeDir;
 use crate::body::{AppBody, BoxError};
 use crate::middleware::ReqBody;
 use crate::config::{LoadedApp, ServeFilesConfig};
-use crate::roc_call::{call_handler, RequestParts, RocHandler, RocModel};
+use crate::abi;
+use crate::roc_call::{call_handler, RequestParts};
+use crate::types::RocHandler;
 
 pub struct RocRouter {
     inner: Arc<RouterInner>,
@@ -32,7 +34,9 @@ impl Clone for RocRouter {
 
 struct RouterInner {
     routers: HashMap<Method, matchit::Router<RocHandler>>,
-    model: RocModel,
+    /// The app's Model. Only Roc can release it; each request hands Roc one
+    /// retained reference.
+    model: abi::RocOpaqueBox,
     max_body_bytes: usize,
     serve_files: Option<ServeFilesMount>,
 }
@@ -43,13 +47,13 @@ struct ServeFilesMount {
 }
 
 impl RocRouter {
-    pub fn new(app: &LoadedApp, model: RocModel) -> Result<Self, String> {
+    pub fn new(app: &LoadedApp, model: abi::RocOpaqueBox) -> Result<Self, String> {
         let mut routers: HashMap<Method, matchit::Router<RocHandler>> = HashMap::new();
         for route in &app.routes {
             routers
                 .entry(route.method.clone())
                 .or_default()
-                .insert(&route.path, route.handler)
+                .insert(&route.path, route.handler.clone())
                 .map_err(|err| {
                     format!("cannot register route {} {}: {err}", route.method, route.path)
                 })?;
@@ -110,7 +114,7 @@ impl RouterInner {
         if let Some(router) = self.routers.get(&method)
             && let Ok(matched) = router.at(&path)
         {
-            let handler = *matched.value;
+            let handler = matched.value.clone();
             let params = matched
                 .params
                 .iter()
@@ -197,7 +201,8 @@ impl RouterInner {
                 .collect(),
         };
 
-        let model = self.model;
+        // One reference for this request, moved into the handler call.
+        let model = self.model.retain();
         // Mint the per-request arena and coeffect ctx, then run the handler on
         // the blocking pool. A detached reaper task owns the teardown guard and
         // drops it — releasing memoized thunks AND sweeping any cursor the
@@ -226,7 +231,7 @@ impl RouterInner {
             crate::effects::install_current_ctx(ctx, track_cache);
             let handler_start = crate::profile::now();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                call_handler(handler, model, request_parts, ctx)
+                call_handler(&handler, model, request_parts, ctx)
             }));
             if let Some(t) = handler_start {
                 crate::profile::record_handler(t.elapsed().as_nanos() as u64);

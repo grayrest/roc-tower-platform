@@ -19,9 +19,7 @@ use turso_sdk_kit::rsapi::{
 
 use crate::abi;
 use crate::db::{DbError, SqlValue, Write};
-use crate::effects::decref_list_with;
 use crate::roc_call::roc_str;
-use crate::roc_host;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -240,48 +238,31 @@ pub fn live_cursor_count() -> u64 {
 }
 
 fn begin_ok(handle: u64) -> abi::HostSqlBeginResult {
-    abi::HostSqlBeginResult {
-        tag: abi::HostSqlBeginResultTag::Ok,
-        payload: abi::HostSqlBeginResultPayload { ok: std::mem::ManuallyDrop::new(handle) },
-    }
+    abi::HostSqlBeginResult::ok(handle)
 }
 
 fn begin_err(message: &str) -> abi::HostSqlBeginResult {
-    abi::HostSqlBeginResult {
-        tag: abi::HostSqlBeginResultTag::Err,
-        payload: abi::HostSqlBeginResultPayload { err: std::mem::ManuallyDrop::new(roc_str(message)) },
-    }
+    abi::HostSqlBeginResult::err(roc_str(message))
 }
 
 fn step_err(message: &str) -> abi::HostSqlStepResult {
-    abi::HostSqlStepResult {
-        tag: abi::HostSqlStepResultTag::Err,
-        payload: abi::HostSqlStepResultPayload { err: std::mem::ManuallyDrop::new(roc_str(message)) },
-    }
+    abi::HostSqlStepResult::err(roc_str(message))
 }
 
 fn step_ok(has_row: bool) -> abi::HostSqlStepResult {
-    abi::HostSqlStepResult {
-        tag: abi::HostSqlStepResultTag::Ok,
-        payload: abi::HostSqlStepResultPayload { ok: std::mem::ManuallyDrop::new(has_row) },
-    }
+    abi::HostSqlStepResult::ok(has_row)
 }
 
 /// `Host.sql_begin! : { ctx, db, sql, params } => Try(U64, Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBeginResult {
     let _t = crate::profile::exec();
-    let host = roc_host();
     let ctx = args.ctx;
     let db = String::from_utf8_lossy(args.db.as_slice()).into_owned();
     let sql = String::from_utf8_lossy(args.sql.as_slice()).into_owned();
     let params: Vec<SqlValue> =
         args.params.as_slice().iter().map(crate::db::param_from_host).collect();
-    unsafe {
-        args.db.decref(host);
-        decref_list_with(args.params, |value| value.decref(host));
-        args.sql.decref(host);
-    }
+    drop(args);
 
     // Response-cache attribution — identical to the rusqlite backend: the
     // analysis shadow is ALWAYS rusqlite (turso has no authorizer), so
@@ -391,30 +372,29 @@ pub extern "C" fn roc_sql_step_row(handle: u64) -> abi::HostSqlBeginResult {
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_sql_row_str(handle: u64, tok: u64, index: u64) -> abi::RocStr {
     crate::profile::getter();
-    let host = roc_host();
     match with_cursor(handle, |cursor| {
         require_token(cursor.generation, tok);
         if !cursor.has_row {
-            return abi::RocStr::from_slice(&[], host);
+            return abi::RocStr::empty();
         }
         match cursor.stmt.row_value(index as usize) {
             Ok(v) => match &v {
-                Value::Text(_) => abi::RocStr::from_slice(v.to_text().unwrap_or("").as_bytes(), host),
-                Value::Blob(b) => abi::RocStr::from_slice(b, host),
+                Value::Text(_) => roc_str(v.to_text().unwrap_or("")),
+                Value::Blob(b) => abi::RocStr::from_str(&String::from_utf8_lossy(b)),
                 Value::Numeric(_) => {
                     if let Some(i) = v.as_int() {
-                        abi::RocStr::from_slice(i.to_string().as_bytes(), host)
+                        roc_str(&i.to_string())
                     } else {
-                        abi::RocStr::from_slice(v.to_float_or_zero().to_string().as_bytes(), host)
+                        roc_str(&v.to_float_or_zero().to_string())
                     }
                 }
-                Value::Null => abi::RocStr::from_slice(&[], host),
+                Value::Null => abi::RocStr::empty(),
             },
-            Err(_) => abi::RocStr::from_slice(&[], host),
+            Err(_) => abi::RocStr::empty(),
         }
     }) {
         Some(s) => s,
-        None => abi::RocStr::from_slice(&[], host),
+        None => abi::RocStr::empty(),
     }
 }
 
@@ -440,14 +420,7 @@ pub extern "C" fn roc_sql_columns(handle: u64) -> abi::RocList<abi::RocStr> {
             .collect::<Vec<String>>()
     })
     .unwrap_or_default();
-    let host = roc_host();
-    unsafe {
-        let list = abi::RocList::<abi::RocStr>::allocate(names.len(), host);
-        for (index, name) in names.iter().enumerate() {
-            list.elements.add(index).write(roc_str(name));
-        }
-        list
-    }
+    names.iter().map(|name| roc_str(name)).collect()
 }
 
 /// `Host.sql_col_type! : U64, U64 => Host.ColType`.
@@ -493,36 +466,34 @@ pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
     crate::profile::getter();
-    let host = roc_host();
     with_value(handle, index, |v| match &v {
-        Value::Text(_) => abi::RocStr::from_slice(v.to_text().unwrap_or("").as_bytes(), host),
-        Value::Blob(b) => abi::RocStr::from_slice(b, host),
+        Value::Text(_) => roc_str(v.to_text().unwrap_or("")),
+        Value::Blob(b) => abi::RocStr::from_str(&String::from_utf8_lossy(b)),
         Value::Numeric(_) => {
             if let Some(i) = v.as_int() {
-                abi::RocStr::from_slice(i.to_string().as_bytes(), host)
+                roc_str(&i.to_string())
             } else {
-                abi::RocStr::from_slice(v.to_float_or_zero().to_string().as_bytes(), host)
+                roc_str(&v.to_float_or_zero().to_string())
             }
         }
-        Value::Null => abi::RocStr::from_slice(&[], host),
+        Value::Null => abi::RocStr::empty(),
     })
-    .unwrap_or_else(|| abi::RocStr::from_slice(&[], host))
+    .unwrap_or_else(abi::RocStr::empty)
 }
 
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {
+pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocList<u8> {
     crate::profile::getter();
-    let host = roc_host();
     with_value(handle, index, |v| {
         let bytes: &[u8] = match &v {
             Value::Blob(b) => b,
             Value::Text(_) => v.to_text().unwrap_or("").as_bytes(),
             _ => &[],
         };
-        unsafe { abi::RocListWith::<u8, false>::from_slice(bytes, host) }
+        abi::RocList::from_slice(bytes)
     })
-    .unwrap_or_else(|| unsafe { abi::RocListWith::<u8, false>::from_slice(&[], host) })
+    .unwrap_or_else(|| abi::RocList::from_slice(&[]))
 }
 
 /// `Host.sql_finish! : U64 => {}`. Idempotent.

@@ -21,16 +21,13 @@
 //! replaces the handler's own response. An empty effects list is a no-op, so
 //! the escape-hatch (`effects: []`) path is unchanged.
 
-use std::mem::ManuallyDrop;
 
 use crate::abi;
 use crate::db::SqlValue;
 use crate::effects::send_request;
 use crate::roc_call::{copy_headers, roc_str, ResponseParts};
-use crate::roc_host;
 use crate::types::{
-    RocDbWrite, RocEffectActionTag, RocEffectErr, RocEffectErrPayload, RocEffectErrTag,
-    RocEffectTag, RocHttpSend, RocReply, RocResponse,
+    RocEffect, RocEffectAction, RocEffectActionView, RocEffectErr, RocEffectView, RocErrHandler,
 };
 
 /// The host-side mirror of `Effect.Err`: the classified failure a `Must`
@@ -45,8 +42,8 @@ enum EffectErr {
 }
 
 /// A decoded effect tag payload, copied out of the Roc `effects` list. The
-/// backing Roc allocations stay owned by the response (freed by its recursive
-/// decref), so these owned copies never touch refcounts.
+/// backing Roc allocations stay owned by the list, so these owned copies never
+/// touch refcounts.
 enum Action {
     Db {
         db: String,
@@ -66,13 +63,13 @@ enum Action {
 /// A `Must` effect: an action plus the boxed `err_handler` to invoke on failure.
 struct MustItem {
     action: Action,
-    err_handler: abi::RocErasedCallable,
+    err_handler: RocErrHandler,
 }
 
 /// The fire-and-forget `Opt` effects a handler returned, deferred so the caller
 /// runs them AFTER the response is flushed (B3). They carry only owned data
 /// (each `Action` is copied out of the Roc `effects` list, no refcounts), so
-/// they safely outlive the response's decref and can move to another thread.
+/// they safely outlive the list and can move to another thread.
 pub struct DeferredEffects {
     opts: Vec<Action>,
 }
@@ -102,14 +99,13 @@ fn string_of(text: &abi::RocStr) -> String {
     String::from_utf8_lossy(text.as_slice()).into_owned()
 }
 
-/// Run the effects a handler returned; return the response to send. Reads the
-/// effect data (including the boxed `err_handler` pointers) before the caller
-/// decrefs `response`.
+/// Run the effects a handler returned; return the response to send. Each
+/// `Must` keeps its own reference to its `err_handler`.
 pub fn run_effects(
-    response: &RocResponse,
+    effects: &abi::RocList<RocEffect>,
     handler_response: ResponseParts,
 ) -> (ResponseParts, DeferredEffects) {
-    let effects = response.effects.as_slice();
+    let effects = effects.as_slice();
     if effects.is_empty() {
         return (handler_response, DeferredEffects::new(Vec::new()));
     }
@@ -121,15 +117,11 @@ pub fn run_effects(
     let mut opts: Vec<Action> = Vec::new();
 
     for effect in effects {
-        match effect.tag {
-            RocEffectTag::Must => {
-                // SAFETY: the match arm establishes the tag. Borrowed, not
-                // taken: `_0` is only read by `read_action` and `_1` is a
-                // Copy callable pointer.
-                let payload = unsafe { effect.borrow_payload_must_unchecked() };
+        match effect.view() {
+            RocEffectView::Must(payload) => {
                 let item = MustItem {
                     action: read_action(&payload._0),
-                    err_handler: payload._1,
+                    err_handler: payload._1.clone(),
                 };
                 // D12: a Must DbWrite/HttpSend is incompatible with a cache
                 // hit that skips the handler ("must run" would silently stop
@@ -146,10 +138,7 @@ pub fn run_effects(
                     ext_musts.push(item);
                 }
             }
-            // SAFETY: the match arm establishes the tag.
-            RocEffectTag::Opt => {
-                opts.push(read_action(unsafe { effect.borrow_payload_opt_unchecked() }))
-            }
+            RocEffectView::Opt(action) => opts.push(read_action(action)),
         }
     }
 
@@ -157,7 +146,7 @@ pub fn run_effects(
     // error goes to the failing effect's `err_handler`, whose reply becomes the
     // response; the deferred `Opt`s still fire (fire-and-forget).
     if let Some((err_handler, err)) = run_db_transaction(&db_musts) {
-        let reply = invoke_err_handler(err_handler, &err);
+        let reply = invoke_err_handler(&err_handler, &err);
         return (reply, DeferredEffects::new(opts));
     }
 
@@ -165,7 +154,7 @@ pub fn run_effects(
     for item in &ext_musts {
         if let Err(err) = run_action(&item.action) {
             tracing::warn!("effect: external Must failed: {err:?}");
-            let reply = invoke_err_handler(item.err_handler, &err);
+            let reply = invoke_err_handler(&item.err_handler, &err);
             return (reply, DeferredEffects::new(opts));
         }
     }
@@ -173,44 +162,33 @@ pub fn run_effects(
     // Phase 3: `Opt` effects are handed back for the router to run AFTER this
     // response is flushed (B3), concurrent with the socket write, so they never
     // add latency to the client. They carry only owned data, so they outlive
-    // the response's decref below.
+    // the effects list.
     (handler_response, DeferredEffects::new(opts))
 }
 
 /// Decode one `DbWrite | HttpSend | Log` tag payload into an owned `Action`.
-fn read_action(action: &abi::DbWriteOrHttpSendOrLog) -> Action {
-    match action.tag {
-        RocEffectActionTag::DbWrite => {
-            // SAFETY: the match arm establishes the tag.
-            let write: &RocDbWrite = unsafe { action.borrow_payload_db_write_unchecked() };
-            Action::Db {
-                db: string_of(&write.db),
-                sql: string_of(&write.sql),
-                params: write.params.as_slice().iter().map(crate::db::param_from_host).collect(),
-            }
-        }
-        RocEffectActionTag::HttpSend => {
-            // SAFETY: the match arm establishes the tag.
-            let send: &RocHttpSend = unsafe { action.borrow_payload_http_send_unchecked() };
-            Action::Http {
-                method: string_of(&send.method),
-                url: string_of(&send.url),
-                headers: copy_headers(send.headers.as_slice()),
-                body: send.body.as_slice().to_vec(),
-                timeout_ms: send.timeout_ms,
-            }
-        }
-        // SAFETY: the match arm establishes the tag.
-        RocEffectActionTag::Log => {
-            Action::Log(string_of(unsafe { action.borrow_payload_log_unchecked() }))
-        }
+fn read_action(action: &RocEffectAction) -> Action {
+    match action.view() {
+        RocEffectActionView::DbWrite { db, params, sql } => Action::Db {
+            db: string_of(db),
+            sql: string_of(sql),
+            params: params.as_slice().iter().map(crate::db::param_from_host).collect(),
+        },
+        RocEffectActionView::HttpSend { timeout_ms, body, headers, method, url } => Action::Http {
+            method: string_of(method),
+            url: string_of(url),
+            headers: copy_headers(headers.as_slice()),
+            body: body.as_slice().to_vec(),
+            timeout_ms: *timeout_ms,
+        },
+        RocEffectActionView::Log(text) => Action::Log(string_of(text)),
     }
 }
 
 /// Run all DB `Must` writes in one `BEGIN IMMEDIATE` transaction, in order.
 /// Returns `Some((err_handler, err))` for the first failing write (the whole
 /// transaction having rolled back), or `None` if every write committed.
-fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, EffectErr)> {
+fn run_db_transaction(items: &[MustItem]) -> Option<(RocErrHandler, EffectErr)> {
     let first = items.first()?;
     // Single-database-per-request assumption (see plan): the whole DB `Must`
     // group runs against the first write's database file.
@@ -234,7 +212,7 @@ fn run_db_transaction(items: &[MustItem]) -> Option<(abi::RocErasedCallable, Eff
         Err((index, err)) => {
             let classified = EffectErr::from_db(err);
             tracing::warn!("effect: DbWrite failed ({classified:?}); rolled back transaction");
-            Some((items[index].err_handler, classified))
+            Some((items[index].err_handler.clone(), classified))
         }
     }
 }
@@ -375,86 +353,27 @@ impl EffectErr {
 }
 
 /// Invoke a `Must` effect's boxed `err_handler` with a classified error and
-/// copy out its `{ status, headers, body }` reply. Same invoke shape as
-/// `call_handler`: read the erased callable's payload header for the fn ptr
-/// and its capture slot for the environment, then call through the uniform
-/// ABI. The args buffer (whose `Str` payload we build here) is consumed by the
-/// callee; the returned reply is owned by us and released after copying out.
-/// The callable itself is freed later by the response's recursive decref.
-fn invoke_err_handler(callable: abi::RocErasedCallable, err: &EffectErr) -> ResponseParts {
-    #[repr(C)]
-    struct ErrArgs {
-        arg0: RocEffectErr,
-    }
-
-    let host = roc_host();
-    let args = ErrArgs {
-        arg0: build_err_arg(err),
-    };
-
-    let mut ret = core::mem::MaybeUninit::<RocReply>::uninit();
-    unsafe {
-        let header = abi::roc_erased_callable_payload_ptr(callable);
-        let capture = abi::roc_erased_callable_capture_ptr(callable);
-        ((*header).callable_fn_ptr)(
-            host as *const abi::RocHost as *mut abi::RocHost,
-            ret.as_mut_ptr() as *mut u8,
-            &args as *const ErrArgs as *const u8,
-            capture,
-            // The erased-callable ABI's trailing `reuse` pointer, plus the
-            // descriptor out-param. Null declines reuse: the spec says a
-            // non-null reuse pointer transfers one owned reference that the
-            // callee consumes exactly once, and we have no allocation to
-            // hand over. The callee drops whatever it is given, so these
-            // MUST be passed: omitting them leaves the callee decref'ing an
-            // uninitialized register (see examples/repro-keepalive/README.md).
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        );
-        let reply = ret.assume_init();
-        // Error-handler replies are small and off the hot path — copy the body
-        // and release the reply immediately rather than pinning the arena.
-        let out = ResponseParts {
-            status: reply.status,
-            headers: copy_headers(reply.headers.as_slice()),
-            body: crate::body::ResponseBody::Copied(reply.body.as_slice().to_vec()),
-        };
-        reply.decref(host);
-        out
+/// copy out its `{ status, headers, body }` reply. The error argument moves
+/// into the call; the reply is ours and is released as it drops.
+fn invoke_err_handler(err_handler: &RocErrHandler, err: &EffectErr) -> ResponseParts {
+    let reply = err_handler.call(build_err_arg(err));
+    // Error-handler replies are small and off the hot path — copy the body and
+    // release the reply immediately rather than pinning the arena.
+    ResponseParts {
+        status: reply.status,
+        headers: copy_headers(reply.headers.as_slice()),
+        body: crate::body::ResponseBody::Copied(reply.body.as_slice().to_vec()),
     }
 }
 
 /// Build the Roc `Effect.Err` argument for an `err_handler` invocation.
 fn build_err_arg(err: &EffectErr) -> RocEffectErr {
     match err {
-        EffectErr::UniqueViolation(detail) => RocEffectErr {
-            tag: RocEffectErrTag::UniqueViolation,
-            payload: RocEffectErrPayload {
-                unique_violation: ManuallyDrop::new(roc_str(detail)),
-            },
-        },
-        EffectErr::ForeignKeyViolation(detail) => RocEffectErr {
-            tag: RocEffectErrTag::ForeignKeyViolation,
-            payload: RocEffectErrPayload {
-                foreign_key_violation: ManuallyDrop::new(roc_str(detail)),
-            },
-        },
-        EffectErr::HttpFailed(detail) => RocEffectErr {
-            tag: RocEffectErrTag::HttpFailed,
-            payload: RocEffectErrPayload {
-                http_failed: ManuallyDrop::new(roc_str(detail)),
-            },
-        },
-        EffectErr::Other(detail) => RocEffectErr {
-            tag: RocEffectErrTag::Other,
-            payload: RocEffectErrPayload {
-                other: ManuallyDrop::new(roc_str(detail)),
-            },
-        },
-        EffectErr::Busy => RocEffectErr {
-            tag: RocEffectErrTag::Busy,
-            payload: RocEffectErrPayload { busy: [] },
-        },
+        EffectErr::UniqueViolation(detail) => RocEffectErr::unique_violation(roc_str(detail)),
+        EffectErr::ForeignKeyViolation(detail) => RocEffectErr::foreign_key_violation(roc_str(detail)),
+        EffectErr::HttpFailed(detail) => RocEffectErr::http_failed(roc_str(detail)),
+        EffectErr::Other(detail) => RocEffectErr::other(roc_str(detail)),
+        EffectErr::Busy => RocEffectErr::busy(),
     }
 }
 

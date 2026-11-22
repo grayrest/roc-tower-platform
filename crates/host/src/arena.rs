@@ -1,5 +1,5 @@
 //! Request-scoped bump arena behind the `roc_alloc`/`roc_dealloc`/`roc_realloc`
-//! symbols that interpreted Roc code (and the host's own Roc-value helpers) call.
+//! symbols that Roc code and the glue's helpers call.
 //!
 //! # Why
 //! Profiling put ~31.7% of list-endpoint host CPU in `malloc`/`free`: every Roc
@@ -18,7 +18,8 @@
 //! is empty and every call falls through to the global allocator unchanged.
 //!
 //! # Header layout and the arena tag
-//! We keep the *exact* header layout the generated `DefaultAllocators` uses:
+//! We keep the *exact* header layout the glue's `SystemRuntime` uses, which
+//! backs every allocation outside an arena:
 //! `size_storage_bytes = max(alignment, word)` bytes of header, with the total
 //! allocation size written into the last word before the returned user pointer.
 //! Roc never reads this word (its refcount lives at or after the user pointer),
@@ -50,7 +51,10 @@ use std::alloc::Layout;
 use std::cell::{RefCell, UnsafeCell};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::abi;
+use core::ptr::NonNull;
+
+use crate::SystemRuntime;
+use crate::abi::RocRuntime;
 
 const WORD: usize = core::mem::size_of::<usize>();
 
@@ -293,7 +297,7 @@ impl RequestArena {
     /// Bump-allocate `length` bytes at `alignment`, writing a tagged header.
     /// Returns `None` when the per-request cap is reached (caller falls through
     /// to the global allocator with a plain header).
-    fn try_alloc(&self, length: usize, alignment: usize) -> Option<*mut c_void> {
+    fn try_alloc(&self, length: usize, alignment: usize) -> Option<NonNull<c_void>> {
         let hs = header_size(alignment);
         let total = length.checked_add(hs)?;
         // SAFETY: single-thread invariant (see `state_mut`).
@@ -306,7 +310,7 @@ impl RequestArena {
         // SAFETY: `user_ptr` points `hs` bytes into freshly reserved chunk
         // space; the header word sits at `user_ptr - WORD`, inside the reservation.
         unsafe { write_size_word(user_ptr, total | TAG_ARENA) };
-        Some(user_ptr as *mut c_void)
+        NonNull::new(user_ptr as *mut c_void)
     }
 
     /// Reserve space for a `total`-byte allocation (header + `length`) whose user
@@ -351,7 +355,7 @@ impl RequestArena {
         ptr: *mut u8,
         new_length: usize,
         alignment: usize,
-    ) -> Option<*mut c_void> {
+    ) -> Option<NonNull<c_void>> {
         let hs = header_size(alignment);
         let total = new_length.checked_add(hs)?;
         // SAFETY: single-thread invariant (see `state_mut`).
@@ -373,7 +377,7 @@ impl RequestArena {
         }
         // SAFETY: `ptr`'s header word is within the arena reservation.
         unsafe { write_size_word(ptr, total | TAG_ARENA) };
-        Some(ptr as *mut c_void)
+        NonNull::new(ptr as *mut c_void)
     }
 
     /// Total chunk bytes this arena has reserved — an upper bound on the memory
@@ -455,11 +459,11 @@ pub fn current_arena() -> Option<Arc<RequestArena>> {
 /// Arena-aware `roc_alloc`. Bumps from the current arena when one is installed
 /// and under budget; otherwise the global allocator, unchanged.
 #[inline]
-pub fn roc_alloc(length: usize, alignment: usize) -> *mut c_void {
+pub fn roc_alloc(length: usize, alignment: usize) -> NonNull<c_void> {
     if let Some(ptr) = with_current(|arena| arena.and_then(|a| a.try_alloc(length, alignment))) {
         return ptr;
     }
-    abi::DefaultAllocators::roc_alloc(core::ptr::null_mut(), length, alignment).as_ptr()
+    SystemRuntime::alloc(length, alignment)
 }
 
 /// Arena-aware `roc_dealloc`. Arena pointers are a no-op (bulk-freed at arena
@@ -481,7 +485,7 @@ pub unsafe fn roc_dealloc(ptr: *mut c_void, alignment: usize) {
         }
         return;
     }
-    abi::DefaultAllocators::roc_dealloc(core::ptr::null_mut(), ptr, alignment);
+    unsafe { SystemRuntime::dealloc(ptr, alignment) };
 }
 
 /// Arena-aware `roc_realloc`.
@@ -493,17 +497,11 @@ pub unsafe fn roc_realloc(
     ptr: *mut c_void,
     new_length: usize,
     alignment: usize,
-) -> *mut c_void {
+) -> NonNull<c_void> {
     let word = unsafe { read_size_word(ptr as *const u8) };
     if word & TAG_ARENA == 0 {
         // Global-owned: hand straight to the global reallocator.
-        return abi::DefaultAllocators::roc_realloc(
-            core::ptr::null_mut(),
-            ptr,
-            new_length,
-            alignment,
-        )
-        .as_ptr();
+        return unsafe { SystemRuntime::realloc(ptr, new_length, alignment) };
     }
 
     let hs = header_size(alignment);
@@ -523,7 +521,7 @@ pub unsafe fn roc_realloc(
         with_current(|arena| arena.and_then(|a| a.try_alloc(new_length, alignment)))
     {
         // SAFETY: both regions are valid for `copy_len` bytes; distinct blocks.
-        unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, dst as *mut u8, copy_len) };
+        unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, dst.as_ptr() as *mut u8, copy_len) };
         return dst;
     }
 
@@ -531,49 +529,17 @@ pub unsafe fn roc_realloc(
     // installed (defensive — Roc values are only grown on their request thread):
     // move to a fresh global block with a plain header. The old arena block is
     // abandoned and reclaimed at arena drop.
-    let dst =
-        abi::DefaultAllocators::roc_alloc(core::ptr::null_mut(), new_length, alignment).as_ptr()
-            as *mut u8;
+    let dst = SystemRuntime::alloc(new_length, alignment);
     // SAFETY: `dst` is a fresh `new_length` allocation; `ptr` holds `old_length`
     // readable bytes; the blocks are distinct.
-    unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, dst, copy_len) };
-    dst as *mut c_void
-}
-
-// ---------------------------------------------------------------------------
-// `RocHost` fn-pointer table entries, so the host's own Roc-value helpers
-// (built through `roc_host()`) route through the arena too when one is
-// installed. Same behavior as the exported symbols; different ABI shape.
-// ---------------------------------------------------------------------------
-
-pub extern "C" fn host_alloc(
-    _host: *mut abi::RocHost,
-    length: usize,
-    alignment: usize,
-) -> core::ptr::NonNull<c_void> {
-    // `roc_alloc` aborts on OOM, so the result is never null.
-    unsafe { core::ptr::NonNull::new_unchecked(roc_alloc(length, alignment)) }
-}
-
-pub extern "C" fn host_dealloc(_host: *mut abi::RocHost, ptr: *mut c_void, alignment: usize) {
-    // SAFETY: forwarded from a host helper that allocated `ptr` via `host_alloc`.
-    unsafe { roc_dealloc(ptr, alignment) };
-}
-
-pub extern "C" fn host_realloc(
-    _host: *mut abi::RocHost,
-    ptr: *mut c_void,
-    new_length: usize,
-    alignment: usize,
-) -> core::ptr::NonNull<c_void> {
-    // SAFETY: forwarded from a host helper that allocated `ptr` via `host_alloc`;
-    // `roc_realloc` aborts on OOM, so the result is never null.
-    unsafe { core::ptr::NonNull::new_unchecked(roc_realloc(ptr, new_length, alignment)) }
+    unsafe { core::ptr::copy_nonoverlapping(ptr as *const u8, dst.as_ptr() as *mut u8, copy_len) };
+    dst
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::abi;
     use std::sync::atomic::Ordering;
 
     const BIG_TEXT: &[u8] = b"a string long enough to defeat the small-string optimization";
@@ -594,7 +560,7 @@ mod tests {
         {
             let arena = RequestArena::new();
             install(arena.clone());
-            let p = roc_alloc(100, 8) as *mut u8;
+            let p = roc_alloc(100, 8).as_ptr() as *mut u8;
             assert!(tagged(p as *const c_void), "arena alloc must carry the arena tag");
             for i in 0..100u8 {
                 unsafe { *p.add(i as usize) = i };
@@ -622,13 +588,13 @@ mod tests {
         let _g = serial();
         let arena = RequestArena::new();
         install(arena.clone());
-        let p = roc_alloc(16, 16) as *mut u8;
+        let p = roc_alloc(16, 16).as_ptr() as *mut u8;
         assert_eq!(p as usize % 16, 0, "16-aligned request must return 16-aligned ptr");
         for i in 0..16u8 {
             unsafe { *p.add(i as usize) = i + 1 };
         }
         // p is the last allocation, so this grows in place (same pointer).
-        let p2 = unsafe { roc_realloc(p as *mut c_void, 64, 16) } as *mut u8;
+        let p2 = unsafe { roc_realloc(p as *mut c_void, 64, 16) }.as_ptr() as *mut u8;
         assert_eq!(p2 as usize % 16, 0);
         assert!(tagged(p2 as *const c_void));
         for i in 0..16u8 {
@@ -642,13 +608,13 @@ mod tests {
         let _g = serial();
         let arena = RequestArena::new();
         install(arena.clone());
-        let p = roc_alloc(16, 16) as *mut u8;
+        let p = roc_alloc(16, 16).as_ptr() as *mut u8;
         for i in 0..16u8 {
             unsafe { *p.add(i as usize) = i + 100 };
         }
         // A second alloc means p is no longer the bump tail; realloc must copy.
         let _q = roc_alloc(16, 16);
-        let p2 = unsafe { roc_realloc(p as *mut c_void, 48, 16) } as *mut u8;
+        let p2 = unsafe { roc_realloc(p as *mut c_void, 48, 16) }.as_ptr() as *mut u8;
         assert_ne!(p2, p, "non-tail realloc should move to a fresh block");
         assert!(tagged(p2 as *const c_void));
         for i in 0..16u8 {
@@ -662,14 +628,14 @@ mod tests {
         let _g = serial();
         let arena = RequestArena::new();
         install(arena.clone());
-        let p = roc_alloc(24, 16) as *mut u8;
+        let p = roc_alloc(24, 16).as_ptr() as *mut u8;
         for i in 0..24u8 {
             unsafe { *p.add(i as usize) = i + 7 };
         }
         // Drop the TLS arena: now a realloc of the (still-tagged) pointer has no
         // arena to bump from and must move to a plain global block.
         uninstall();
-        let p2 = unsafe { roc_realloc(p as *mut c_void, 80, 16) } as *mut u8;
+        let p2 = unsafe { roc_realloc(p as *mut c_void, 80, 16) }.as_ptr() as *mut u8;
         assert!(!tagged(p2 as *const c_void), "global-owned realloc must have a plain header");
         for i in 0..24u8 {
             assert_eq!(unsafe { *p2.add(i as usize) }, i + 7, "global copy lost bytes");
@@ -684,11 +650,11 @@ mod tests {
         let _g = serial();
         let arena = RequestArena::new();
         install(arena.clone());
-        assert!(tagged(roc_alloc(8, 8)), "pre-cap alloc is arena-owned");
+        assert!(tagged(roc_alloc(8, 8).as_ptr()), "pre-cap alloc is arena-owned");
         // Exhaust the per-request cap with chunk-sized allocations.
         let mut over = core::ptr::null_mut::<c_void>();
         for _ in 0..(ARENA_CAP / CHUNK_SIZE + 2) {
-            over = roc_alloc(CHUNK_SIZE, 8);
+            over = roc_alloc(CHUNK_SIZE, 8).as_ptr();
         }
         assert!(!tagged(over), "past the cap, allocations fall through to the global heap");
         unsafe { roc_dealloc(over, 8) }; // global free of the post-cap block
@@ -700,7 +666,7 @@ mod tests {
         let _g = serial();
         let arena = RequestArena::new();
         install(arena.clone());
-        let p = roc_alloc(100, 8) as *mut u8;
+        let p = roc_alloc(100, 8).as_ptr() as *mut u8;
         unsafe { *p = 42 };
         uninstall();
         // A thread with no arena installed must treat the tagged pointer as a
@@ -713,18 +679,15 @@ mod tests {
         drop(arena);
     }
 
-    /// on_drop for an erased callable whose 24-byte capture is a single RocStr.
-    extern "C" fn drop_captured_rocstr(capture: *mut u8, host: *mut abi::RocHost) {
-        unsafe {
-            let s = core::ptr::read(capture as *const abi::RocStr);
-            s.decref(&*host);
-        }
+    /// on_drop for an erased callable whose capture is a single RocStr.
+    extern "C" fn drop_captured_rocstr(capture: *mut u8, _ops: *mut abi::raw::RocSymbolAdapter) {
+        drop(unsafe { core::ptr::read(capture as *const abi::RocStr) });
     }
     // Trailing params are the erased-callable ABI's `reuse` pointer and
     // descriptor out-param; this stub ignores both. Declining reuse means
     // there is nothing to consume.
     extern "C" fn noop_callable(
-        _: *mut abi::RocHost,
+        _: *mut abi::raw::RocSymbolAdapter,
         _: *mut u8,
         _: *const u8,
         _: *mut u8,
@@ -736,37 +699,27 @@ mod tests {
     #[test]
     fn erased_callable_teardown_from_no_tls_thread() {
         let _g = serial();
-        let host = crate::roc_host(); // rerouted through the arena
         let arena = RequestArena::new();
         install(arena.clone());
 
         // Build a boxed closure capturing an arena-allocated (big) RocStr.
         let capture_size = core::mem::size_of::<abi::RocStr>();
-        let callable = unsafe {
-            abi::roc_erased_callable_allocate(
-                host,
-                noop_callable,
-                Some(drop_captured_rocstr),
-                capture_size,
-            )
-        };
-        let s = abi::RocStr::from_slice(BIG_TEXT, host);
+        let s = abi::RocStr::try_from_utf8(BIG_TEXT).expect("BIG_TEXT is UTF-8");
         assert!(!s.is_small_str(), "capture must be a heap (arena) string");
-        unsafe {
-            let cap = abi::roc_erased_callable_capture_ptr(callable);
-            core::ptr::write(cap as *mut abi::RocStr, s);
-        }
+        // SAFETY: the capture slot is sized for one RocStr, written before any
+        // use, and released by `drop_captured_rocstr`.
+        let callable = unsafe {
+            let callable =
+                abi::roc_erased_callable_allocate(noop_callable, Some(drop_captured_rocstr), capture_size);
+            core::ptr::write(abi::roc_erased_callable_capture_ptr(callable.as_ptr()) as *mut abi::RocStr, s);
+            callable
+        };
         uninstall();
 
-        // Final decref on a thread with no arena: the on_drop decrefs the
+        // Final release on a thread with no arena: the on_drop releases the
         // captured arena string and frees the arena-backed box — both must be
         // no-ops that never touch the global allocator.
-        let addr = callable as usize;
-        std::thread::spawn(move || unsafe {
-            abi::decref_erased_callable(addr as *mut u8, crate::roc_host());
-        })
-        .join()
-        .unwrap();
+        std::thread::spawn(move || drop(callable)).join().unwrap();
 
         drop(arena); // reclaims the box and the string in one shot
     }
@@ -776,7 +729,7 @@ mod tests {
         let _g = serial();
         let a1 = RequestArena::new();
         install(a1.clone());
-        let _p = roc_alloc(64, 8); // force a chunk so a1 owns memory
+        let _p = roc_alloc(64, 8).as_ptr(); // force a chunk so a1 owns memory
         let weak = Arc::downgrade(&a1);
         drop(a1); // now only the TLS slot references a1
 
@@ -795,7 +748,7 @@ mod tests {
         let _g = serial();
         let arena = RequestArena::new();
         install(arena.clone());
-        let p = roc_alloc(32, 8);
+        let p = roc_alloc(32, 8).as_ptr();
         unsafe { roc_dealloc(p, 8) }; // first: marks the header freed
         let addr = p as usize;
         let second = std::panic::catch_unwind(|| unsafe { roc_dealloc(addr as *mut c_void, 8) });

@@ -53,91 +53,83 @@ mod test_stubs {
 mod ffi_tests;
 
 use core::ffi::c_void;
-use std::ptr;
-use std::sync::OnceLock;
+use core::ptr::NonNull;
 
-/// Host context for the generated helper functions (RocStr construction etc.).
-/// Compiled Roc code does not see this; it calls the `roc_*` symbols directly.
-fn roc_host() -> &'static abi::RocHost {
-    static HOST: OnceLock<abi::RocHost> = OnceLock::new();
-    HOST.get_or_init(|| {
-        // Route the host's own Roc-value helpers through the arena so values
-        // built host-side during a request share the request's lifetime; the
-        // generated `DefaultHandlers` (dbg/expect/crash) are kept as-is.
-        let mut host = abi::make_roc_host(ptr::null_mut());
-        host.roc_alloc = arena::host_alloc;
-        host.roc_dealloc = arena::host_dealloc;
-        host.roc_realloc = arena::host_realloc;
-        host
-    })
+use abi::RocRuntime;
+
+abi::roc_system_runtime!();
+
+/// The runtime behind the six `roc_*` symbols. Compiled Roc code and the
+/// glue's own helpers (`RocStr::from_str`, every `Drop` that frees) call the
+/// same symbols, so a value the host builds during a request comes from that
+/// request's arena exactly as Roc's own values do.
+struct HostRuntime;
+
+impl RocRuntime for HostRuntime {
+    fn alloc(length: usize, alignment: usize) -> NonNull<c_void> {
+        #[cfg(test)]
+        alloc_counts::on_alloc();
+        arena::roc_alloc(length, alignment)
+    }
+
+    unsafe fn dealloc(ptr: *mut c_void, alignment: usize) {
+        #[cfg(test)]
+        alloc_counts::on_dealloc();
+        unsafe { arena::roc_dealloc(ptr, alignment) }
+    }
+
+    unsafe fn realloc(ptr: *mut c_void, new_length: usize, alignment: usize) -> NonNull<c_void> {
+        unsafe { arena::roc_realloc(ptr, new_length, alignment) }
+    }
+
+    fn dbg(message: &[u8]) {
+        tracing::debug!(target: "roc", "{}", String::from_utf8_lossy(message));
+    }
+
+    fn expect_failed(message: &[u8]) {
+        tracing::error!(target: "roc", "expect failed: {}", String::from_utf8_lossy(message));
+    }
+
+    /// Known limitation: `crash` in Roc code terminates the process. The
+    /// erased callable ABI gives the host no way to unwind out of a crashed
+    /// interpreter call, so a supervisor (systemd, container runtime) must
+    /// restart the server. Roc apps should return error responses instead of
+    /// crashing.
+    fn crashed(message: &[u8]) -> ! {
+        tracing::error!(target: "roc", "crash: {}", String::from_utf8_lossy(message));
+        eprintln!("[ROC CRASHED] {}", String::from_utf8_lossy(message));
+        std::process::exit(1)
+    }
 }
 
-// SAFETY: the default allocator/handler function pointers are stateless and
-// thread-safe; env is null and never dereferenced.
-unsafe impl Sync for abi::RocHost {}
-unsafe impl Send for abi::RocHost {}
+abi::roc_runtime!(HostRuntime);
 
-// ---------------------------------------------------------------------------
-// Direct symbol ABI required by compiled/interpreted Roc code.
-// ---------------------------------------------------------------------------
+/// Per-thread counts of `roc_alloc` and `roc_dealloc` calls, so a unit test
+/// can see what its own Roc values allocate and free while other tests run on
+/// other threads. A realloc replaces one allocation with another and is not
+/// counted.
+#[cfg(test)]
+pub(crate) mod alloc_counts {
+    use std::cell::Cell;
 
-#[unsafe(no_mangle)]
-pub extern "C" fn roc_alloc(length: usize, alignment: usize) -> *mut c_void {
-    arena::roc_alloc(length, alignment)
-}
+    thread_local! {
+        static ALLOCS: Cell<isize> = const { Cell::new(0) };
+        static DEALLOCS: Cell<isize> = const { Cell::new(0) };
+    }
 
-/// # Safety
-/// `ptr_` must have been produced by `roc_alloc` with the same `alignment`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn roc_dealloc(ptr_: *mut c_void, alignment: usize) {
-    unsafe { arena::roc_dealloc(ptr_, alignment) }
-}
+    pub(crate) fn on_alloc() {
+        ALLOCS.with(|n| n.set(n.get() + 1));
+    }
 
-/// # Safety
-/// `ptr_` must have been produced by `roc_alloc` with the same `alignment`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn roc_realloc(
-    ptr_: *mut c_void,
-    new_length: usize,
-    alignment: usize,
-) -> *mut c_void {
-    unsafe { arena::roc_realloc(ptr_, new_length, alignment) }
-}
+    pub(crate) fn on_dealloc() {
+        DEALLOCS.with(|n| n.set(n.get() + 1));
+    }
 
-///
-/// # Safety
-/// Called by Roc code through the direct symbol ABI; `bytes` must point to
-/// `len` readable bytes for the duration of the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn roc_dbg(bytes: *const u8, len: usize) {
-    let message = unsafe { core::slice::from_raw_parts(bytes, len) };
-    tracing::debug!(target: "roc", "{}", String::from_utf8_lossy(message));
-}
-
-///
-/// # Safety
-/// Called by Roc code through the direct symbol ABI; `bytes` must point to
-/// `len` readable bytes for the duration of the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn roc_expect_failed(bytes: *const u8, len: usize) {
-    let message = unsafe { core::slice::from_raw_parts(bytes, len) };
-    tracing::error!(target: "roc", "expect failed: {}", String::from_utf8_lossy(message));
-}
-
-/// Known limitation: `crash` in Roc code terminates the process. The erased
-/// callable ABI gives the host no way to unwind out of a crashed interpreter
-/// call, so a supervisor (systemd, container runtime) must restart the server.
-/// Roc apps should return error responses instead of crashing.
-///
-/// # Safety
-/// Called by Roc code through the direct symbol ABI; `bytes` must point to
-/// `len` readable bytes for the duration of the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn roc_crashed(bytes: *const u8, len: usize) {
-    let message = unsafe { core::slice::from_raw_parts(bytes, len) };
-    tracing::error!(target: "roc", "crash: {}", String::from_utf8_lossy(message));
-    eprintln!("[ROC CRASHED] {}", String::from_utf8_lossy(message));
-    std::process::exit(1);
+    /// `(allocations, live allocations)` made on this thread so far.
+    pub(crate) fn now() -> (isize, isize) {
+        let allocs = ALLOCS.with(Cell::get);
+        (allocs, allocs - DEALLOCS.with(Cell::get))
+    }
 }
 
 /// Process entrypoint. The Roc-built executable links this static library and

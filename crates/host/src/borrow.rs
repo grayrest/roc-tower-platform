@@ -48,11 +48,9 @@ pub unsafe fn borrowed_str(ptr: *const u8, len: usize) -> abi::RocStr {
         "borrowed_str requires valid UTF-8",
     );
     let slot = core::ptr::addr_of!(BORROW_BACKING[1]) as usize;
-    abi::RocStr {
-        bytes: ptr as *mut u8,
-        capacity_or_alloc_ptr: slot | ROC_SEAMLESS_SLICE_TAG,
-        length: len,
-    }
+    // SAFETY: a seamless slice over static data whose refcount word reads 0, so
+    // no clone or drop ever touches a count; the caller keeps the bytes alive.
+    unsafe { abi::RocStr::from_raw_parts(ptr as *mut u8, slot | ROC_SEAMLESS_SLICE_TAG, len) }
 }
 
 /// Build a `List(U8)` that BORROWS `len` bytes at `ptr` without copying — the
@@ -64,14 +62,16 @@ pub unsafe fn borrowed_str(ptr: *const u8, len: usize) -> abi::RocStr {
 /// Same contract as [`borrowed_str`]: `ptr..ptr+len` must stay alive and
 /// unchanged for as long as any Roc reference to the returned list can exist,
 /// and the list must not outlive the borrowed bytes.
-pub unsafe fn borrowed_bytes(ptr: *const u8, len: usize) -> abi::RocListWith<u8, false> {
+pub unsafe fn borrowed_bytes(ptr: *const u8, len: usize) -> abi::RocList<u8> {
     if len == 0 {
-        return abi::RocListWith::empty();
+        return abi::RocList::empty();
     }
     let slot = core::ptr::addr_of!(BORROW_BACKING[1]) as usize;
-    abi::RocListWith {
+    let raw = abi::RocListRaw::<u8, false> {
         elements: ptr as *mut u8,
         length: len,
         capacity_or_alloc_ptr: slot | ROC_SEAMLESS_SLICE_TAG,
-    }
+    };
+    // SAFETY: as for `borrowed_str`.
+    unsafe { raw.into_list() }
 }

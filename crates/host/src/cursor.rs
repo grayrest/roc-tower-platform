@@ -46,9 +46,8 @@ use rusqlite::TransactionBehavior;
 
 use crate::abi;
 use crate::db::{DbError, SqlValue, Write};
-use crate::effects::{checkout_sqlite, decref_list_with, to_rusqlite, PooledSqlite};
+use crate::effects::{checkout_sqlite, to_rusqlite, PooledSqlite};
 use crate::roc_call::roc_str;
-use crate::roc_host;
 
 /// Process-global monotonic row-generation counter (H1). Every advancing
 /// `sql_step_row!` mints a fresh value, so a row token names ONE step event and
@@ -161,56 +160,31 @@ pub fn live_cursor_count() -> u64 {
 }
 
 fn begin_ok(handle: u64) -> abi::HostSqlBeginResult {
-    abi::HostSqlBeginResult {
-        tag: abi::HostSqlBeginResultTag::Ok,
-        payload: abi::HostSqlBeginResultPayload {
-            ok: std::mem::ManuallyDrop::new(handle),
-        },
-    }
+    abi::HostSqlBeginResult::ok(handle)
 }
 
 fn begin_err(message: &str) -> abi::HostSqlBeginResult {
-    abi::HostSqlBeginResult {
-        tag: abi::HostSqlBeginResultTag::Err,
-        payload: abi::HostSqlBeginResultPayload {
-            err: std::mem::ManuallyDrop::new(roc_str(message)),
-        },
-    }
+    abi::HostSqlBeginResult::err(roc_str(message))
 }
 
 fn step_err(message: &str) -> abi::HostSqlStepResult {
-    abi::HostSqlStepResult {
-        tag: abi::HostSqlStepResultTag::Err,
-        payload: abi::HostSqlStepResultPayload {
-            err: std::mem::ManuallyDrop::new(roc_str(message)),
-        },
-    }
+    abi::HostSqlStepResult::err(roc_str(message))
 }
 
 fn step_ok(has_row: bool) -> abi::HostSqlStepResult {
-    abi::HostSqlStepResult {
-        tag: abi::HostSqlStepResultTag::Ok,
-        payload: abi::HostSqlStepResultPayload {
-            ok: std::mem::ManuallyDrop::new(has_row),
-        },
-    }
+    abi::HostSqlStepResult::ok(has_row)
 }
 
 /// `Host.sql_begin! : { ctx, db, sql, params } => Try(U64, Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_begin(args: abi::HostSqlBeginArgs) -> abi::HostSqlBeginResult {
     let _t = crate::profile::exec();
-    let host = roc_host();
     let ctx = args.ctx;
     let db = String::from_utf8_lossy(args.db.as_slice()).into_owned();
     let sql = String::from_utf8_lossy(args.sql.as_slice()).into_owned();
     let params: Vec<SqlValue> =
         args.params.as_slice().iter().map(crate::db::param_from_host).collect();
-    unsafe {
-        args.db.decref(host);
-        decref_list_with(args.params, |value| value.decref(host));
-        args.sql.decref(host);
-    }
+    drop(args);
 
     // Response-cache attribution. Init-time (ctx 0) DDL mirrors the schema
     // into the analysis shadow; request-time statements record their derived
@@ -334,24 +308,17 @@ fn with_row<R>(handle: u64, f: impl FnOnce(&Row<'static>) -> R) -> Option<R> {
 /// `Host.sql_columns! : U64 => List(Str)`.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_sql_columns(handle: u64) -> abi::RocList<abi::RocStr> {
-    let host = roc_host();
     // Read the names straight off the live statement on demand — only the
     // by-name `Sql.query!` path calls this, so positional/streaming readers
     // never pay for the column-name `Vec<String>`.
     with_cursor(handle, |cursor| {
         // SAFETY: `stmt` is this cursor's live boxed statement.
         let stmt = unsafe { &*cursor.stmt };
-        let count = stmt.column_count();
-        unsafe {
-            let list = abi::RocList::<abi::RocStr>::allocate(count, host);
-            for index in 0..count {
-                let name = stmt.column_name(index).unwrap_or("");
-                list.elements.add(index).write(roc_str(name));
-            }
-            list
-        }
+        (0..stmt.column_count())
+            .map(|index| roc_str(stmt.column_name(index).unwrap_or("")))
+            .collect()
     })
-    .unwrap_or_else(|| unsafe { abi::RocList::<abi::RocStr>::allocate(0, host) })
+    .unwrap_or_else(abi::RocList::empty)
 }
 
 /// `Host.sql_col_type! : U64, U64 => Host.ColType`.
@@ -395,6 +362,13 @@ pub extern "C" fn roc_sql_col_f64(handle: u64, index: u64) -> f64 {
     .unwrap_or(0.0)
 }
 
+/// A text or blob cell as a Roc `Str`. SQLite does not enforce UTF-8, and a
+/// Roc `Str` must hold it, so invalid bytes become U+FFFD; valid text is
+/// copied once, straight from the cell.
+fn cell_str(bytes: &[u8]) -> abi::RocStr {
+    abi::RocStr::from_str(&String::from_utf8_lossy(bytes))
+}
+
 /// `Host.sql_col_str! : U64, U64 => Str`. NULL and non-text coerce (empty for
 /// NULL); callers that must distinguish NULL check `sql_col_type!` first.
 #[unsafe(no_mangle)]
@@ -403,14 +377,13 @@ pub extern "C" fn roc_sql_col_str(handle: u64, index: u64) -> abi::RocStr {
     // Build the RocStr directly from the borrowed cell bytes inside the closure
     // — the common Text/Blob path is then a single copy into Roc-owned memory,
     // with no intermediate `Vec`. (Integer/Real coerce through a `to_string`.)
-    let host = roc_host();
     with_row(handle, |row| match row.get_ref(index as usize) {
-        Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => abi::RocStr::from_slice(b, host),
-        Ok(ValueRef::Integer(n)) => abi::RocStr::from_slice(n.to_string().as_bytes(), host),
-        Ok(ValueRef::Real(f)) => abi::RocStr::from_slice(f.to_string().as_bytes(), host),
-        _ => abi::RocStr::from_slice(&[], host),
+        Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => cell_str(b),
+        Ok(ValueRef::Integer(n)) => roc_str(&n.to_string()),
+        Ok(ValueRef::Real(f)) => roc_str(&f.to_string()),
+        _ => abi::RocStr::empty(),
     })
-    .unwrap_or_else(|| abi::RocStr::from_slice(&[], host))
+    .unwrap_or_else(abi::RocStr::empty)
 }
 
 /// `Host.sql_step_row! : U64 => Try(U64, Str)` (H1). Advance the cursor and
@@ -454,23 +427,22 @@ pub extern "C" fn roc_sql_step_row(handle: u64) -> abi::HostSqlBeginResult {
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_sql_row_str(handle: u64, tok: u64, index: u64) -> abi::RocStr {
     crate::profile::getter();
-    let host = roc_host();
     match with_cursor(handle, |cursor| {
         require_token(cursor.generation, tok);
         if cursor.current.is_null() {
-            return abi::RocStr::from_slice(&[], host);
+            return abi::RocStr::empty();
         }
         // SAFETY: token matched, so `current` is the row `tok` names and is live.
         let row = unsafe { &*cursor.current };
         match row.get_ref(index as usize) {
-            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => abi::RocStr::from_slice(b, host),
-            Ok(ValueRef::Integer(n)) => abi::RocStr::from_slice(n.to_string().as_bytes(), host),
-            Ok(ValueRef::Real(f)) => abi::RocStr::from_slice(f.to_string().as_bytes(), host),
-            _ => abi::RocStr::from_slice(&[], host),
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => cell_str(b),
+            Ok(ValueRef::Integer(n)) => roc_str(&n.to_string()),
+            Ok(ValueRef::Real(f)) => roc_str(&f.to_string()),
+            _ => abi::RocStr::empty(),
         }
     }) {
         Some(s) => s,
-        None => abi::RocStr::from_slice(&[], host),
+        None => abi::RocStr::empty(),
     }
 }
 
@@ -483,16 +455,22 @@ pub extern "C-unwind" fn roc_sql_row_str(handle: u64, tok: u64, index: u64) -> a
 // (no supported grow path yet) — a spike to MEASURE the second-copy win.
 // ---------------------------------------------------------------------------
 
-/// `RocList<u8>` header bytes and alignment (see `RocListWith::header_bytes`):
-/// one word of rc slot for a non-refcounted element type, 8-aligned.
-const LIST_HDR: usize = core::mem::size_of::<usize>();
+/// The raw parts of a `List(U8)` being grown in place: the glue's escape hatch
+/// for a list whose layout the host manages itself.
+type RawBytes = abi::RocListRaw<u8, false>;
+
+/// `List(U8)` header bytes (`RawBytes::header_bytes`): one word of rc slot for
+/// a non-refcounted element type.
+const LIST_HDR: usize = RawBytes::header_bytes();
 const LIST_ALIGN: usize = core::mem::size_of::<usize>();
+/// Low bit of `capacity_or_alloc_ptr`: the list is a seamless slice.
+const SEAMLESS_SLICE_TAG: usize = 1;
 
 /// The element capacity of a `List(U8)` (0 for empty or a seamless slice, which
 /// we never grow in place).
 #[inline]
-fn list_capacity(out: &abi::RocListWith<u8, false>) -> usize {
-    if out.elements.is_null() || out.is_seamless_slice() {
+fn list_capacity(out: &RawBytes) -> usize {
+    if out.elements.is_null() || out.capacity_or_alloc_ptr & SEAMLESS_SLICE_TAG != 0 {
         0
     } else {
         out.capacity_or_alloc_ptr >> 1
@@ -503,11 +481,7 @@ fn list_capacity(out: &abi::RocListWith<u8, false>) -> usize {
 /// growing the backing allocation (fresh alloc / realloc through the arena) when
 /// needed. Assumes `out` is uniquely owned (true for a response body built
 /// linearly in one request); a shared list would need copy-on-write.
-fn list_reserve(
-    mut out: abi::RocListWith<u8, false>,
-    additional: usize,
-    host: &abi::RocHost,
-) -> abi::RocListWith<u8, false> {
+fn list_reserve(mut out: RawBytes, additional: usize) -> RawBytes {
     let need = out.length + additional;
     if list_capacity(&out) >= need {
         return out;
@@ -516,7 +490,7 @@ fn list_reserve(
     let new_total = new_cap + LIST_HDR;
     if out.elements.is_null() {
         // SAFETY: fresh allocation; write the rc slot (=1) and point at the data.
-        let base = unsafe { host.alloc(LIST_ALIGN, new_total) } as *mut u8;
+        let base = unsafe { abi::raw::roc_alloc(new_total, LIST_ALIGN) }.as_ptr() as *mut u8;
         let data = unsafe { base.add(LIST_HDR) };
         unsafe { *(data as *mut isize).sub(1) = 1 };
         out.elements = data;
@@ -527,8 +501,8 @@ fn list_reserve(
         // out (`elements - header`).
         let old_base = unsafe { out.elements.sub(LIST_HDR) };
         let new_base =
-            unsafe { host.realloc(old_base as *mut core::ffi::c_void, LIST_ALIGN, new_total) }
-                as *mut u8;
+            unsafe { abi::raw::roc_realloc(old_base as *mut core::ffi::c_void, new_total, LIST_ALIGN) }
+                .as_ptr() as *mut u8;
         out.elements = unsafe { new_base.add(LIST_HDR) };
         out.capacity_or_alloc_ptr = new_cap << 1;
     }
@@ -569,15 +543,11 @@ unsafe fn write_escaped(dst: *mut u8, b: u8) -> usize {
 }
 
 /// Append `src` as a JSON string (quoted, escaped) into `out`, one copy.
-fn append_json_string(
-    out: abi::RocListWith<u8, false>,
-    src: &[u8],
-    host: &abi::RocHost,
-) -> abi::RocListWith<u8, false> {
+fn append_json_string(out: RawBytes, src: &[u8]) -> RawBytes {
     let needs_escape = src.iter().any(|&b| b == b'"' || b == b'\\' || b < 0x20);
     if !needs_escape {
         // Common path: quote + raw memcpy + quote — the single copy.
-        let mut out = list_reserve(out, src.len() + 2, host);
+        let mut out = list_reserve(out, src.len() + 2);
         let start = out.length;
         unsafe {
             let p = out.elements.add(start);
@@ -589,7 +559,7 @@ fn append_json_string(
         out
     } else {
         // Rare path: reserve the worst case (\u00XX is 6 bytes/char) and escape.
-        let mut out = list_reserve(out, 2 + src.len() * 6, host);
+        let mut out = list_reserve(out, 2 + src.len() * 6);
         let start = out.length;
         let mut w = start;
         unsafe {
@@ -613,40 +583,38 @@ fn append_json_string(
 /// panic unwinds to the router.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_sql_col_str_json_into(
-    out: abi::RocListWith<u8, false>,
+    out: abi::RocList<u8>,
     handle: u64,
     tok: u64,
     index: u64,
-) -> abi::RocListWith<u8, false> {
+) -> abi::RocList<u8> {
     crate::profile::getter();
-    let host = roc_host();
-    match with_cursor(handle, |cursor| {
+    let out = RawBytes::from_list(out);
+    let grown = match with_cursor(handle, |cursor| {
         require_token(cursor.generation, tok);
         if cursor.current.is_null() {
-            return append_json_string(out, &[], host);
+            return append_json_string(out, &[]);
         }
         // SAFETY: token matched, so `current` is the row `tok` names and is live.
         let row = unsafe { &*cursor.current };
         match row.get_ref(index as usize) {
-            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_json_string(out, b, host),
-            Ok(ValueRef::Integer(n)) => append_json_string(out, n.to_string().as_bytes(), host),
-            Ok(ValueRef::Real(f)) => append_json_string(out, f.to_string().as_bytes(), host),
-            _ => append_json_string(out, &[], host),
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_json_string(out, b),
+            Ok(ValueRef::Integer(n)) => append_json_string(out, n.to_string().as_bytes()),
+            Ok(ValueRef::Real(f)) => append_json_string(out, f.to_string().as_bytes()),
+            _ => append_json_string(out, &[]),
         }
     }) {
         Some(o) => o,
         None => out,
-    }
+    };
+    // SAFETY: `grown` is the one reference `out` carried, grown in place.
+    unsafe { grown.into_list() }
 }
 
 /// Append `bytes` verbatim (no escaping) into `out` — for structural bytes like
 /// `null`, `[`, `]`, and array separators.
-fn append_raw(
-    out: abi::RocListWith<u8, false>,
-    bytes: &[u8],
-    host: &abi::RocHost,
-) -> abi::RocListWith<u8, false> {
-    let mut out = list_reserve(out, bytes.len(), host);
+fn append_raw(out: RawBytes, bytes: &[u8]) -> RawBytes {
+    let mut out = list_reserve(out, bytes.len());
     let start = out.length;
     unsafe {
         core::ptr::copy_nonoverlapping(bytes.as_ptr(), out.elements.add(start), bytes.len());
@@ -657,23 +625,19 @@ fn append_raw(
 
 /// Append the comma-joined `src` (a `GROUP_CONCAT` tag cell) as a JSON array of
 /// escaped strings: `["a","b"]`. Empty `src` yields `[]`.
-fn append_taglist(
-    out: abi::RocListWith<u8, false>,
-    src: &[u8],
-    host: &abi::RocHost,
-) -> abi::RocListWith<u8, false> {
-    let mut out = append_raw(out, b"[", host);
+fn append_taglist(out: RawBytes, src: &[u8]) -> RawBytes {
+    let mut out = append_raw(out, b"[");
     if !src.is_empty() {
         let mut first = true;
         for tag in src.split(|&b| b == b',') {
             if !first {
-                out = append_raw(out, b",", host);
+                out = append_raw(out, b",");
             }
             first = false;
-            out = append_json_string(out, tag, host);
+            out = append_json_string(out, tag);
         }
     }
-    append_raw(out, b"]", host)
+    append_raw(out, b"]")
 }
 
 /// `Host.sql_col_nullable_str_json_into : List(U8), U64, U64, U64 -> List(U8)`
@@ -682,31 +646,33 @@ fn append_taglist(
 /// `sql_col_type!` probe + `sql_row_str` + `str_into`/`null_into`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_sql_col_nullable_str_json_into(
-    out: abi::RocListWith<u8, false>,
+    out: abi::RocList<u8>,
     handle: u64,
     tok: u64,
     index: u64,
-) -> abi::RocListWith<u8, false> {
+) -> abi::RocList<u8> {
     crate::profile::getter();
-    let host = roc_host();
-    match with_cursor(handle, |cursor| {
+    let out = RawBytes::from_list(out);
+    let grown = match with_cursor(handle, |cursor| {
         require_token(cursor.generation, tok);
         if cursor.current.is_null() {
-            return append_raw(out, b"null", host);
+            return append_raw(out, b"null");
         }
         // SAFETY: token matched, so `current` is the row `tok` names and is live.
         let row = unsafe { &*cursor.current };
         match row.get_ref(index as usize) {
-            Ok(ValueRef::Null) => append_raw(out, b"null", host),
-            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_json_string(out, b, host),
-            Ok(ValueRef::Integer(n)) => append_json_string(out, n.to_string().as_bytes(), host),
-            Ok(ValueRef::Real(f)) => append_json_string(out, f.to_string().as_bytes(), host),
-            Err(_) => append_raw(out, b"null", host),
+            Ok(ValueRef::Null) => append_raw(out, b"null"),
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_json_string(out, b),
+            Ok(ValueRef::Integer(n)) => append_json_string(out, n.to_string().as_bytes()),
+            Ok(ValueRef::Real(f)) => append_json_string(out, f.to_string().as_bytes()),
+            Err(_) => append_raw(out, b"null"),
         }
     }) {
         Some(o) => o,
         None => out,
-    }
+    };
+    // SAFETY: `grown` is the one reference `out` carried, grown in place.
+    unsafe { grown.into_list() }
 }
 
 /// `Host.sql_col_taglist_json_into : List(U8), U64, U64, U64 -> List(U8)`
@@ -716,30 +682,32 @@ pub extern "C-unwind" fn roc_sql_col_nullable_str_json_into(
 /// empty cell yields `[]`.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_sql_col_taglist_json_into(
-    out: abi::RocListWith<u8, false>,
+    out: abi::RocList<u8>,
     handle: u64,
     tok: u64,
     index: u64,
-) -> abi::RocListWith<u8, false> {
+) -> abi::RocList<u8> {
     crate::profile::getter();
-    let host = roc_host();
-    match with_cursor(handle, |cursor| {
+    let out = RawBytes::from_list(out);
+    let grown = match with_cursor(handle, |cursor| {
         require_token(cursor.generation, tok);
         if cursor.current.is_null() {
-            return append_taglist(out, &[], host);
+            return append_taglist(out, &[]);
         }
         // SAFETY: token matched, so `current` is the row `tok` names and is live.
         let row = unsafe { &*cursor.current };
         match row.get_ref(index as usize) {
-            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_taglist(out, b, host),
-            Ok(ValueRef::Integer(n)) => append_taglist(out, n.to_string().as_bytes(), host),
-            Ok(ValueRef::Real(f)) => append_taglist(out, f.to_string().as_bytes(), host),
-            _ => append_taglist(out, &[], host),
+            Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => append_taglist(out, b),
+            Ok(ValueRef::Integer(n)) => append_taglist(out, n.to_string().as_bytes()),
+            Ok(ValueRef::Real(f)) => append_taglist(out, f.to_string().as_bytes()),
+            _ => append_taglist(out, &[]),
         }
     }) {
         Some(o) => o,
         None => out,
-    }
+    };
+    // SAFETY: `grown` is the one reference `out` carried, grown in place.
+    unsafe { grown.into_list() }
 }
 
 // ---------------------------------------------------------------------------
@@ -756,15 +724,6 @@ pub extern "C-unwind" fn roc_sql_col_taglist_json_into(
 // the supported append path rather than behind the glue.
 // ---------------------------------------------------------------------------
 
-/// The reducer's arguments, in Roc parameter order `(acc, row)`. The
-/// erased-callable ABI consumes both (transfers ownership to the callee) and
-/// writes the new accumulator to the return slot.
-#[repr(C)]
-struct FoldArgs {
-    arg0: abi::RocListWith<u8, false>,
-    arg1: abi::RocList<abi::HostSqlValue>,
-}
-
 /// The outcome of one step, carried out of the `with_cursor` critical section.
 enum FoldStep {
     Row(abi::RocList<abi::HostSqlValue>),
@@ -775,104 +734,31 @@ enum FoldStep {
 /// Build the current row as a `List(SqlValue)` whose Text/Blob cells borrow the
 /// live SQLite bytes (valid only until the next step). Integer/Real/Null cells
 /// are inline scalars — no allocation; only the spine is allocated (rc=1,
-/// Roc-owned, freed by the reducer's decref).
-fn build_row(
-    row: &Row<'static>,
-    count: usize,
-    host: &abi::RocHost,
-) -> abi::RocList<abi::HostSqlValue> {
-    unsafe {
-        let list = abi::RocList::<abi::HostSqlValue>::allocate(count, host);
-        for index in 0..count {
-            let cell = match row.get_ref(index) {
-                Ok(ValueRef::Text(b)) => abi::HostSqlValue {
-                    payload: abi::HostSqlValuePayload {
-                        text: core::mem::ManuallyDrop::new(crate::borrow::borrowed_str(
-                            b.as_ptr(),
-                            b.len(),
-                        )),
-                    },
-                    tag: abi::HostSqlValueTag::Text,
-                },
-                Ok(ValueRef::Blob(b)) => abi::HostSqlValue {
-                    payload: abi::HostSqlValuePayload {
-                        blob: core::mem::ManuallyDrop::new(crate::borrow::borrowed_bytes(
-                            b.as_ptr(),
-                            b.len(),
-                        )),
-                    },
-                    tag: abi::HostSqlValueTag::Blob,
-                },
-                Ok(ValueRef::Integer(n)) => abi::HostSqlValue {
-                    payload: abi::HostSqlValuePayload {
-                        integer: core::mem::ManuallyDrop::new(n),
-                    },
-                    tag: abi::HostSqlValueTag::Integer,
-                },
-                Ok(ValueRef::Real(f)) => abi::HostSqlValue {
-                    payload: abi::HostSqlValuePayload {
-                        real: core::mem::ManuallyDrop::new(f),
-                    },
-                    tag: abi::HostSqlValueTag::Real,
-                },
-                _ => abi::HostSqlValue {
-                    payload: abi::HostSqlValuePayload { null: [] },
-                    tag: abi::HostSqlValueTag::Null,
-                },
-            };
-            list.elements.add(index).write(cell);
-        }
-        list
-    }
+/// moved to the reducer, which releases it).
+fn build_row(row: &Row<'static>, count: usize) -> abi::RocList<abi::HostSqlValue> {
+    (0..count)
+        .map(|index| match row.get_ref(index) {
+            // SAFETY: the reducer consumes the row before the next step, the
+            // only thing that invalidates the borrowed cell bytes.
+            Ok(ValueRef::Text(b)) => {
+                abi::HostSqlValue::text(unsafe { crate::borrow::borrowed_str(b.as_ptr(), b.len()) })
+            }
+            Ok(ValueRef::Blob(b)) => {
+                abi::HostSqlValue::blob(unsafe { crate::borrow::borrowed_bytes(b.as_ptr(), b.len()) })
+            }
+            Ok(ValueRef::Integer(n)) => abi::HostSqlValue::integer(n),
+            Ok(ValueRef::Real(f)) => abi::HostSqlValue::real(f),
+            _ => abi::HostSqlValue::null(),
+        })
+        .collect()
 }
 
-/// Invoke the pure reducer `(acc, row) -> acc` through the erased-callable ABI,
-/// consuming `acc` and `row` and returning the new accumulator. Calling BORROWS
-/// the closure (the same way a route handler is invoked on every request), so
-/// the fold calls it once per row and decrefs it once at the end.
-fn invoke_reducer(
-    reducer: abi::RocErasedCallable,
-    acc: abi::RocListWith<u8, false>,
-    row: abi::RocList<abi::HostSqlValue>,
-    host: &abi::RocHost,
-) -> abi::RocListWith<u8, false> {
-    let args = FoldArgs { arg0: acc, arg1: row };
-    let mut ret = core::mem::MaybeUninit::<abi::RocListWith<u8, false>>::uninit();
-    unsafe {
-        let payload = abi::roc_erased_callable_payload_ptr(reducer);
-        let capture = abi::roc_erased_callable_capture_ptr(reducer);
-        // Same six-argument shape as `call_handler`: host, return slot, args,
-        // capture, then the trailing reuse + descriptor out-params (both null =
-        // decline reuse). Omitting the last two makes the callee decref an
-        // uninitialized register (examples/repro-keepalive/README.md).
-        ((*payload).callable_fn_ptr)(
-            host as *const abi::RocHost as *mut abi::RocHost,
-            ret.as_mut_ptr() as *mut u8,
-            &args as *const FoldArgs as *const u8,
-            capture,
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        );
-        ret.assume_init()
-    }
-}
-
-fn fold_ok(buffer: abi::RocListWith<u8, false>) -> abi::HostSqlFoldBytesResult {
-    abi::HostSqlFoldBytesResult {
-        tag: abi::HostSqlFoldBytesResultTag::Ok,
-        payload: abi::HostSqlFoldBytesResultPayload {
-            ok: core::mem::ManuallyDrop::new(buffer),
-        },
-    }
+fn fold_ok(buffer: abi::RocList<u8>) -> abi::HostSqlFoldBytesResult {
+    abi::HostSqlFoldBytesResult::ok(buffer)
 }
 
 fn fold_err(message: &str) -> abi::HostSqlFoldBytesResult {
-    abi::HostSqlFoldBytesResult {
-        tag: abi::HostSqlFoldBytesResultTag::Err,
-        payload: abi::HostSqlFoldBytesResultPayload {
-            err: core::mem::ManuallyDrop::new(roc_str(message)),
-        },
-    }
+    abi::HostSqlFoldBytesResult::err(roc_str(message))
 }
 
 /// `Host.sql_fold_bytes! : U64, List(U8), Box((List(U8), List(SqlValue) -> List(U8))) => Try(List(U8), Str)`.
@@ -881,10 +767,9 @@ fn fold_err(message: &str) -> abi::HostSqlFoldBytesResult {
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn roc_sql_fold_bytes(
     handle: u64,
-    acc: abi::RocListWith<u8, false>,
-    reducer: abi::RocErasedCallable,
+    acc: abi::RocList<u8>,
+    reducer: abi::HostSqlFoldBytesArg2Fn,
 ) -> abi::HostSqlFoldBytesResult {
-    let host = roc_host();
     let mut acc = acc;
     let result = loop {
         // Step and build the borrowed row inside one critical section so the
@@ -901,7 +786,7 @@ pub extern "C-unwind" fn roc_sql_fold_bytes(
                     cursor.current = row as *const Row<'static>;
                     // SAFETY: just set from the live step.
                     let row_ref = unsafe { &*cursor.current };
-                    FoldStep::Row(build_row(row_ref, count, host))
+                    FoldStep::Row(build_row(row_ref, count))
                 }
                 Ok(None) => {
                     cursor.current = std::ptr::null();
@@ -917,36 +802,33 @@ pub extern "C-unwind" fn roc_sql_fold_bytes(
             None => break Err("sql_fold_bytes! on an unknown cursor handle".to_string()),
             Some(FoldStep::Done) => break Ok(acc),
             Some(FoldStep::Err(message)) => break Err(message),
-            Some(FoldStep::Row(row)) => acc = invoke_reducer(reducer, acc, row, host),
+            // The pure reducer `(acc, row) -> acc` consumes `acc` and `row`.
+            // Calling BORROWS the closure (the same way a route handler is
+            // invoked on every request), so the fold calls it once per row.
+            Some(FoldStep::Row(row)) => acc = reducer.call(acc, row),
         }
     };
-    // The fold owns the reducer (a host-owned hosted-fn argument); release it now
-    // that the loop is done, exactly once.
-    unsafe { abi::decref_erased_callable(reducer, host) };
+    // The fold owns the reducer (a hosted-fn argument); it is released as it
+    // drops, after the loop. On an error the accumulator built so far drops
+    // with it.
     match result {
         Ok(buffer) => fold_ok(buffer),
-        Err(message) => {
-            // `acc` was never transferred into an `Ok`; release it so an error
-            // path doesn't leak the accumulator built so far.
-            unsafe { acc.decref(host) };
-            fold_err(&message)
-        }
+        Err(message) => fold_err(&message),
     }
 }
 
 /// `Host.sql_col_blob! : U64, U64 => List(U8)`.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocListWith<u8, false> {
+pub extern "C" fn roc_sql_col_blob(handle: u64, index: u64) -> abi::RocList<u8> {
     crate::profile::getter();
-    let host = roc_host();
     with_row(handle, |row| {
         let bytes: &[u8] = match row.get_ref(index as usize) {
             Ok(ValueRef::Blob(b)) | Ok(ValueRef::Text(b)) => b,
             _ => &[],
         };
-        unsafe { abi::RocListWith::<u8, false>::from_slice(bytes, host) }
+        abi::RocList::from_slice(bytes)
     })
-    .unwrap_or_else(|| unsafe { abi::RocListWith::<u8, false>::from_slice(&[], host) })
+    .unwrap_or_else(abi::RocList::empty)
 }
 
 /// `Host.sql_finish! : U64 => {}`. Idempotent: only a handle still in the

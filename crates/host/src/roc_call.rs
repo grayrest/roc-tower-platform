@@ -1,25 +1,8 @@
 //! Conversion between host HTTP types and Roc records, plus invocation of
-//! boxed Roc handlers through the erased-callable ABI.
+//! the app's boxed Roc handlers.
 
 use crate::abi;
-use crate::roc_host;
-use crate::types::{RocKeyValue, RocRequest, RocResponse};
-
-/// A boxed Roc handler function. The route list returned by `roc_app` is
-/// intentionally never released, so the callable lives for the whole process.
-#[derive(Clone, Copy)]
-pub struct RocHandler(pub(crate) abi::RocErasedCallable);
-
-unsafe impl Send for RocHandler {}
-unsafe impl Sync for RocHandler {}
-
-/// The app's Model, produced once by `roc_init`. Held for the process
-/// lifetime; each handler call transfers one retained reference in.
-#[derive(Clone, Copy)]
-pub struct RocModel(pub(crate) abi::RocBox);
-
-unsafe impl Send for RocModel {}
-unsafe impl Sync for RocModel {}
+use crate::types::{RocHandler, RocKeyValue, RocRequest};
 
 /// The routing-pure request data handed to Roc. The BODY and the Cookie
 /// header are deliberately absent: they live in the ctx registry and are
@@ -40,7 +23,7 @@ pub struct ResponseParts {
 }
 
 pub(crate) fn roc_str(text: &str) -> abi::RocStr {
-    abi::RocStr::from_slice(text.as_bytes(), roc_host())
+    abi::RocStr::from_str(text)
 }
 
 /// Copy a Roc `List({ name : Str, value : Str })` into owned host pairs.
@@ -58,44 +41,27 @@ pub(crate) fn copy_headers(headers: &[RocKeyValue]) -> Vec<(String, String)> {
 
 /// Build a Roc `List({ name : Str, value : Str })` from host pairs.
 pub(crate) fn roc_kv_list(pairs: &[(String, String)]) -> abi::RocList<RocKeyValue> {
-    let host = roc_host();
-    unsafe {
-        let list = abi::RocList::<RocKeyValue>::allocate(pairs.len(), host);
-        for (index, (name, value)) in pairs.iter().enumerate() {
-            list.elements.add(index).write(RocKeyValue {
-                name: roc_str(name),
-                value: roc_str(value),
-            });
-        }
-        list
-    }
+    pairs
+        .iter()
+        .map(|(name, value)| RocKeyValue { name: roc_str(name), value: roc_str(value) })
+        .collect()
 }
 
-/// Call `roc_init` once at startup and unwrap the app's Model.
-pub fn init_model() -> Result<RocModel, String> {
-    let mut result = unsafe { abi::roc_init() };
-    match result.tag {
-        // SAFETY for both arms: the match establishes the tag. These TAKE
-        // rather than borrow: the Ok payload is moved into the long-lived
-        // `RocModel`, and the Err payload is decref'd below, so both need
-        // the owned value that `roc_init` handed us.
-        abi::InitForHostResultTag::Ok => {
-            Ok(RocModel(unsafe { result.take_payload_ok_unchecked() }))
-        }
-        abi::InitForHostResultTag::Err => {
-            let message = unsafe { result.take_payload_err_unchecked() };
-            let text = String::from_utf8_lossy(message.as_slice()).into_owned();
-            unsafe { message.decref(roc_host()) };
-            Err(text)
-        }
+/// Call `roc_init` once at startup and unwrap the app's Model. Only Roc can
+/// release the model, so it is held for the process lifetime and each handler
+/// call hands Roc one more reference.
+pub fn init_model() -> Result<abi::RocOpaqueBox, String> {
+    match abi::roc_init().into_view() {
+        abi::InitForHostResultOwnedView::Ok(model) => Ok(model),
+        abi::InitForHostResultOwnedView::Err(message) => Err(message.as_str().to_owned()),
     }
 }
 
 /// Invoke a boxed Roc handler.
 ///
-/// Ownership: the args buffer (request record carrying one retained Model
-/// reference) is consumed by the callee; the returned `RocResponse` is owned
-/// by us and released after copying out.
+/// Ownership: `model` is one retained Model reference; it moves into the call
+/// with the request record that carries it; the returned response is ours, and its fields are released
+/// as they drop once copied out.
 ///
 /// `ctx` is the per-request coeffect-memo registry id minted by the router.
 /// The router owns the teardown guard — it must NOT live in this frame: a
@@ -104,90 +70,47 @@ pub fn init_model() -> Result<RocModel, String> {
 /// guard here would leak on panic. On the async side of `spawn_blocking` the
 /// `JoinError` path is ordinary Rust control flow and the guard is reliable.
 pub fn call_handler(
-    handler: RocHandler,
-    model: RocModel,
+    handler: &RocHandler,
+    model: abi::RocOpaqueBox,
     parts: RequestParts,
     ctx: u64,
 ) -> (ResponseParts, crate::effect::DeferredEffects) {
-    #[repr(C)]
-    struct Args {
-        arg0: RocRequest,
-    }
+    let request = RocRequest {
+        ctx,
+        headers: roc_kv_list(&parts.headers),
+        method: roc_str(&parts.method),
+        model,
+        params: roc_kv_list(&parts.params),
+        path: roc_str(&parts.path),
+        query: roc_str(&parts.query),
+    };
+    let response = handler.call(request);
 
-    let host = roc_host();
-    unsafe { abi::incref_box(model.0, 1) };
-    let args = Args {
-        arg0: RocRequest {
-            ctx,
-            headers: roc_kv_list(&parts.headers),
-            method: roc_str(&parts.method),
-            model: model.0,
-            params: roc_kv_list(&parts.params),
-            path: roc_str(&parts.path),
-            query: roc_str(&parts.query),
-        },
+    // Hand the body's Roc list to a `ResponseBody` owner so hyper can stream
+    // straight out of arena memory.
+    let body = match crate::arena::current_arena() {
+        // The list was built this request, so its bytes live in `arena` (or a
+        // global fallback past the arena's cap).
+        Some(arena) => crate::body::ResponseBody::from_roc(response.body, arena),
+        None => crate::body::ResponseBody::Copied(response.body.as_slice().to_vec()),
+    };
+    let handler_response = ResponseParts {
+        status: response.status,
+        headers: copy_headers(response.headers.as_slice()),
+        body,
     };
 
-    let mut ret = core::mem::MaybeUninit::<RocResponse>::uninit();
-    unsafe {
-        let payload = abi::roc_erased_callable_payload_ptr(handler.0);
-        let capture = abi::roc_erased_callable_capture_ptr(handler.0);
-        ((*payload).callable_fn_ptr)(
-            host as *const abi::RocHost as *mut abi::RocHost,
-            ret.as_mut_ptr() as *mut u8,
-            &args as *const Args as *const u8,
-            capture,
-            // The erased-callable ABI's trailing `reuse` pointer, plus the
-            // descriptor out-param. Null declines reuse: the spec says a
-            // non-null reuse pointer transfers one owned reference that the
-            // callee consumes exactly once, and we have no allocation to
-            // hand over. The callee drops whatever it is given, so these
-            // MUST be passed: omitting them leaves the callee decref'ing an
-            // uninitialized register (see examples/repro-keepalive/README.md).
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-        );
-        let mut response = ret.assume_init();
-
-        // Hand the body's Roc list to a `ResponseBody` owner so hyper can stream
-        // straight out of arena memory. Take the list out and neutralize the
-        // response's copy FIRST: `response.decref` below recursively decrefs the
-        // body field, and `RocListWith` is `Copy`, so without this an arena body
-        // would be a harmless double no-op but a >4 MiB cap-fallback (global)
-        // body would be genuinely freed out from under the owner.
-        let body_list = response.body;
-        response.body = abi::RocListWith::empty();
-        let body = match crate::arena::current_arena() {
-            // SAFETY: `body_list` is the handler's sole live reference to the
-            // response body (just neutralized in `response`), and it was built
-            // this request, so its bytes live in `arena` (or a global fallback).
-            Some(arena) => crate::body::ResponseBody::from_roc(body_list, arena),
-            None => {
-                let copy = body_list.as_slice().to_vec();
-                body_list.decref(host);
-                crate::body::ResponseBody::Copied(copy)
-            }
-        };
-        let handler_response = ResponseParts {
-            status: response.status,
-            headers: copy_headers(response.headers.as_slice()),
-            body,
-        };
-
-        // Host executes the critical effects the handler returned (Arch B),
-        // inside this spawn_blocking thread (S2): DB `Must` writes run first in
-        // one `BEGIN IMMEDIATE` transaction, external `Must` writes after
-        // commit. A failing `Must` replaces the response with its boxed
-        // err_handler's reply. The fire-and-forget `Opt` effects come back as
-        // `DeferredEffects` for the router to run post-flush (B3). An empty
-        // effects list yields empty deferred effects, so the escape-hatch
-        // (`effects: []`) path behaves exactly as before.
-        let (out, deferred) = crate::effect::run_effects(&response, handler_response);
-
-        // One recursive decref frees the whole response, including each effect's
-        // tag payload and boxed err_handler (erased callable). The deferred
-        // `Opt`s hold owned copies, so they survive this decref.
-        response.decref(host);
-        (out, deferred)
-    }
+    // Host executes the critical effects the handler returned (Arch B),
+    // inside this spawn_blocking thread (S2): DB `Must` writes run first in
+    // one `BEGIN IMMEDIATE` transaction, external `Must` writes after
+    // commit. A failing `Must` replaces the response with its boxed
+    // err_handler's reply. The fire-and-forget `Opt` effects come back as
+    // `DeferredEffects` for the router to run post-flush (B3). An empty
+    // effects list yields empty deferred effects, so the escape-hatch
+    // (`effects: []`) path behaves exactly as before.
+    //
+    // The effects list, with each effect's payload and boxed err_handler, is
+    // released when it drops at the end of this call; the deferred `Opt`s
+    // hold owned copies.
+    crate::effect::run_effects(&response.effects, handler_response)
 }

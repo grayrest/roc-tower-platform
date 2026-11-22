@@ -1,11 +1,10 @@
 //! Hosted function implementations — the effects available to Roc code.
 //!
 //! Ownership contract (see the generated glue header): hosted functions own
-//! their refcounted arguments and must release them; returned values transfer
-//! ownership to Roc.
+//! their refcounted arguments, which are released when they drop; returned
+//! values transfer ownership to Roc.
 
 use std::collections::HashMap;
-use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -15,7 +14,6 @@ use r2d2_sqlite::SqliteConnectionManager;
 
 use crate::abi;
 use crate::roc_call::{roc_kv_list, roc_str};
-use crate::roc_host;
 use crate::types::RocHttpOk;
 
 /// Handle to the server's tokio runtime, used to drive async effects
@@ -41,17 +39,6 @@ fn http_client() -> &'static reqwest::Client {
             .build()
             .expect("failed to build HTTP client")
     })
-}
-
-/// Release a refcounted-element Roc list: tear down elements when this is the
-/// last reference, then release the list allocation itself.
-pub(crate) unsafe fn decref_list_with<T: Copy>(list: abi::RocList<T>, drop_item: impl Fn(T)) {
-    if list.has_one_ref() {
-        for item in list.allocation_items() {
-            drop_item(*item);
-        }
-    }
-    unsafe { list.decref(roc_host()) };
 }
 
 /// Per-file connection pool (spike I3: "pool-for-everything"). Cursor reads
@@ -85,25 +72,17 @@ fn sqlite_pools() -> &'static Mutex<HashMap<String, SqlitePool>> {
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_log(arg0: abi::RocStr) {
     tracing::info!(target: "roc", "{}", String::from_utf8_lossy(arg0.as_slice()));
-    unsafe { arg0.decref(roc_host()) };
+    drop(arg0);
 }
 
 /// `Host.env_var! : Str => Try(Str, [EnvVarNotFound])`
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_env_var(arg0: abi::RocStr) -> abi::HostEnvVarResult {
     let name = String::from_utf8_lossy(arg0.as_slice()).into_owned();
-    unsafe { arg0.decref(roc_host()) };
+    drop(arg0);
     match std::env::var(&name) {
-        Ok(value) => abi::HostEnvVarResult {
-            tag: abi::HostEnvVarResultTag::Ok,
-            payload: abi::HostEnvVarResultPayload {
-                ok: ManuallyDrop::new(roc_str(&value)),
-            },
-        },
-        Err(_) => abi::HostEnvVarResult {
-            tag: abi::HostEnvVarResultTag::Err,
-            payload: abi::HostEnvVarResultPayload { err: [] },
-        },
+        Ok(value) => abi::HostEnvVarResult::ok(roc_str(&value)),
+        Err(_) => abi::HostEnvVarResult::err(),
     }
 }
 
@@ -131,7 +110,7 @@ pub extern "C" fn roc_now_ms() -> u64 {
 
 /// `Host.random_bytes! : U64 => List(U8)`
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_random_bytes(count: u64) -> abi::RocListWith<u8, false> {
+pub extern "C" fn roc_random_bytes(count: u64) -> abi::RocList<u8> {
     poison_current_ctx();
     let count = count.min(MAX_RANDOM_BYTES) as usize;
     let mut buffer = vec![0u8; count];
@@ -139,7 +118,7 @@ pub extern "C" fn roc_random_bytes(count: u64) -> abi::RocListWith<u8, false> {
         // A failing OS entropy source is not something the app can handle.
         panic!("random_bytes: OS entropy source failed: {err}");
     }
-    unsafe { abi::RocListWith::<u8, false>::from_slice(&buffer, roc_host()) }
+    abi::RocList::from_slice(&buffer)
 }
 
 /// `Host.password_hash! : Str => Str` — argon2id with a fresh OS-random salt,
@@ -152,7 +131,7 @@ pub extern "C" fn password_hash(arg0: abi::RocStr) -> abi::RocStr {
     use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
 
     let password = arg0.as_slice().to_vec();
-    unsafe { arg0.decref(roc_host()) };
+    drop(arg0);
     let salt = SaltString::generate(&mut OsRng);
     match argon2::Argon2::default().hash_password(&password, &salt) {
         Ok(hash) => roc_str(&hash.to_string()),
@@ -171,10 +150,7 @@ pub extern "C" fn password_verify(arg0: abi::RocStr, arg1: abi::RocStr) -> bool 
 
     let password = arg0.as_slice().to_vec();
     let stored = String::from_utf8_lossy(arg1.as_slice()).into_owned();
-    unsafe {
-        arg0.decref(roc_host());
-        arg1.decref(roc_host());
-    }
+    drop((arg0, arg1));
     match PasswordHash::new(&stored) {
         Ok(parsed) => argon2::Argon2::default()
             .verify_password(&password, &parsed)
@@ -191,7 +167,6 @@ pub extern "C" fn password_verify(arg0: abi::RocStr, arg1: abi::RocStr) -> bool 
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_http_send(args: abi::HostHttpSendArgs) -> abi::HostHttpSendResult {
     poison_current_ctx();
-    let host = roc_host();
     let method = String::from_utf8_lossy(args.method.as_slice()).into_owned();
     let url = String::from_utf8_lossy(args.url.as_slice()).into_owned();
     let headers: Vec<(String, String)> = args
@@ -207,32 +182,15 @@ pub extern "C" fn roc_http_send(args: abi::HostHttpSendArgs) -> abi::HostHttpSen
         .collect();
     let body = args.body.as_slice().to_vec();
     let timeout_ms = args.timeout_ms;
-    unsafe {
-        args.body.decref(host);
-        decref_list_with(args.headers, |kv| kv.decref(host));
-        args.method.decref(host);
-        args.url.decref(host);
-    }
+    drop(args);
 
     match send_request(method, url, headers, body, timeout_ms) {
-        Ok((status, response_headers, response_body)) => abi::HostHttpSendResult {
-            tag: abi::HostHttpSendResultTag::Ok,
-            payload: abi::HostHttpSendResultPayload {
-                ok: ManuallyDrop::new(RocHttpOk {
-                    body: unsafe {
-                        abi::RocListWith::<u8, false>::from_slice(&response_body, host)
-                    },
+        Ok((status, response_headers, response_body)) => abi::HostHttpSendResult::ok(RocHttpOk {
+                    body: abi::RocList::from_slice(&response_body),
                     headers: roc_kv_list(&response_headers),
                     status,
                 }),
-            },
-        },
-        Err(message) => abi::HostHttpSendResult {
-            tag: abi::HostHttpSendResultTag::Err,
-            payload: abi::HostHttpSendResultPayload {
-                err: ManuallyDrop::new(roc_str(&message)),
-            },
-        },
+        Err(message) => abi::HostHttpSendResult::err(roc_str(&message)),
     }
 }
 
@@ -358,17 +316,15 @@ pub(crate) fn checkout_sqlite(db: &str) -> Result<PooledSqlite, String> {
 // entry and releases every retained box on normal return AND on panic-unwind.
 // (Roc `crash` is process::exit — out of scope.)
 //
-// Values are boxed THUNKS (`Box({} => a)` = erased callables) stored as
-// `usize` (raw pointers are not Send). A raw `Box(a)` cannot be released by
-// the host: freeing needs the payload's elements_refcounted flag + alignment
-// (they set the allocation header size) and a recursive child decref, all of
-// which the FFI erases. An erased callable has a FIXED layout plus a
-// compiler-generated on_drop that releases the capture, so
-// `decref_erased_callable` is sound.
+// Values are boxed THUNKS (`Box({} => a)` = erased callables), stored as the
+// glue's owning `RocErasedCallable`. A raw `Box(a)` could not be released by
+// the host: freeing needs the payload's ownership plan, which the FFI erases.
+// An erased callable has a FIXED layout plus a compiler-generated on_drop that
+// releases the capture, so dropping one is sound.
 //
 // No type discriminant crosses the FFI, so a same-key re-registration can
-// only be handled by releasing the displaced pointer, not by rejecting a
-// type mismatch.
+// only be handled by releasing the displaced thunk, not by rejecting a type
+// mismatch.
 // ---------------------------------------------------------------------------
 
 /// Non-idempotent effect counter. `reserve_id!` bumps this; `reserve_runs!`
@@ -386,7 +342,7 @@ static LIVE_MEMO_BOXES: AtomicU64 = AtomicU64::new(0);
 struct RequestState {
     /// key -> raw erased-callable payload pointer. The store holds exactly
     /// one reference to each thunk (the one transferred by `memo_put!`).
-    memo: HashMap<String, usize>,
+    memo: HashMap<String, abi::RocErasedCallable>,
     /// The raw request body. NOT a request-record field: Roc extracts it via
     /// `Host.request_body!`, which is what tells the cache this route varies
     /// on the body (D14). `Bytes` clone is a refcount bump.
@@ -624,8 +580,8 @@ pub extern "C" fn roc_hash_seed() -> abi::HostHashSeed {
 }
 
 /// Release one store-held thunk reference.
-fn release_stored_thunk(raw: usize) {
-    unsafe { abi::decref_erased_callable(raw as abi::RocErasedCallable, roc_host()) };
+fn release_stored_thunk(thunk: abi::RocErasedCallable) {
+    drop(thunk);
     LIVE_MEMO_BOXES.fetch_sub(1, Ordering::SeqCst);
 }
 
@@ -664,8 +620,8 @@ impl Drop for CtxGuard {
         };
         match state {
             Some(state) => {
-                for (_key, raw) in state.memo {
-                    release_stored_thunk(raw);
+                for (_key, thunk) in state.memo {
+                    release_stored_thunk(thunk);
                 }
             }
             None => tracing::error!("ctx {}: registry entry vanished before teardown", self.id),
@@ -704,7 +660,7 @@ pub fn mint_ctx(
 /// Extraction is recorded: the route's cached responses gain a body-hash
 /// variant dimension (D14). ctx 0 (init) has no body: empty.
 #[unsafe(no_mangle)]
-pub extern "C" fn roc_request_body(ctx: u64) -> abi::RocListWith<u8, false> {
+pub extern "C" fn roc_request_body(ctx: u64) -> abi::RocList<u8> {
     let body = {
         let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
         match registry.get_mut(&ctx) {
@@ -720,7 +676,7 @@ pub extern "C" fn roc_request_body(ctx: u64) -> abi::RocListWith<u8, false> {
             }
         }
     };
-    unsafe { abi::RocListWith::<u8, false>::from_slice(&body, roc_host()) }
+    abi::RocList::from_slice(&body)
 }
 
 /// `Host.cookie! : U64, Str => Try(Str, [NoCookie])` — the named request
@@ -728,9 +684,8 @@ pub extern "C" fn roc_request_body(ctx: u64) -> abi::RocListWith<u8, false> {
 /// responses vary on exactly the cookies the route reads (D13).
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_cookie(ctx: u64, name: abi::RocStr) -> abi::HostCookieResult {
-    let host = roc_host();
     let wanted = String::from_utf8_lossy(name.as_slice()).into_owned();
-    unsafe { name.decref(host) };
+    drop(name);
 
     let found = {
         let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
@@ -754,16 +709,8 @@ pub extern "C" fn roc_cookie(ctx: u64, name: abi::RocStr) -> abi::HostCookieResu
         }
     };
     match found {
-        Some(value) => abi::HostCookieResult {
-            tag: abi::HostCookieResultTag::Ok,
-            payload: abi::HostCookieResultPayload {
-                ok: ManuallyDrop::new(roc_str(&value)),
-            },
-        },
-        None => abi::HostCookieResult {
-            tag: abi::HostCookieResultTag::Err,
-            payload: abi::HostCookieResultPayload { err: [] },
-        },
+        Some(value) => abi::HostCookieResult::ok(roc_str(&value)),
+        None => abi::HostCookieResult::err(),
     }
 }
 
@@ -799,47 +746,34 @@ pub extern "C-unwind" fn roc_panic_test() {
 
 /// `Host.memo_get! : U64, Str => Try(Box(({} => a)), [Miss])`.
 ///
-/// On hit we `incref` the stored thunk before returning it, donating a fresh
+/// On hit we clone the stored thunk before returning it, donating a fresh
 /// reference for Roc to consume (via `Box.unbox` + call) while the store
 /// keeps its own. On miss — or if the ctx has no registry entry, which cannot
 /// happen for an in-flight request — we return the zero-payload `Err`
 /// (`[Miss]`).
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_memo_get(ctx: u64, key: abi::RocStr) -> abi::HostMemoGetResult {
-    let host = roc_host();
     let name = String::from_utf8_lossy(key.as_slice()).into_owned();
-    unsafe { key.decref(host) };
+    drop(key);
 
     let registry = ctx_registry().lock().expect("ctx registry poisoned");
     let stored = match registry.get(&ctx) {
-        Some(state) => state.memo.get(&name).copied(),
+        Some(state) => state.memo.get(&name).cloned(),
         None => {
             tracing::error!("memo_get!({ctx}, {name:?}): no registry entry for ctx");
             None
         }
     };
     match stored {
-        Some(raw) => {
-            let thunk = raw as abi::RocErasedCallable;
-            unsafe { abi::incref_erased_callable(thunk, 1) };
-            abi::HostMemoGetResult {
-                tag: abi::HostMemoGetResultTag::Ok,
-                payload: abi::HostMemoGetResultPayload {
-                    ok: ManuallyDrop::new(thunk),
-                },
-            }
-        }
-        None => abi::HostMemoGetResult {
-            tag: abi::HostMemoGetResultTag::Err,
-            payload: abi::HostMemoGetResultPayload { err: [] },
-        },
+        Some(thunk) => abi::HostMemoGetResult::ok(thunk),
+        None => abi::HostMemoGetResult::err(),
     }
 }
 
 /// `Host.memo_put! : U64, Str, Box(({} => a)) => {}`.
 ///
 /// Takes ownership of one reference to `boxed` (the glue ownership contract
-/// for hosted args) and keeps it alive by storing the raw pointer. A same-key
+/// for hosted args) and keeps it alive by storing it. A same-key
 /// re-registration displaces the old thunk, whose store-held reference we
 /// must release (unconditionally: even if old == new, the store received TWO
 /// transferred references but can only record one entry). If the ctx has no
@@ -847,16 +781,15 @@ pub extern "C" fn roc_memo_get(ctx: u64, key: abi::RocStr) -> abi::HostMemoGetRe
 /// thunk would leak, so release it and log loudly.
 #[unsafe(no_mangle)]
 pub extern "C" fn roc_memo_put(ctx: u64, key: abi::RocStr, boxed: abi::RocErasedCallable) {
-    let host = roc_host();
     let name = String::from_utf8_lossy(key.as_slice()).into_owned();
-    unsafe { key.decref(host) };
+    drop(key);
 
     let displaced = {
         let mut registry = ctx_registry().lock().expect("ctx registry poisoned");
         match registry.get_mut(&ctx) {
             Some(state) => {
                 LIVE_MEMO_BOXES.fetch_add(1, Ordering::SeqCst);
-                state.memo.insert(name, boxed as usize)
+                state.memo.insert(name, boxed)
             }
             None => {
                 // Teardown already ran; the transferred reference must still
@@ -866,7 +799,7 @@ pub extern "C" fn roc_memo_put(ctx: u64, key: abi::RocStr, boxed: abi::RocErased
                     "memo_put!({ctx}, {name:?}): no registry entry for ctx; releasing thunk"
                 );
                 LIVE_MEMO_BOXES.fetch_add(1, Ordering::SeqCst);
-                Some(boxed as usize)
+                Some(boxed)
             }
         }
     };

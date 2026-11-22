@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::abi;
-use crate::roc_call::RocHandler;
-use crate::types::{RocSetting, RocSettingTag};
+use crate::types::RocHandler;
+use crate::types::{RocSetting, RocSettingView};
 
 const DEFAULT_PORT: u16 = 8000;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -77,10 +77,11 @@ fn env_port() -> Option<u16> {
 }
 
 /// Call the app's `main` entrypoint and translate the returned settings and
-/// routes. The Roc value is intentionally never released: handlers must stay
-/// alive for the lifetime of the server.
+/// routes. Each route keeps its own reference to its handler, so the handlers
+/// live as long as the router does and the rest of the app value is released
+/// here.
 pub fn load_app() -> Result<LoadedApp, String> {
-    let app = unsafe { abi::roc_app() };
+    let app = abi::roc_app();
 
     let mut config = HostConfig {
         port: env_port().unwrap_or(DEFAULT_PORT),
@@ -111,7 +112,7 @@ pub fn load_app() -> Result<LoadedApp, String> {
         routes.push(RouteDef {
             method,
             path,
-            handler: RocHandler(route.handler),
+            handler: route.handler.clone(),
         });
     }
 
@@ -119,30 +120,28 @@ pub fn load_app() -> Result<LoadedApp, String> {
 }
 
 fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), String> {
-    match setting.tag {
-        // SAFETY for every `_unchecked` below: the match arm establishes the tag.
-        RocSettingTag::Port => config.port = unsafe { *setting.borrow_payload_port_unchecked() },
-        RocSettingTag::TimeoutMs => {
-            config.timeout =
-                Duration::from_millis(unsafe { *setting.borrow_payload_timeout_ms_unchecked() });
+    match setting.view() {
+        RocSettingView::Port(port) => config.port = *port,
+        RocSettingView::TimeoutMs(ms) => {
+            config.timeout = Duration::from_millis(*ms);
         }
-        RocSettingTag::MaxBodyBytes => {
+        RocSettingView::MaxBodyBytes(bytes) => {
             config.max_body_bytes =
-                usize::try_from(unsafe { *setting.borrow_payload_max_body_bytes_unchecked() })
+                usize::try_from(*bytes)
                 .map_err(|_| "MaxBodyBytes does not fit in usize".to_string())?;
         }
-        RocSettingTag::CorsPermissive => config.cors = CorsMode::Permissive,
-        RocSettingTag::CorsAllowOrigins => {
-            let origins = unsafe { setting.borrow_payload_cors_allow_origins_unchecked() }
+        RocSettingView::CorsPermissive => config.cors = CorsMode::Permissive,
+        RocSettingView::CorsAllowOrigins(origins) => {
+            let origins = origins
                 .as_slice()
                 .iter()
                 .map(|origin| String::from_utf8_lossy(origin.as_slice()).into_owned())
                 .collect();
             config.cors = CorsMode::AllowOrigins(origins);
         }
-        RocSettingTag::Compression => config.compression = true,
-        RocSettingTag::ConcurrencyLimit => {
-            let limit = unsafe { *setting.borrow_payload_concurrency_limit_unchecked() };
+        RocSettingView::Compression => config.compression = true,
+        RocSettingView::ConcurrencyLimit(limit) => {
+            let limit = *limit;
             if limit == 0 {
                 return Err("ConcurrencyLimit must be greater than zero".to_string());
             }
@@ -151,11 +150,9 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
                     .map_err(|_| "ConcurrencyLimit does not fit in usize".to_string())?,
             );
         }
-        RocSettingTag::ServeFiles => {
-            let payload = unsafe { setting.borrow_payload_serve_files_unchecked() };
-            let url_prefix = String::from_utf8_lossy(payload.url_prefix.as_slice()).into_owned();
-            let dir =
-                PathBuf::from(String::from_utf8_lossy(payload.dir.as_slice()).into_owned());
+        RocSettingView::ServeFiles { dir, url_prefix } => {
+            let url_prefix = String::from_utf8_lossy(url_prefix.as_slice()).into_owned();
+            let dir = PathBuf::from(String::from_utf8_lossy(dir.as_slice()).into_owned());
             if !url_prefix.starts_with('/') {
                 return Err(format!(
                     "ServeFiles url_prefix {url_prefix:?} must start with '/'"
@@ -163,18 +160,16 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
             }
             config.serve_files = Some(ServeFilesConfig { url_prefix, dir });
         }
-        RocSettingTag::ResponseCache => {
-            let payload = unsafe { setting.borrow_payload_response_cache_unchecked() };
-            if payload.ttl_ms == 0 {
+        RocSettingView::ResponseCache { max_entries, ttl_ms, bypass_headers, methods } => {
+            if *ttl_ms == 0 {
                 return Err("ResponseCache ttl_ms must be greater than zero".to_string());
             }
-            let max_entries = usize::try_from(payload.max_entries)
+            let max_entries = usize::try_from(*max_entries)
                 .map_err(|_| "ResponseCache max_entries does not fit in usize".to_string())?;
             if max_entries == 0 {
                 return Err("ResponseCache max_entries must be greater than zero".to_string());
             }
-            let methods = payload
-                .methods
+            let methods = methods
                 .as_slice()
                 .iter()
                 .map(|m| {
@@ -184,8 +179,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
                         .map_err(|_| format!("ResponseCache: invalid method {raw:?}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let app_bypass = payload
-                .bypass_headers
+            let app_bypass = bypass_headers
                 .as_slice()
                 .iter()
                 .map(|h| {
@@ -196,7 +190,7 @@ fn apply_setting(setting: &RocSetting, config: &mut HostConfig) -> Result<(), St
                 .collect::<Result<Vec<_>, _>>()?;
             let bypass_headers = with_authorization_bypass(app_bypass);
             config.response_cache = Some(ResponseCacheConfig {
-                ttl: Duration::from_millis(payload.ttl_ms),
+                ttl: Duration::from_millis(*ttl_ms),
                 max_entries,
                 methods,
                 bypass_headers,
